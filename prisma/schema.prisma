@@ -1,0 +1,120 @@
+// Backend/prisma/schema.prisma
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// --- Module 1: Auth (Dựa 100% trên sms-demo.sql) ---
+model User {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique @db.VarChar(50)
+  password_hash String   @db.VarChar(255) // Khớp tên cột
+  role          Role     @default(Donor)
+  created_at    DateTime @default(now()) @db.DateTime(0)
+  
+  orders        Order[]  @relation("CreatedBy")
+
+  @@map("users")
+}
+
+enum Role {
+  Admin
+  Donor
+}
+
+// --- Module 2: Customer (Dựa trên sms-demo.sql) ---
+model Customer {
+  id         Int      @id @default(autoincrement())
+  name       String   @db.VarChar(100)
+  email      String?  @unique @db.VarChar(100)
+  phone      String?  @db.VarChar(20)
+  address    String?  @db.VarChar(255)
+  created_at DateTime @default(now()) @db.DateTime(0)
+  orders     Order[]  @relation("CustomerOrders")
+
+  @@map("customers")
+}
+
+// --- Module 3: Product (Dựa trên sms-demo.sql) ---
+model Product {
+  id           Int           @id @default(autoincrement())
+  name         String        @db.VarChar(100)
+  description  String?       @db.Text
+  sku          String?       @unique @db.VarChar(50)
+  brand        String?       @db.VarChar(50)
+  price        Decimal       @db.Decimal(10, 2)
+  stock        Int
+  category     String?       @db.VarChar(50)
+  attributes   Json?
+  image_url    String?       @db.VarChar(255)
+  created_at   DateTime      @default(now()) @db.DateTime(0)
+  updated_at   DateTime      @default(now()) @updatedAt @db.DateTime(0)
+  order_details OrderDetail[]
+
+  @@map("products")
+}
+model Appointment {
+  id              Int      @id @default(autoincrement())
+  
+  // Dữ liệu từ DonorInfoForm
+  name            String   @db.VarChar(100)
+  email           String   @db.VarChar(100)
+  phone           String   @db.VarChar(20)
+  dob             String   @db.VarChar(20) // Lưu là string cho đơn giản
+  bloodType       String   @db.VarChar(10)
+  
+  // Dữ liệu từ AppointmentForm
+  appointmentDate String   @db.VarChar(20) // Lưu là string
+  location        String   @db.VarChar(255)
+  notes           String?  @db.Text
+  
+  // Trạng thái (dựa trên use case)
+  status          String   @default("Pending") @db.VarChar(50) // Pending, Approved, Cancelled
+  
+  created_at      DateTime @default(now()) @db.DateTime(0)
+
+  // Tùy chọn: Liên kết với người dùng đã tạo (nếu cần)
+  // createdById     Int?
+  // createdBy       User?    @relation(fields: [createdById], references: [id])
+}
+// --- Module 4: Order (Dựa trên sms-demo.sql) ---
+model Order {
+  id           Int           @id @default(autoincrement())
+  customer_id  Int
+  order_date   DateTime      @default(now()) @db.DateTime(0)
+  status       OrderStatus   @default(Pending)
+  total_amount Decimal       @default(0) @db.Decimal(10, 2)
+  created_by   Int
+  created_at   DateTime      @default(now()) @db.DateTime(0)
+  
+  customer     Customer      @relation("CustomerOrders", fields: [customer_id], references: [id])
+  creator      User          @relation("CreatedBy", fields: [created_by], references: [id])
+  order_details OrderDetail[]
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  Pending
+  Paid
+  Shipped
+  Canceled
+}
+
+model OrderDetail {
+  id         Int     @id @default(autoincrement())
+  order_id   Int
+  product_id Int
+  quantity   Int
+  price      Decimal @db.Decimal(10, 2)
+
+  order      Order   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [product_id], references: [id])
+
+  @@map("order_details")
+}
