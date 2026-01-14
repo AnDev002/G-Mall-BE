@@ -362,7 +362,7 @@ model Product {
   // --- TÍNH NĂNG DYNAMIC FILTER (QUAN TRỌNG) ---
   // Lưu các thuộc tính động. 
   attributes   Json?
-
+  tags String? @db.Text
   brandId     Int?
   brandRel    Brand?   @relation(fields: [brandId], references: [id])
 
