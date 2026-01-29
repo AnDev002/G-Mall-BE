@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Request, Get, Param, Query } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request, Get, Param } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt.guard';
 import { OrderService } from '../order.service';
 import { CreateOrderDto } from '../dto/create-order.dto';
@@ -30,12 +30,6 @@ export class OrderController {
       orderId: order.id,
       paymentUrl: paymentUrl, // <--- THÊM DÒNG NÀY thì Frontend mới nhận được Link
     };
-  }
-
-  @Get()
-  async findAll(@Request() req, @Query('status') status: string) {
-    // Gọi service xử lý, truyền vào userId và status (nếu có)
-    return this.orderService.getUserOrders(req.user.id, status);
   }
 
   // API lấy chi tiết đơn hàng (Frontend gọi tại trang Payment Success)

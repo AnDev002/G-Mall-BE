@@ -384,40 +384,6 @@ export class OrderService {
     };
   }
 
-  async getUserOrders(userId: string, status?: string) {
-    const whereCondition: any = {
-      userId: userId, // Luôn luôn lọc theo user đang đăng nhập
-    };
-
-    // Nếu status được gửi lên và khác rỗng thì mới filter
-    // Frontend gửi lên dạng UPPERCASE (PENDING, SHIPPING...) nên ta dùng trực tiếp
-    if (status && status.trim() !== '') {
-        // Map status từ query sang Enum của Prisma nếu cần, hoặc dùng trực tiếp nếu trùng khớp
-        whereCondition.status = status; 
-    }
-
-    return this.prisma.order.findMany({
-      where: whereCondition,
-      include: {
-        // Include items và product để hiển thị ảnh, tên sản phẩm ở list bên ngoài
-        items: {
-          include: {
-            product: {
-              select: {
-                name: true,
-                slug: true,
-                images: true, // Cần lấy ảnh để hiển thị thumbnail
-              }
-            }
-          }
-        }
-      },
-      orderBy: {
-        createdAt: 'desc', // Sắp xếp đơn mới nhất lên đầu
-      },
-    });
-  }
-
   async completeOrder(orderId: string) {
       // Logic hoàn thành đơn hàng...
   }
