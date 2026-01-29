@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # 1. Database chính (MySQL)
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: mysql_container
+  #   restart: always
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root
+  #     MYSQL_DATABASE: gmall_ecommerce_db_1.0  # Đổi tên DB theo config của bạn trong .env
+  #   ports:
+  #     - "3306:3306"
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+
+  # 2. Redis Stack (Có sẵn module Search & JSON "xịn")
+  redis:
+    image: redis/redis-stack-server:latest  # <--- Bắt buộc phải là dòng này
+    container_name: redis_stack_container
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+  # 3. Backend (NestJS) - Optional (Nếu bạn muốn chạy BE bằng Docker luôn)
+  # backend:
+  #   build: .
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - mysql
+  #     - redis
+  #   environment:
+  #     DATABASE_URL: "mysql://root:root@mysql:3306/shoppee_db"
+  #     REDIS_HOST: redis
+  #     REDIS_PORT: 6379
+
+volumes:
+  # mysql_data:
+  redis_data:
