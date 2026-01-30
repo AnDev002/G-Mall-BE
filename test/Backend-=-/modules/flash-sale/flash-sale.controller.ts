@@ -9,7 +9,7 @@ import { UpdateFlashSaleSessionDto } from './dto/update-flash-sale.dto';
 import { RegisterFlashSaleDto } from './dto/register-flash-sale.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { User } from 'src/common/decorators/user.decorator';
 import { ShopService } from '../shop/shop.service';

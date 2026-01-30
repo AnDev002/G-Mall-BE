@@ -1,6 +1,6 @@
 import { Controller, Post, UseGuards } from '@nestjs/common';
 import { GachaService } from './gacha.service';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator';
 
 @Controller('games')

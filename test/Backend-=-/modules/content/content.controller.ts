@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ContentService } from './content.service';
 import { CreateBannerDto, UpdateBannerDto, ReorderBannersDto, SaveConfigDto } from './dto/content.dto';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';

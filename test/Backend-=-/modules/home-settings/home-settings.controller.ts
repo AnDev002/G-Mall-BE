@@ -2,7 +2,7 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@n
 import { HomeSettingsService } from './home-settings.service';
 import { Roles } from '../../common/decorators/roles.decorator'; // Decorator phân quyền của bạn
 import { Role } from '@prisma/client';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Public } from '../../common/decorators/public.decorator';
 

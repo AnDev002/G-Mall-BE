@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
-import { PointService } from '../../modules/point/point.service';
+import { PointService } from '../point/point.service';
 import { RedisService } from '../../database/redis/redis.service';
 import { PointType } from '@prisma/client';
 

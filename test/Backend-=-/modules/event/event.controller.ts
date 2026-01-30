@@ -1,7 +1,7 @@
 import { Controller, Post, Get, UseGuards } from '@nestjs/common';
 import { DailyService } from './daily.service';
 import { GachaService } from '../game/gacha.service'; 
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator'; 
 
 @Controller('events')

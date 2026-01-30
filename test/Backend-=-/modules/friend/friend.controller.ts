@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Delete, Param, UseGuards, Request, Query } from '@nestjs/common';
 import { FriendService } from './friend.service';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { FriendRequestDto, HandleRequestDto } from './dto/friend.dto';
 
 @Controller('friends')

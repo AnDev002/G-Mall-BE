@@ -1,13 +1,13 @@
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
-import { CartService } from '../../modules/cart/cart.service';
-import { PromotionService } from '../../modules/promotion/promotion.service';
-import { TrackingService } from '../../modules/tracking/tracking.service';
+import { CartService } from '../cart/cart.service';
+import { PromotionService } from '../promotion/promotion.service';
+import { TrackingService } from '../tracking/tracking.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { EventType } from '../../modules/tracking/dto/track-event.dto';
-import { PointService } from '../../modules/point/point.service';
+import { EventType } from '../tracking/dto/track-event.dto';
+import { PointService } from '../point/point.service';
 import { OrderStatus, PointType, Prisma } from '@prisma/client';
-import { GhnService } from '../../modules/ghn/ghn.service';
+import { GhnService } from '../ghn/ghn.service';
 import { PaymentService } from '../payment/payment.service';
 
 const GIFT_WRAP_PRICES = [0, 20000, 50000]; 

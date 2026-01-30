@@ -1,6 +1,6 @@
 // Backend-1.1.2/modules/order/controllers/admin-order.controller.ts
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../../auth/guards/jwt.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';

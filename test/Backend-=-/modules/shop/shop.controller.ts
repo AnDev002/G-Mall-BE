@@ -1,6 +1,6 @@
 import { Controller, Post, Body, UseGuards, Request, Get, Param, Patch, Query, Put, BadRequestException } from '@nestjs/common';
 import { ShopService } from './shop.service';
-import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { Public } from 'src/common/decorators/public.decorator';
 import { UpdateShopProfileDto } from '../auth/dto/update-shop.dto';
 // ... imports DTO
