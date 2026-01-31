@@ -385,44 +385,64 @@ export class AdminUsersService {
     // Bước A: Tìm IDs của những User sở hữu Shop có ngành hàng chủ đạo là industryId bằng Raw SQL
     // Bước B: Đưa danh sách IDs đó vào điều kiện 'where' chính
     if (industryId) {
-        // [OPTIMIZATION] Dùng Window Function để tìm Category phổ biến nhất của mỗi Shop
-        // Chỉ lấy những Shop mà Category phổ biến nhất trùng với industryId input
-        const matchedOwnerIds = await this.prisma.$queryRaw<{ ownerId: string }[]>`
-            WITH ShopCategoryCounts AS (
-                SELECT 
-                    s.ownerId, 
-                    p.categoryId, 
-                    COUNT(*) as productCount
-                FROM Shop s
-                JOIN Product p ON s.id = p.shopId
-                WHERE p.status = 'ACTIVE' -- Chỉ tính sản phẩm đang bán
-                GROUP BY s.ownerId, p.categoryId
-            ),
-            ShopDominantCategory AS (
-                SELECT 
-                    ownerId, 
-                    categoryId,
-                    ROW_NUMBER() OVER (PARTITION BY ownerId ORDER BY productCount DESC) as rn
-                FROM ShopCategoryCounts
-            )
-            SELECT ownerId 
-            FROM ShopDominantCategory
-            WHERE rn = 1 AND categoryId = ${industryId}
-        `;
+        // A. Lấy thống kê số lượng sản phẩm theo từng Category của tất cả các Shop đang hoạt động
+        // Kết quả trả về dạng: [{ shopId: 'shop1', categoryId: 'catA', _count: { _all: 10 } }, ...]
+        const categoryStats = await this.prisma.product.groupBy({
+            by: ['shopId', 'categoryId'],
+            where: {
+                status: 'ACTIVE',
+                shopId: { not: null }
+            },
+            _count: {
+                _all: true // Đếm số lượng sản phẩm
+            }
+        });
 
-        const ownerIds = matchedOwnerIds.map(row => row.ownerId);
-        
-        // Nếu không tìm thấy ai, trả về rỗng ngay lập tức để giảm tải
-        if (ownerIds.length === 0) {
+        // B. Tìm Category chủ đạo (nhiều sản phẩm nhất) cho từng Shop
+        const shopDominantMap = new Map<string, string>(); // Lưu: shopId -> dominantCategoryId
+        const shopMaxCountMap = new Map<string, number>(); // Lưu: shopId -> maxCount hiện tại
+
+        for (const stat of categoryStats) {
+            const sId = stat.shopId;
+            const cId = stat.categoryId;
+            const count = stat._count._all;
+
+            if (!sId || !cId) continue;
+
+            // Kiểm tra xem category này có nhiều sản phẩm hơn category đang giữ Top không
+            const currentMax = shopMaxCountMap.get(sId) || 0;
+            if (count > currentMax) {
+                shopMaxCountMap.set(sId, count);
+                shopDominantMap.set(sId, cId);
+            }
+        }
+
+        // C. Lọc ra các ShopID có dominant category trùng với industryId đầu vào
+        const targetShopIds: string[] = [];
+        shopDominantMap.forEach((dominantCatId, shopId) => {
+            if (dominantCatId === industryId) {
+                targetShopIds.push(shopId);
+            }
+        });
+
+        // Nếu không tìm thấy shop nào phù hợp, trả về rỗng ngay
+        if (targetShopIds.length === 0) {
              return {
                 data: [],
                 meta: { total: 0, page: Number(page), limit: Number(limit), totalPages: 0 },
             };
         }
 
-        // Thêm điều kiện vào query chính
+        // D. Tìm OwnerID (User ID) tương ứng với các Shop tìm được
+        const matchingShops = await this.prisma.shop.findMany({
+            where: { id: { in: targetShopIds } },
+            select: { ownerId: true }
+        });
+        
+        const ownerIds = matchingShops.map(s => s.ownerId);
+
+        // E. Áp dụng vào điều kiện lọc chính
         where.id = { in: ownerIds };
-        // Đảm bảo chỉ tìm Seller (vì User thường không có ngành hàng)
         where.role = 'SELLER'; 
     }
 
