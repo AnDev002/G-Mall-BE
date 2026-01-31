@@ -7,12 +7,13 @@ import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
 import { Prisma, ProductStatus } from '@prisma/client';
 import { UpdateProductDto } from '../dto/update-product.dto';
-
+import { ProductReadService } from './product-read.service';
 @Injectable()
 export class ProductWriteService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly productCache: ProductCacheService,
+    private readonly productReadService: ProductReadService,
   ) {}
 
   // --- 1. Tạo sản phẩm (Updated for Shop Module) ---
