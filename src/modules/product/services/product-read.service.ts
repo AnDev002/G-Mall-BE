@@ -8,7 +8,6 @@ import { ProductCacheService } from './product-cache.service';
 import { CategoryService } from '../../category/category.service';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
-import { escape } from 'querystring';
 
 interface FindAllPublicDto {
   page?: number;
@@ -21,10 +20,11 @@ interface FindAllPublicDto {
   maxPrice?: number;
   rating?: number;
   sort?: string;
-  tag?: string; // [UPDATED] Đã có field tag
+  tag?: string;
 }
 
 const SUGGESTION_KEY = 'sug:products';
+const INDEX_NAME = 'idx:products';
 
 @Injectable()
 export class ProductReadService implements OnModuleInit {
@@ -38,27 +38,47 @@ export class ProductReadService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // 1. Tạo Index cho Full Search (Trang kết quả)
-    // LƯU Ý: Nếu Index 'idx:products' đã tồn tại với schema cũ, bạn cần chạy lệnh "FT.DROPINDEX idx:products" trong Redis CLI trước khi restart server.
     try {
-      await this.redis.call(
-        'FT.CREATE', 'idx:products', 
-        'ON', 'HASH', 
-        'PREFIX', '1', 'product:', 
-        'SCHEMA', 
-        'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', 
-        'slug', 'TEXT', 'NOSTEM', 
-        'price', 'NUMERIC', 'SORTABLE',
-        'salesCount', 'NUMERIC', 'SORTABLE',
-        'status', 'TAG',
-        'systemTags', 'TAG' // [UPDATED] Đã thêm field TAG cho systemTags
-      );
-      this.logger.log('RediSearch Index created');
-      this.logger.log('🔄 Auto-syncing products to Redis...');
-      await this.syncAllProductsToRedis();
+      // [FIX QUAN TRỌNG] Kiểm tra Index cũ để Re-index
+      const info = await this.redis.call('FT.INFO', INDEX_NAME).catch(() => null);
+      
+      // Nếu Index đã tồn tại, kiểm tra xem nó có field systemTags chưa
+      if (info) {
+          const infoStr = JSON.stringify(info);
+          if (!infoStr.includes('systemTags')) {
+              this.logger.warn('⚠️ Old Index Schema detected. Dropping old index to update schema...');
+              await this.redis.call('FT.DROPINDEX', INDEX_NAME);
+              await this.createSearchIndex();
+          }
+      } else {
+          // Chưa có index thì tạo mới
+          await this.createSearchIndex();
+      }
     } catch (e: any) {
-      // Ignore if exists
+      this.logger.error(`Init Index Error: ${e.message}`);
     }
+  }
+
+  private async createSearchIndex() {
+      try {
+        await this.redis.call(
+            'FT.CREATE', INDEX_NAME, 
+            'ON', 'HASH', 
+            'PREFIX', '1', 'product:', 
+            'SCHEMA', 
+            'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', 
+            'slug', 'TEXT', 'NOSTEM', 
+            'price', 'NUMERIC', 'SORTABLE',
+            'salesCount', 'NUMERIC', 'SORTABLE',
+            'status', 'TAG',
+            'systemTags', 'TAG' // Field quan trọng
+        );
+        this.logger.log('✅ RediSearch Index created');
+        this.logger.log('🔄 Auto-syncing products to Redis...');
+        await this.syncAllProductsToRedis();
+      } catch (e) {
+        // Bỏ qua lỗi nếu index đã tồn tại (dù đã check ở trên nhưng an toàn vẫn hơn)
+      }
   }
 
   // [QUAN TRỌNG] Hàm này dùng để đồng bộ sản phẩm ban đầu vào Redis
@@ -69,7 +89,7 @@ export class ProductReadService implements OnModuleInit {
         select: { 
             id: true, name: true, price: true, salesCount: true, 
             status: true, slug: true, images: true, originalPrice: true,
-            systemTags: true // Field này giờ là JsonValue
+            systemTags: true 
         }
     });
 
@@ -122,9 +142,9 @@ export class ProductReadService implements OnModuleInit {
   }
 
   private escapeRediSearch(str: string): string {
-    // Escape các ký tự đặc biệt của RediSearch để tránh Syntax Error gây delay
-    // Thêm các ký tự đặc biệt cần escape cho TAG query: { } , . < > |
-    return str.replace(/([^a-zA-Z0-9\s\u00C0-\u1EF9\-_])/g, '\\$1').trim();
+    // Escape các ký tự đặc biệt của RediSearch
+    // Cho phép dấu cách và ký tự tiếng Việt
+    return str.replace(/([^a-zA-Z0-9\s\u00C0-\u1EF9])/g, '\\$1').trim();
   }
 
   // [NEW] Hàm tìm kiếm gợi ý siêu tốc (Autocomplete)
@@ -255,7 +275,7 @@ export class ProductReadService implements OnModuleInit {
     const queryHash = createHash('md5').update(JSON.stringify(query)).digest('hex');
     const cacheKey = `search:res:${queryHash}`;
 
-    // Fail-fast Cache
+    // Fail-fast Cache (Chỉ cache khi không có search text ngắn hoặc tag)
     if ((!query.search || query.search.length < 2) && !query.tag) {
         const cached = await this.redis.get(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -274,11 +294,7 @@ export class ProductReadService implements OnModuleInit {
                 if (cleanKeyword) {
                     const terms = cleanKeyword.split(/\s+/).filter(t => t.length > 0).map(t => `${t}*`).join(' ');
                     
-                    // CŨ: Chỉ tìm trong tên
-                    // ftQuery += ` @name:(${terms})`;
-
-                    // MỚI: Tìm trong Tên (Fuzzy) HOẶC SystemTags (Chính xác)
-                    // Cú pháp: (@field1:val1 | @field2:val2)
+                    // Tìm trong Tên (Fuzzy) HOẶC SystemTags (Chính xác)
                     ftQuery += ` (@name:(${terms}) | @systemTags:{${cleanKeyword}})`;
                 }
             }
@@ -291,11 +307,12 @@ export class ProductReadService implements OnModuleInit {
                 }
             }
             
+            // Search nếu có keyword hoặc tag
             const isValidSearch = query.search || query.tag;
 
             if (isValidSearch) {
                 const searchRes: any = await this.redis.call(
-                    'FT.SEARCH', 'idx:products', 
+                    'FT.SEARCH', INDEX_NAME, 
                     ftQuery,
                     'LIMIT', skip, limit,
                     'SORTBY', 'salesCount', 'DESC', 
@@ -303,19 +320,22 @@ export class ProductReadService implements OnModuleInit {
                 );
 
                 const total = searchRes[0];
-                const products: any[] = [];
-
-                for (let i = 1; i < searchRes.length; i += 2) {
-                    const fields = searchRes[i + 1];
-                    if (fields && fields.length >= 2 && fields[0] === 'json') {
-                         products.push(JSON.parse(fields[1]));
+                
+                // Chỉ lấy kết quả nếu tìm thấy > 0
+                if (total > 0) {
+                    const products: any[] = [];
+                    for (let i = 1; i < searchRes.length; i += 2) {
+                        const fields = searchRes[i + 1];
+                        if (fields && fields.length >= 2 && fields[0] === 'json') {
+                            products.push(JSON.parse(fields[1]));
+                        }
                     }
-                }
 
-                resultData = {
-                    data: products,
-                    meta: { total, page, limit, last_page: Math.ceil(total / limit) },
-                };
+                    resultData = {
+                        data: products,
+                        meta: { total, page, limit, last_page: Math.ceil(total / limit) },
+                    };
+                }
             }
         } catch (e) {
             this.logger.warn(`RediSearch Error: ${e.message}`);
@@ -323,20 +343,27 @@ export class ProductReadService implements OnModuleInit {
     }
 
     // --- LOGIC 2: DB FALLBACK ---
+    // Chạy vào đây nếu RediSearch lỗi HOẶC trả về 0 kết quả (resultData vẫn là null)
     if (!resultData) {
         const where: Prisma.ProductWhereInput = {
             status: 'ACTIVE',
-            ...(query.search ? { name: { contains: query.search.trim() } } : {}),
             ...(query.categorySlug ? { category: { slug: query.categorySlug } } : {}),
             ...(query.minPrice ? { price: { gte: Number(query.minPrice) } } : {}),
             ...(query.maxPrice ? { price: { lte: Number(query.maxPrice) } } : {}),
             
-            // [FIX] Fallback filter cho JSON Type (MySQL)
-            // Sử dụng 'string_contains' hoặc 'equals' tùy version Prisma
-            // Đây là cách "hack" phổ biến cho MySQL JSON array nếu chưa hỗ trợ array_contains đầy đủ
+            // [FIX QUAN TRỌNG] Fallback cho Search: Tìm Name HOẶC SystemTags
+            ...(query.search ? {
+                OR: [
+                    { name: { contains: query.search.trim() } },
+                    // Tìm trong JSON array bằng string_contains (hack cho MySQL JSON)
+                    { systemTags: { string_contains: query.search.trim() } }
+                ]
+            } : {}),
+            
+            // Fallback cho Tag param
             ...(query.tag ? { 
                 systemTags: { 
-                    string_contains: `"${query.tag}"` // Tìm chuỗi "tag" bên trong JSON Array
+                    string_contains: `"${query.tag}"` 
                 } 
             } : {}),
         };
