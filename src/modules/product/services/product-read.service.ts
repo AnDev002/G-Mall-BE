@@ -239,155 +239,142 @@ export class ProductReadService implements OnModuleInit {
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    // Logic gợi ý
-    const isSuggestionMode = limit <= 10 && !query.categorySlug && !query.minPrice && !query.tag;
-    if (isSuggestionMode && query.search && query.search.trim().length >= 2) {
-        const suggestions = await this.searchSuggestions(query.search);
-        if (suggestions.length > 0) {
-            return { data: suggestions, meta: { total: suggestions.length, page, limit, last_page: 1 } };
-        }
-    }
-
+    // 1. Check Cache kết quả (Giảm tải)
     const queryHash = createHash('md5').update(JSON.stringify(query)).digest('hex');
     const cacheKey = `search:res:${queryHash}`;
-
-    if ((!query.search || query.search.length < 2) && !query.tag) {
-        const cached = await this.redis.get(cacheKey);
-        if (cached) return JSON.parse(cached);
-    }
+    
+    // Lưu ý: Tạm thời tắt Cache get để debug cho ra lỗi
+    // if ((!query.search || query.search.length < 2) && !query.tag) {
+    //     const cached = await this.redis.get(cacheKey);
+    //     if (cached) return JSON.parse(cached);
+    // }
 
     let resultData: any = null;
+    const searchKeyword = query.search ? query.search.trim() : '';
 
-    // --- STRATEGY: Redis Search (Ưu tiên) ---
-    if ((query.search && query.search.trim().length > 0) || query.tag) {
+    // --- BƯỚC 1: THỬ TÌM BẰNG REDIS SEARCH ---
+    if (searchKeyword.length > 0 || query.tag) {
         try {
+            this.logger.log(`🔎 [Redis] Searching for: "${searchKeyword}"`);
+            
             let ftQuery = `@status:{ACTIVE}`;
             const conditions: string[] = [];
 
-            if (query.search && query.search.trim().length > 0) {
-                // 1. TEXT Search
-                const cleanName = this.escapeRediSearchText(query.search);
+            if (searchKeyword) {
+                // Name match
+                const cleanName = this.escapeRediSearchText(searchKeyword);
                 if (cleanName) {
                     const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
                     conditions.push(`@name:(${nameTokens})`);
                 }
-
-                // 2. TAG Search
-                const cleanTagKw = this.sanitizeTagKeyword(query.search);
+                // Tag match
+                const cleanTagKw = this.sanitizeTagKeyword(searchKeyword);
                 if (cleanTagKw) {
                     conditions.push(`@systemTags:{${cleanTagKw}}`);
                 }
             }
-
-            if (query.tag) {
-                const specificTag = this.sanitizeTagKeyword(query.tag);
-                if (specificTag) {
-                    ftQuery += ` @systemTags:{${specificTag}}`;
-                }
-            }
-
-            if (conditions.length > 0) {
-                ftQuery += ` (${conditions.join(' | ')})`;
-            }
             
-            if (conditions.length > 0 || query.tag) {
-                // this.logger.debug(`FT.SEARCH Query: ${ftQuery}`); // Uncomment to debug
-                const searchRes: any = await this.redis.call(
-                    'FT.SEARCH', INDEX_NAME, 
-                    ftQuery,
-                    'LIMIT', skip, limit,
-                    'SORTBY', 'salesCount', 'DESC', 
-                    'RETURN', '1', 'json' 
-                );
+            if (conditions.length > 0) ftQuery += ` (${conditions.join(' | ')})`;
 
-                const total = searchRes[0];
-                if (total > 0) {
-                    const products: any[] = [];
-                    for (let i = 1; i < searchRes.length; i += 2) {
-                        const fields = searchRes[i + 1];
-                        if (fields && fields.length >= 2) {
-                             const jsonStr = fields[fields.indexOf('json') + 1];
-                             if(jsonStr) products.push(JSON.parse(jsonStr));
-                        }
+            // Gọi Redis
+            const searchRes: any = await this.redis.call(
+                'FT.SEARCH', INDEX_NAME, 
+                ftQuery,
+                'LIMIT', skip, limit,
+                'SORTBY', 'salesCount', 'DESC', 
+                'RETURN', '1', 'json' 
+            );
+
+            const total = searchRes[0];
+            this.logger.log(`✅ [Redis] Found ${total} items`);
+
+            if (total > 0) {
+                const products: any[] = [];
+                for (let i = 1; i < searchRes.length; i += 2) {
+                    const fields = searchRes[i + 1];
+                    if (fields && fields.length >= 2) {
+                        const jsonStr = fields[fields.indexOf('json') + 1];
+                        if(jsonStr) products.push(JSON.parse(jsonStr));
                     }
-                    resultData = {
-                        data: products,
-                        meta: { total, page, limit, last_page: Math.ceil(total / limit) },
-                    };
                 }
+                resultData = {
+                    data: products,
+                    meta: { total, page, limit, last_page: Math.ceil(total / limit) },
+                };
             }
         } catch (e: any) {
-            this.logger.error(`RediSearch Error: ${e.message}`);
+            this.logger.error(`❌ [Redis] Error (Will Fallback): ${e.message}`);
+            // Không return, để nó chạy xuống Fallback DB
         }
     }
 
-    // --- DB FALLBACK (Tìm trong MySQL nếu Redis miss) ---
-    if (!resultData) {
-        // this.logger.warn('⚠️ Falling back to DB Search'); 
-        const where: Prisma.ProductWhereInput = {
-            status: 'ACTIVE',
-            ...(query.categorySlug ? { category: { slug: query.categorySlug } } : {}),
-            ...(query.minPrice ? { price: { gte: Number(query.minPrice) } } : {}),
-            ...(query.maxPrice ? { price: { lte: Number(query.maxPrice) } } : {}),
-            ...(query.brandId ? { brandId: Number(query.brandId) } : {}),
-        };
+    // --- BƯỚC 2: FALLBACK DATABASE (RAW SQL) ---
+    // Nếu Redis không có dữ liệu HOẶC bị lỗi -> Tìm trong MySQL
+    if (!resultData || resultData.data.length === 0) {
+        this.logger.warn(`⚠️ [DB Fallback] Executing Raw SQL for: "${searchKeyword}"`);
 
-        if (query.search) {
-             const searchClean = query.search.trim();
-             // [QUAN TRỌNG] Tạo phiên bản URL Encoded để tìm khớp với dữ liệu bẩn trong DB
-             // Ví dụ: "Bé gái" -> "B%C3%A9%20g%C3%A1i"
-             const searchEncoded = encodeURIComponent(searchClean);
+        // Chuẩn bị keyword cho LIKE SQL
+        // 1. Keyword gốc: "Bé gái"
+        const rawKeyword = `%${searchKeyword}%`;
+        // 2. Keyword URL Encoded (để bắt dính dữ liệu bẩn): "%B%C3%A9%20g%C3%A1i%"
+        const encodedKeyword = `%${encodeURIComponent(searchKeyword)}%`;
 
-             where.OR = [
-                { name: { contains: searchClean } },
-                { systemTags: { string_contains: searchClean } }, // Tìm text thường
-                { systemTags: { string_contains: searchEncoded } } // Tìm text mã hóa (cho dữ liệu bẩn)
-             ];
+        try {
+            // Dùng Raw Query để "ép" MySQL tìm trong chuỗi JSON text
+            const products = await this.prisma.$queryRaw<any[]>`
+                SELECT id, name, price, slug, images, salesCount, originalPrice 
+                FROM Product 
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
+                ORDER BY salesCount DESC
+                LIMIT ${limit} OFFSET ${skip}
+            `;
+            
+            // Đếm tổng số lượng (cho phân trang)
+            const countResult = await this.prisma.$queryRaw<any[]>`
+                SELECT COUNT(*) as total
+                FROM Product 
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
+            `;
+
+            const total = Number(countResult[0]?.total || 0);
+            this.logger.log(`✅ [DB Fallback] Found ${total} items via SQL Raw`);
+
+            resultData = {
+                data: products.map(p => ({
+                    ...p,
+                    price: Number(p.price),
+                    originalPrice: Number(p.originalPrice || 0),
+                    images: typeof p.images === 'string' ? JSON.parse(p.images) : p.images, // Fix nếu Raw trả về string
+                })),
+                meta: {
+                    total,
+                    page,
+                    limit,
+                    last_page: Math.ceil(total / limit),
+                },
+            };
+        } catch (dbErr) {
+            this.logger.error(`❌ [DB Fallback] Error: ${dbErr}`);
+            return { data: [], meta: { total: 0, page, limit, last_page: 0 } };
         }
-        
-        if (query.tag) {
-            where.systemTags = { string_contains: query.tag };
-        }
-
-        const [products, total] = await Promise.all([
-            this.prisma.product.findMany({
-                where,
-                take: limit,
-                skip: skip,
-                orderBy: query.sort === 'price_asc' ? { price: 'asc' } : { salesCount: 'desc' },
-                select: { 
-                    id: true, name: true, price: true, slug: true, 
-                    images: true, salesCount: true, originalPrice: true
-                }
-            }),
-            this.prisma.product.count({ where })
-        ]);
-
-        resultData = {
-            data: products.map(p => ({
-                id: p.id,
-                name: p.name,
-                slug: p.slug,
-                price: Number(p.price),
-                originalPrice: Number(p.originalPrice || 0),
-                images: Array.isArray(p.images) ? p.images : [],
-                salesCount: p.salesCount || 0
-            })),
-            meta: {
-                total,
-                page,
-                limit,
-                last_page: Math.ceil(total / limit),
-            },
-        };
     }
 
-    // Cache kết quả DB (ngắn hạn)
+    // Cache lại kết quả DB nếu tìm thấy
     if (resultData?.data?.length > 0 && !query.search) {
         await this.redis.set(cacheKey, JSON.stringify(resultData), 'EX', 60);
     }
     
-    return resultData;
+    return resultData || { data: [], meta: { total: 0, page: 1, limit, last_page: 0 } };
   }
 
   // ===========================================================================
