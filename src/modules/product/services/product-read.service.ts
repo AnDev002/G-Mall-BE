@@ -517,6 +517,59 @@ export class ProductReadService implements OnModuleInit {
     });
   }
 
+  async findMoreFromShop(productId: string) {
+    const cachedProduct = await this.productCache.getProductDetail(productId);
+    let shopId = cachedProduct?.shopId; 
+
+    if (!shopId) {
+      const product = await this.prisma.product.findUnique({
+        where: { id: productId },
+        select: { shopId: true } 
+      });
+      shopId = product?.shopId;
+    }
+    if (!shopId) return [];
+
+    return this.prisma.product.findMany({
+      where: { shopId: shopId, id: { not: productId }, status: 'ACTIVE' },
+      take: 6, 
+      orderBy: { createdAt: 'desc' }, 
+      select: {
+        id: true, name: true, price: true, images: true, stock: true, slug: true, rating: true, salesCount: true
+      },
+    });
+  }
+
+  async searchProductsForAdmin(query: string) {
+    return this.prisma.product.findMany({
+      where: { name: { contains: query } },
+      select: { id: true, name: true, images: true, variants: true, price: true },
+      take: 20, 
+    });
+  }
+
+  async findAllForSeller(sellerId: string, query: { page?: number; limit?: number; keyword?: string }) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 20;
+    const skip = (page - 1) * limit;
+    const where: Prisma.ProductWhereInput = { shopId: sellerId };
+    if (query.keyword) where.name = { contains: query.keyword };
+
+    const [products, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where, take: limit, skip,
+        orderBy: { createdAt: 'desc' },
+        include: { variants: true, category: true },
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    return {
+      data: products,
+      meta: { total, page, limit, last_page: Math.ceil(total / limit) },
+    };
+  }
+
   async findShopProducts(shopId: string, query: { 
       page?: number; limit?: number; sort?: string; 
       categoryId?: string; minPrice?: number; maxPrice?: number; rating?: number;
