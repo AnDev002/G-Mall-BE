@@ -77,9 +77,15 @@ export class ShopController {
   }
 
   @Get(':id/custom-categories')
-  @Public()
+  @Public() // Đảm bảo decorator Public hoạt động để khách không cần login cũng xem được
   async getShopCustomCategories(@Param('id') id: string) {
     return this.shopService.getShopCustomCategories(id);
+  }
+
+  @Get(':id/custom-categories')
+  @Public() // Đảm bảo decorator này tồn tại để khách truy cập không cần login
+  async getCustomCategories(@Param('id') shopId: string) {
+    return this.shopService.getShopCustomCategories(shopId);
   }
 
   @UseGuards(JwtAuthGuard)
