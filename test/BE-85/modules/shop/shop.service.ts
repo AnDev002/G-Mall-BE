@@ -248,12 +248,8 @@ export class ShopService {
     });
 
     // 2. Kiểm tra trạng thái
-    if (!shop /* || shop.status !== ShopStatus.ACTIVE */) {
+    if (!shop || shop.status !== ShopStatus.ACTIVE) {
       throw new NotFoundException('Cửa hàng không tồn tại hoặc đã bị khóa');
-    }
-
-    if (shop.status === 'BANNED') { // Chỉ chặn nếu bị khóa (Ban), còn Pending cho xem
-        throw new NotFoundException('Cửa hàng đã bị khóa');
     }
 
     return {
