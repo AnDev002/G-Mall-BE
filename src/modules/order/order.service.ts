@@ -519,6 +519,7 @@ export class OrderService {
           include: {
             product: {
               select: {
+                id: true,
                 name: true,
                 slug: true,
                 images: true, // Cần lấy ảnh để hiển thị thumbnail
@@ -586,6 +587,7 @@ export class OrderService {
           include: {
             product: {
               select: {
+                id: true,
                 name: true,
                 slug: true,
                 images: true,
