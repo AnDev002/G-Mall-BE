@@ -23,6 +23,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(Role)
   role?: Role;
+
+  @IsString()
+  @IsOptional()
+  shopName?: string; 
 }
 
 export class ToggleBanUserDto {

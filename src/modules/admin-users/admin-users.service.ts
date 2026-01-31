@@ -6,6 +6,16 @@ import { MailerService } from '@nestjs-modules/mailer';
 import { Prisma, Role, ShopStatus } from '@prisma/client';
 import { CreateUserDto } from './dto/admin-users.dto';
 import * as bcrypt from 'bcrypt';
+
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ /g, '-')
+    .replace(/[^\w-]+/g, '') + '-' + Date.now().toString().slice(-4);
+}
+
 @Injectable()
 export class AdminUsersService {
   constructor(
@@ -493,50 +503,88 @@ export class AdminUsersService {
   }
 
   async createUser(adminId: string, dto: CreateUserDto) {
-    // 1. Validate: Phải có ít nhất Email hoặc Username
+    // 1. Validate cơ bản
     if (!dto.email && !dto.username) {
       throw new BadRequestException('Phải cung cấp Email hoặc Username');
     }
 
-    // 2. Check trùng lặp
+    // 2. Validate riêng cho Seller
+    if (dto.role === 'SELLER' && !dto.shopName) {
+        throw new BadRequestException('Vui lòng nhập Tên Cửa Hàng cho tài khoản Người bán');
+    }
+
+    // 3. Check trùng lặp User
     const existingUser = await this.prisma.user.findFirst({
       where: {
         OR: [
           dto.email ? { email: dto.email } : {},
-          dto.username ? { username: dto.username } : {}
+          // Nếu có username thì check, ở đây ta tạm dùng email làm base
         ]
       }
     });
 
     if (existingUser) {
-      throw new ConflictException('Email hoặc Username đã tồn tại trong hệ thống');
+      throw new ConflictException('Email đã tồn tại trong hệ thống');
     }
 
-    // 3. Hash Password
+    // 4. Hash Password
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-    // 4. Tạo User
-    const newUser = await this.prisma.user.create({
-      data: {
-        name: dto.name,
-        email: dto.email || null,       // Có thể null
-        username: dto.username || null, // Có thể null
-        password: hashedPassword,
-        role: dto.role || Role.BUYER,
-        isVerified: true, // Admin tạo thì mặc định đã xác thực
-        cart: { create: {} } // Tạo luôn giỏ hàng
+    // 5. Transaction: Tạo User -> (Nếu Seller) Tạo Shop
+    const result = await this.prisma.$transaction(async (prisma) => {
+        // A. Tạo User
+        const newUser = await prisma.user.create({
+            data: {
+                name: dto.name,
+                email: dto.email,
+                username: dto.email.split('@')[0] + Math.floor(Math.random() * 1000), // Auto username
+                password: hashedPassword,
+                role: dto.role || 'BUYER',
+                isVerified: true,
+                phone: dto.phone,
+                shopName: dto.role === 'SELLER' ? dto.shopName : null, // Lưu shopName vào user để khớp logic cũ
+                cart: { create: {} },
+                pointWallet: { create: { balance: 0 } } // Tạo ví điểm luôn
+            }
+        });
+
+        // B. Nếu là Seller -> Tạo Shop
+        if (dto.role === 'SELLER' && dto.shopName) {
+            const shopSlug = generateSlug(dto.shopName);
+            
+            await prisma.shop.create({
+                data: {
+                    name: dto.shopName,
+                    slug: shopSlug,
+                    description: `Cửa hàng chính thức của ${dto.name}`,
+                    ownerId: newUser.id,
+                    status: ShopStatus.ACTIVE, // Active luôn như yêu cầu
+                    rating: 0, // Mới tạo rating 0
+                    totalSales: 0,
+                    // Các trường địa chỉ để null hoặc default, Seller tự cập nhật sau
+                    pickupAddress: "Đang cập nhật",
+                    lat: 0,
+                    lng: 0
+                }
+            });
+        }
+        
+        return newUser;
+    });
+
+    // 6. Tracking
+    await this.trackingService.trackEvent(adminId, 'admin-action', {
+      type: EventType.CREATE_USER,
+      targetId: result.id,
+      metadata: { 
+          role: dto.role, 
+          email: result.email,
+          shopName: dto.shopName 
       }
     });
 
-    // 5. Tracking
-    await this.trackingService.trackEvent(adminId, 'admin-action', {
-      type: EventType.CREATE_USER, // Cần thêm vào Enum EventType nếu chưa có
-      targetId: newUser.id,
-      metadata: { username: newUser.username, email: newUser.email }
-    });
-
-    const { password, ...result } = newUser;
-    return result;
+    const { password, ...userSafe } = result;
+    return userSafe;
   }
 
   async toggleBanUser(adminId: string, userId: string, isBanned: boolean, reason?: string) {
