@@ -69,7 +69,7 @@ export class ProductReadService implements OnModuleInit {
         select: { 
             id: true, name: true, price: true, salesCount: true, 
             status: true, slug: true, images: true, originalPrice: true,
-            systemTags: true // [UPDATED] Cần lấy thêm systemTags từ DB
+            systemTags: true // Field này giờ là JsonValue
         }
     });
 
@@ -82,10 +82,11 @@ export class ProductReadService implements OnModuleInit {
         const key = `product:${p.id}`;
         const image = Array.isArray(p.images) && p.images.length > 0 ? (p.images[0] as any) : '';
 
-        // [UPDATED] Chuyển đổi mảng tags thành chuỗi phân cách bởi dấu phẩy cho Redis TAG field
-        const tagsString = Array.isArray(p.systemTags) ? p.systemTags.join(',') : '';
+        // [FIX] Ép kiểu từ JsonValue sang string[] an toàn
+        const tags = Array.isArray(p.systemTags) ? (p.systemTags as string[]) : [];
+        const tagsString = tags.join(',');
 
-        // [QUAN TRỌNG] Tạo sẵn cục JSON cho Frontend để lúc Search không cần map lại
+        // Tạo sẵn cục JSON cho Frontend
         const frontendJson = JSON.stringify({
             id: p.id,
             name: p.name,
@@ -94,10 +95,9 @@ export class ProductReadService implements OnModuleInit {
             originalPrice: Number(p.originalPrice || 0),
             images: [image],
             salesCount: p.salesCount || 0,
-            // Có thể thêm tags vào JSON nếu frontend cần hiển thị ngay
         });
 
-        // 1. Lưu Hash: Thêm field 'json' và 'systemTags'
+        // Lưu Hash
         pipeline.hset(key, {
             name: p.name,
             price: Number(p.price),
@@ -106,10 +106,10 @@ export class ProductReadService implements OnModuleInit {
             id: p.id,
             slug: p.slug,
             json: frontendJson,
-            systemTags: tagsString // [UPDATED] Lưu tags vào Redis Hash
+            systemTags: tagsString // Lưu chuỗi tags vào Redis
         });
 
-        // 2. Dictionary cho Autocomplete
+        // Dictionary cho Autocomplete
         const score = p.salesCount > 0 ? p.salesCount : 1;
         const payload = JSON.stringify({ id: p.id, slug: p.slug, price: Number(p.price), image });
         
@@ -169,10 +169,11 @@ export class ProductReadService implements OnModuleInit {
     const key = `product:${product.id}`;
     const image = Array.isArray(product.images) && product.images.length > 0 ? (product.images[0] as any) : '';
 
-    // [UPDATED] Xử lý tags cho single update
-    const tagsString = Array.isArray(product.systemTags) ? product.systemTags.join(',') : '';
+    // [FIX] Ép kiểu từ JsonValue sang string[] an toàn
+    const tags = Array.isArray(product.systemTags) ? (product.systemTags as string[]) : [];
+    const tagsString = tags.join(',');
 
-    // Tạo cục JSON giống hệt hàm syncAll
+    // Tạo cục JSON
     const frontendJson = JSON.stringify({
         id: product.id,
         name: product.name,
@@ -183,20 +184,19 @@ export class ProductReadService implements OnModuleInit {
         salesCount: product.salesCount || 0,
     });
 
-    // Update Redis Hash bao gồm cả field 'json'
+    // Update Redis Hash
     await this.redis.hset(key, {
       name: product.name,
-      // description: product.description || '', 
       price: Number(product.price),
       salesCount: product.salesCount || 0,
       status: product.status,
       id: product.id,
       slug: product.slug,
       json: frontendJson,
-      systemTags: tagsString // [UPDATED] Update tags
+      systemTags: tagsString // Update tags
     });
     
-    // Update luôn Dictionary cho Suggestion
+    // Update Dictionary
     const score = product.salesCount > 0 ? product.salesCount : 1;
     const payload = JSON.stringify({ id: product.id, slug: product.slug, price: Number(product.price), image });
     await this.redis.call('FT.SUGADD', 'sug:products', product.name, score.toString(), 'PAYLOAD', payload);
@@ -240,7 +240,7 @@ export class ProductReadService implements OnModuleInit {
     const skip = (page - 1) * limit;
 
     // 1. Gợi ý nhanh (Autocomplete)
-    const isSuggestionMode = limit <= 10 && !query.categorySlug && !query.minPrice && !query.tag; // [UPDATED] Thêm check !query.tag
+    const isSuggestionMode = limit <= 10 && !query.categorySlug && !query.minPrice && !query.tag;
     if (isSuggestionMode && query.search && query.search.trim().length >= 2) {
         const suggestions = await this.searchSuggestions(query.search);
         if (suggestions.length > 0) {
@@ -251,7 +251,7 @@ export class ProductReadService implements OnModuleInit {
         }
     }
 
-    // 2. Cache Layer (Kết quả tìm kiếm lặp lại)
+    // 2. Cache Layer
     const queryHash = createHash('md5').update(JSON.stringify(query)).digest('hex');
     const cacheKey = `search:res:${queryHash}`;
 
@@ -263,13 +263,12 @@ export class ProductReadService implements OnModuleInit {
 
     let resultData: any = null;
 
-    // --- LOGIC 1: REDISEARCH (TỐI ƯU HÓA) ---
-    // Chạy RediSearch nếu có search keyword HOẶC có tag
+    // --- LOGIC 1: REDISEARCH ---
     if ((query.search && query.search.trim().length > 0) || query.tag) {
         try {
             let ftQuery = `@status:{ACTIVE}`;
 
-            // Xử lý Search Keyword
+            // Search Keyword
             if (query.search && query.search.trim().length > 0) {
                 const cleanKeyword = this.escapeRediSearch(query.search);
                 if (cleanKeyword) {
@@ -278,7 +277,7 @@ export class ProductReadService implements OnModuleInit {
                 }
             }
 
-            // [UPDATED] Xử lý Filter Tag
+            // Filter Tag (Redis TAG field vẫn hoạt động bình thường với chuỗi tagsString)
             if (query.tag) {
                 const cleanTag = this.escapeRediSearch(query.tag);
                 if (cleanTag) {
@@ -286,11 +285,9 @@ export class ProductReadService implements OnModuleInit {
                 }
             }
             
-            // Nếu chỉ có status thì không search RediSearch (trừ khi muốn list all, nhưng ở đây ta ưu tiên keyword/tag)
             const isValidSearch = query.search || query.tag;
 
             if (isValidSearch) {
-                // Return json
                 const searchRes: any = await this.redis.call(
                     'FT.SEARCH', 'idx:products', 
                     ftQuery,
@@ -319,7 +316,7 @@ export class ProductReadService implements OnModuleInit {
         }
     }
 
-    // --- LOGIC 2: DB FALLBACK (Nếu Redis lỗi hoặc chưa có data, hoặc query phức tạp khác) ---
+    // --- LOGIC 2: DB FALLBACK ---
     if (!resultData) {
         const where: Prisma.ProductWhereInput = {
             status: 'ACTIVE',
@@ -327,8 +324,15 @@ export class ProductReadService implements OnModuleInit {
             ...(query.categorySlug ? { category: { slug: query.categorySlug } } : {}),
             ...(query.minPrice ? { price: { gte: Number(query.minPrice) } } : {}),
             ...(query.maxPrice ? { price: { lte: Number(query.maxPrice) } } : {}),
-            // [UPDATED] Fallback filter cho Tag
-            ...(query.tag ? { systemTags: { has: query.tag } } : {}), 
+            
+            // [FIX] Fallback filter cho JSON Type (MySQL)
+            // Sử dụng 'string_contains' hoặc 'equals' tùy version Prisma
+            // Đây là cách "hack" phổ biến cho MySQL JSON array nếu chưa hỗ trợ array_contains đầy đủ
+            ...(query.tag ? { 
+                systemTags: { 
+                    string_contains: `"${query.tag}"` // Tìm chuỗi "tag" bên trong JSON Array
+                } 
+            } : {}),
         };
 
         const [products, total] = await Promise.all([
