@@ -13,6 +13,7 @@ import { DatabaseModule } from 'src/database/database.module';
 import { AdminOrderController } from './controllers/admin-order.controller';
 import { GhnModule } from '../ghn/ghn.module';
 import { PaymentModule } from '../payment/payment.module';
+import { ReviewService } from './review.service';
 @Module({
   imports: [
     DatabaseModule,
