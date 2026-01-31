@@ -39,36 +39,23 @@ export class ProductReadService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-        // Kiểm tra xem Index đã tồn tại chưa
-        const info = await this.redis.call('FT.INFO', INDEX_NAME).catch(() => null);
-
-        if (info) {
-            // TRƯỜNG HỢP 1: Index ĐÃ tồn tại
-            const infoStr = JSON.stringify(info);
-
-            // A. Kiểm tra Schema cũ (thiếu systemTags) -> Re-index
-            if (!infoStr.includes('systemTags')) {
-                this.logger.warn('⚠️ Old Index Schema detected. Dropping old index to update schema...');
-                await this.redis.call('FT.DROPINDEX', INDEX_NAME);
-                await this.createSearchIndex();
-            } else {
-                // B. [FIX QUAN TRỌNG] Index đã có, nhưng kiểm tra xem có dữ liệu bên trong không?
-                // Gọi search thử xem có document nào không
-                const searchCount: any = await this.redis.call('FT.SEARCH', INDEX_NAME, '*', 'LIMIT', '0', '0');
-                // searchCount[0] là tổng số kết quả tìm thấy
-                if (Array.isArray(searchCount) && searchCount[0] === 0) {
-                    this.logger.warn('⚠️ Index exists but NO products found. Force syncing...');
-                    await this.syncAllProductsToRedis();
-                }
-            }
-        } else {
-            // TRƯỜNG HỢP 2: Index CHƯA tồn tại (Lần chạy đầu tiên)
-            // [FIX] Phải gọi hàm tạo Index ở đây!
-            this.logger.log('⚠️ Index not found. Creating new Index...');
-            await this.createSearchIndex();
-        }
+      // [FIX QUAN TRỌNG] Kiểm tra Index cũ để Re-index
+      const info = await this.redis.call('FT.INFO', INDEX_NAME).catch(() => null);
+      
+      // Nếu Index đã tồn tại, kiểm tra xem nó có field systemTags chưa
+      if (info) {
+          const infoStr = JSON.stringify(info);
+          if (!infoStr.includes('systemTags')) {
+              this.logger.warn('⚠️ Old Index Schema detected. Dropping old index to update schema...');
+              await this.redis.call('FT.DROPINDEX', INDEX_NAME);
+              await this.createSearchIndex();
+          }
+      } else {
+          // Chưa có index thì tạo mới
+          await this.createSearchIndex();
+      }
     } catch (e: any) {
-        this.logger.error(`Init Index Error: ${e.message}`);
+      this.logger.error(`Init Index Error: ${e.message}`);
     }
   }
 
@@ -104,9 +91,7 @@ export class ProductReadService implements OnModuleInit {
             status: true, slug: true, images: true, originalPrice: true,
             systemTags: true 
         }
-        
-    }
-  );
+    });
 
     const pipeline = this.redis.pipeline();
     
@@ -307,15 +292,10 @@ export class ProductReadService implements OnModuleInit {
             if (query.search && query.search.trim().length > 0) {
                 const cleanKeyword = this.escapeRediSearch(query.search);
                 if (cleanKeyword) {
-                    // Xử lý Name (Prefix matching: valen* -> valentine)
-                    const nameTerms = cleanKeyword.split(/\s+/).filter(t => t.length > 0).map(t => `${t}*`).join(' ');
+                    const terms = cleanKeyword.split(/\s+/).filter(t => t.length > 0).map(t => `${t}*`).join(' ');
                     
-                    // [FIX] Xử lý Tags (Exact matching cho từng token: {valentine} | {gift})
-                    // Nếu muốn tìm chính xác cụm thì giữ nguyên, nhưng thường user muốn tìm lỏng hơn.
-                    const tagTerms = cleanKeyword.split(/\s+/).filter(t => t.length > 0).map(t => `{${t}}`).join(' | ');
-
-                    // Query: (Tên chứa các từ...) HOẶC (Tag chứa tag "nguyên cụm" HOẶC chứa "từng từ")
-                    ftQuery += ` (@name:(${nameTerms}) | @systemTags:{${cleanKeyword}} | @systemTags:(${tagTerms}))`;
+                    // Tìm trong Tên (Fuzzy) HOẶC SystemTags (Chính xác)
+                    ftQuery += ` (@name:(${terms}) | @systemTags:{${cleanKeyword}})`;
                 }
             }
 
