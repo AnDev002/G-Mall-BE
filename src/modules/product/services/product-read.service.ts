@@ -39,32 +39,35 @@ export class ProductReadService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-        // Kiểm tra xem Index đã tồn tại chưa
+        // 1. Kiểm tra xem Index đã tồn tại chưa
         const info = await this.redis.call('FT.INFO', INDEX_NAME).catch(() => null);
 
         if (info) {
-            // TRƯỜNG HỢP 1: Index ĐÃ tồn tại
+            // === TRƯỜNG HỢP A: Index ĐÃ TỒN TẠI ===
             const infoStr = JSON.stringify(info);
 
-            // A. Kiểm tra Schema cũ (thiếu systemTags) -> Re-index
+            // A1. Kiểm tra cấu trúc cũ (thiếu systemTags) -> Xóa đi tạo lại
             if (!infoStr.includes('systemTags')) {
-                this.logger.warn('⚠️ Old Index Schema detected. Dropping old index to update schema...');
+                this.logger.warn('⚠️ Old Index Schema detected. Re-creating index...');
                 await this.redis.call('FT.DROPINDEX', INDEX_NAME);
                 await this.createSearchIndex();
             } else {
-                // B. [FIX QUAN TRỌNG] Index đã có, nhưng kiểm tra xem có dữ liệu bên trong không?
-                // Gọi search thử xem có document nào không
+                // A2. Index đã đúng schema -> Kiểm tra xem có dữ liệu bên trong không?
+                // Dùng FT.SEARCH đếm số lượng doc (nhanh hơn scan keys)
                 const searchCount: any = await this.redis.call('FT.SEARCH', INDEX_NAME, '*', 'LIMIT', '0', '0');
-                // searchCount[0] là tổng số kết quả tìm thấy
+                
+                // searchCount[0] là tổng số kết quả. Nếu = 0 tức là Index rỗng -> Sync lại
                 if (Array.isArray(searchCount) && searchCount[0] === 0) {
-                    this.logger.warn('⚠️ Index exists but NO products found. Force syncing...');
+                    this.logger.warn('⚠️ Index exists but EMPTY (0 docs). Force syncing data...');
                     await this.syncAllProductsToRedis();
+                } else {
+                    this.logger.log('✅ Index check passed. Ready to search.');
                 }
             }
         } else {
-            // TRƯỜNG HỢP 2: Index CHƯA tồn tại (Lần chạy đầu tiên)
-            // [FIX] Phải gọi hàm tạo Index ở đây!
-            this.logger.log('⚠️ Index not found. Creating new Index...');
+            // === TRƯỜNG HỢP B: Index CHƯA TỒN TẠI ===
+            // (Code cũ của bạn bị thiếu đoạn này nên Index không bao giờ được tạo)
+            this.logger.warn('⚠️ Index not found. Creating new Index...');
             await this.createSearchIndex();
         }
     } catch (e: any) {
