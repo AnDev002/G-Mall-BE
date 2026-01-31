@@ -688,7 +688,7 @@ export class AdminUsersService {
 
     // 4. Tracking hành động của Admin
     await this.trackingService.trackEvent(adminId, 'admin-action', {
-      type: 'DELETE_USER',
+      type: EventType.DELETE_USER,
       targetId: userId,
       metadata: { email: user.email, role: user.role }
     });
