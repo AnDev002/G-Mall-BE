@@ -123,22 +123,19 @@ export class ProductReadService implements OnModuleInit {
   }
 
   private async createSearchIndex() {
-    try {
-      await this.redis.call(
-          'FT.CREATE', INDEX_NAME, 
-          'ON', 'HASH', 
-          'PREFIX', '1', 'product:', 
-          'SCHEMA', 
-          'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', 
-          'slug', 'TEXT', 'NOSTEM', 
-          'price', 'NUMERIC', 'SORTABLE',
-          'salesCount', 'NUMERIC', 'SORTABLE',
-          'rating', 'NUMERIC', 'SORTABLE', // Đảm bảo rating sortable
-          'createdAt', 'NUMERIC', 'SORTABLE', // [MỚI] Thêm createdAt để sort Mới nhất
-          'status', 'TAG',
-          'location', 'TAG',
-          'systemTags', 'TAG' 
-      );
+      try {
+        await this.redis.call(
+            'FT.CREATE', INDEX_NAME, 
+            'ON', 'HASH', 
+            'PREFIX', '1', 'product:', 
+            'SCHEMA', 
+            'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', 
+            'slug', 'TEXT', 'NOSTEM', 
+            'price', 'NUMERIC', 'SORTABLE',
+            'salesCount', 'NUMERIC', 'SORTABLE',
+            'status', 'TAG',
+            'systemTags', 'TAG' // Mặc định Separator là dấu phẩy
+        );
         this.logger.log('✅ RediSearch Index created');
         this.logger.log('🔄 Auto-syncing products to Redis...');
         await this.syncAllProductsToRedis();
@@ -157,7 +154,7 @@ export class ProductReadService implements OnModuleInit {
                 id: true, name: true, price: true, salesCount: true, 
                 status: true, slug: true, images: true, originalPrice: true,
                 systemTags: true, rating: true,
-                createdAt: true,
+                // [UPDATE] Lấy thêm các trường địa chỉ để fallback
                 shop: { select: { city: true, pickupAddress: true, address: true } } 
             }
         });
@@ -205,8 +202,7 @@ export class ProductReadService implements OnModuleInit {
                 id: p.id,
                 slug: p.slug,
                 json: frontendJson,
-                systemTags: tagsString,
-                createdAt: new Date(p.createdAt).getTime(),
+                systemTags: tagsString 
             });
 
             const score = p.salesCount > 0 ? p.salesCount : 1;
@@ -261,40 +257,24 @@ export class ProductReadService implements OnModuleInit {
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    // --- XỬ LÝ SẮP XẾP (SORT) ---
-    let sortByField = 'salesCount';
-    let sortDirection = 'DESC';
-    let dbOrderBy: any = { salesCount: 'desc' };
+    // 1. Check Cache kết quả (Giảm tải)
+    const queryHash = createHash('md5').update(JSON.stringify(query)).digest('hex');
+    const cacheKey = `search:res:${queryHash}`;
+    
+    // Lưu ý: Tạm thời tắt Cache get để debug cho ra lỗi
+    // if ((!query.search || query.search.length < 2) && !query.tag) {
+    //     const cached = await this.redis.get(cacheKey);
+    //     if (cached) return JSON.parse(cached);
+    // }
 
-    switch (query.sort) {
-        case 'newest':
-            sortByField = 'createdAt';
-            sortDirection = 'DESC';
-            dbOrderBy = { createdAt: 'desc' };
-            break;
-        case 'price_asc':
-            sortByField = 'price';
-            sortDirection = 'ASC';
-            dbOrderBy = { price: 'asc' };
-            break;
-        case 'price_desc':
-            sortByField = 'price';
-            sortDirection = 'DESC';
-            dbOrderBy = { price: 'desc' };
-            break;
-        case 'sales':
-        default:
-            sortByField = 'salesCount';
-            sortDirection = 'DESC';
-            dbOrderBy = { salesCount: 'desc' };
-            break;
-    }
-
+    let resultData: any = null;
     const searchKeyword = query.search ? query.search.trim() : '';
 
-    // --- BƯỚC 1: REDIS SEARCH (Ưu tiên) ---
-    if (true) { 
+    // --- BƯỚC 1: THỬ TÌM BẰNG REDIS SEARCH ---
+    if (searchKeyword.length > 0 || query.tag) {
         try {
+            this.logger.log(`🔎 [Redis] Searching for: "${searchKeyword}"`);
+            
             let ftQuery = `@status:{ACTIVE}`;
             const conditions: string[] = [];
 
@@ -310,142 +290,121 @@ export class ProductReadService implements OnModuleInit {
                 if (cleanTagKw) {
                     conditions.push(`@systemTags:{${cleanTagKw}}`);
                 }
-                
-                if (conditions.length > 0) ftQuery += ` (${conditions.join(' | ')})`;
             }
-
-            if (query.tag) {
-                const cleanTag = this.sanitizeTagKeyword(query.tag);
-                ftQuery += ` @systemTags:{${cleanTag}}`;
-            }
-
-            if (query.minPrice !== undefined || query.maxPrice !== undefined) {
-                const min = query.minPrice !== undefined ? query.minPrice : '-inf';
-                const max = query.maxPrice !== undefined ? query.maxPrice : '+inf';
-                ftQuery += ` @price:[${min} ${max}]`;
-            }
-
-            if (query.rating) {
-                ftQuery += ` @rating:[${query.rating} +inf]`;
-            }
-
-            if (query.locations && query.locations.length > 0) {
-                const locStr = query.locations.map(l => this.sanitizeTagKeyword(l)).join(' | ');
-                ftQuery += ` @location:{${locStr}}`;
-            }
+            
+            if (conditions.length > 0) ftQuery += ` (${conditions.join(' | ')})`;
 
             // Gọi Redis
             const searchRes: any = await this.redis.call(
                 'FT.SEARCH', INDEX_NAME, 
                 ftQuery,
                 'LIMIT', skip, limit,
-                'SORTBY', sortByField, sortDirection, 
+                'SORTBY', 'salesCount', 'DESC', 
                 'RETURN', '1', 'json' 
             );
 
             const total = searchRes[0];
-            
-            // Format kết quả từ Redis
-            const products: any[] = [];
-            for (let i = 1; i < searchRes.length; i += 2) {
-                const fields = searchRes[i + 1];
-                if (fields && fields.length >= 2) {
-                    const jsonStr = fields[fields.indexOf('json') + 1];
-                    if(jsonStr) products.push(JSON.parse(jsonStr));
-                }
-            }
-            
-            return {
-                data: products,
-                meta: { total, page, limit, last_page: Math.ceil(total / limit) },
-            };
+            this.logger.log(`✅ [Redis] Found ${total} items`);
 
+            if (total > 0) {
+                const products: any[] = [];
+                for (let i = 1; i < searchRes.length; i += 2) {
+                    const fields = searchRes[i + 1];
+                    if (fields && fields.length >= 2) {
+                        const jsonStr = fields[fields.indexOf('json') + 1];
+                        if(jsonStr) products.push(JSON.parse(jsonStr));
+                    }
+                }
+                resultData = {
+                    data: products,
+                    meta: { total, page, limit, last_page: Math.ceil(total / limit) },
+                };
+            }
         } catch (e: any) {
-            this.logger.error(`❌ [Redis] Error: ${e.message} -> Switching to DB Fallback`);
+            this.logger.error(`❌ [Redis] Error (Will Fallback): ${e.message}`);
+            // Không return, để nó chạy xuống Fallback DB
         }
     }
 
-    // --- BƯỚC 2: DB FALLBACK (Prisma findMany) ---
-    // [FIX] Sửa lỗi Type: Bỏ qua filter systemTags trong DB Fallback vì JSON không support 'contains'
-    this.logger.warn(`⚠️ [DB Fallback] Executing Prisma Query`);
+    // --- BƯỚC 2: FALLBACK DATABASE (RAW SQL) ---
+    // Nếu Redis không có dữ liệu HOẶC bị lỗi -> Tìm trong MySQL
+    if (!resultData || resultData.data.length === 0) {
+        this.logger.warn(`⚠️ [DB Fallback] Executing Raw SQL for: "${searchKeyword}"`);
 
-    const where: Prisma.ProductWhereInput = {
-        status: 'ACTIVE',
-    };
+        // Chuẩn bị keyword cho LIKE SQL
+        // 1. Keyword gốc: "Bé gái"
+        const rawKeyword = `%${searchKeyword}%`;
+        // 2. Keyword URL Encoded (để bắt dính dữ liệu bẩn): "%B%C3%A9%20g%C3%A1i%"
+        const encodedKeyword = `%${encodeURIComponent(searchKeyword)}%`;
+        const where: Prisma.ProductWhereInput = { status: 'ACTIVE' };
+        if (query.locations && query.locations.length > 0) {
+            where.shop = {
+                OR: [
+                    // Nếu đã thêm cột city
+                    { city: { in: query.locations } },
+                    // Fallback: Tìm trong address (kém chính xác hơn nhưng chạy được với schema cũ)
+                    ...query.locations.map(loc => ({
+                        pickupAddress: { contains: loc }
+                    }))
+                ]
+            };
+        }
+        try {
+            // Dùng Raw Query để "ép" MySQL tìm trong chuỗi JSON text
+            const products = await this.prisma.$queryRaw<any[]>`
+                SELECT id, name, price, slug, images, salesCount, originalPrice 
+                FROM Product 
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
+                ORDER BY salesCount DESC
+                LIMIT ${limit} OFFSET ${skip}
+            `;
+            
+            // Đếm tổng số lượng (cho phân trang)
+            const countResult = await this.prisma.$queryRaw<any[]>`
+                SELECT COUNT(*) as total
+                FROM Product 
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
+            `;
 
-    // 1. Search Text: Chỉ tìm theo tên để tránh lỗi JSON
-    if (searchKeyword) {
-        where.name = { contains: searchKeyword }; 
+            const total = Number(countResult[0]?.total || 0);
+            this.logger.log(`✅ [DB Fallback] Found ${total} items via SQL Raw`);
+
+            resultData = {
+                data: products.map(p => ({
+                    ...p,
+                    price: Number(p.price),
+                    originalPrice: Number(p.originalPrice || 0),
+                    images: typeof p.images === 'string' ? JSON.parse(p.images) : p.images, // Fix nếu Raw trả về string
+                })),
+                meta: {
+                    total,
+                    page,
+                    limit,
+                    last_page: Math.ceil(total / limit),
+                },
+            };
+        } catch (dbErr) {
+            this.logger.error(`❌ [DB Fallback] Error: ${dbErr}`);
+            return { data: [], meta: { total: 0, page, limit, last_page: 0 } };
+        }
     }
 
-    // 2. Filter Tag: Bỏ qua trong DB Fallback để tránh lỗi Type (Redis đã handle rồi)
-    // if (query.tag) { ... }
-
-    // 3. Filter Price
-    if (query.minPrice !== undefined || query.maxPrice !== undefined) {
-        where.price = {};
-        if (query.minPrice !== undefined) where.price.gte = query.minPrice;
-        if (query.maxPrice !== undefined) where.price.lte = query.maxPrice;
-    }
-
-    // 4. Filter Rating
-    if (query.rating) {
-        where.rating = { gte: query.rating };
-    }
-
-    // 5. Filter Locations
-    if (query.locations && query.locations.length > 0) {
-        where.shop = {
-            OR: [
-                { city: { in: query.locations } },
-                ...query.locations.map(loc => ({
-                    pickupAddress: { contains: loc }
-                }))
-            ]
-        };
+    // Cache lại kết quả DB nếu tìm thấy
+    if (resultData?.data?.length > 0 && !query.search) {
+        await this.redis.set(cacheKey, JSON.stringify(resultData), 'EX', 60);
     }
     
-    // [FIX THÊM] Filter theo Category Slug nếu có (Frontend có gửi lên)
-    if (query.categorySlug) {
-        where.category = { slug: query.categorySlug };
-    }
-
-    const [products, total] = await Promise.all([
-        this.prisma.product.findMany({
-            where,
-            take: limit,
-            skip,
-            orderBy: dbOrderBy,
-            // Include các field cần thiết
-            include: { 
-                 shop: { select: { city: true } }
-            } 
-        }),
-        this.prisma.product.count({ where })
-    ]);
-
-    // Format dữ liệu đầu ra cho giống Redis JSON
-    const formattedData = products.map(p => ({
-        id: p.id,
-        name: p.name,
-        slug: p.slug,
-        price: Number(p.price),
-        originalPrice: Number(p.originalPrice || 0),
-        images: Array.isArray(p.images) ? p.images : [], 
-        salesCount: p.salesCount || 0,
-        rating: Number(p.rating || 0),
-        location: p.shop?.city || 'Khác' // Map location từ shop city
-    }));
-
-    return {
-        data: formattedData,
-        meta: {
-            total,
-            page,
-            limit,
-            last_page: Math.ceil(total / limit),
-        },
-    };
+    return resultData || { data: [], meta: { total: 0, page: 1, limit, last_page: 0 } };
   }
 
   // ===========================================================================
