@@ -186,15 +186,34 @@ export class ProductWriteService {
 
   // --- 2. Approve (Giữ nguyên) ---
   async approveProduct(productId: string, status: 'ACTIVE' | 'REJECTED', reason?: string) {
+    // 1. Cập nhật DB
     const updatedProduct = await this.prisma.product.update({
       where: { id: productId },
       data: {
         status: status,
         rejectReason: status === 'REJECTED' ? reason : null
+      },
+      // [QUAN TRỌNG] Include đủ thông tin để Sync sang Redis không bị lỗi (ảnh, shop, v.v.)
+      include: {
+        shop: { select: { id: true, name: true, avatar: true } },
+        variants: true,
       }
     });
 
+    // 2. Xóa Cache chi tiết (để khi click vào xem chi tiết sẽ load lại data mới)
     await this.productCache.invalidateProduct(productId);
+
+    // [QUAN TRỌNG] 3. Nếu là ACTIVE, phải đồng bộ ngay sang Redis Search Index
+    if (status === 'ACTIVE') {
+        // Gọi hàm sync có sẵn bên ReadService
+        await this.productReadService.syncProductToRedis(updatedProduct);
+    } else if (status === 'REJECTED') {
+        // Nếu từ chối, có thể xóa khỏi Index (nếu trước đó lỡ có) hoặc update status
+        // Hàm syncProductToRedis cũng sẽ update status thành REJECTED trong Redis,
+        // giúp bộ lọc @status:{ACTIVE} của FT.SEARCH tự động loại bỏ nó.
+        await this.productReadService.syncProductToRedis(updatedProduct);
+    }
+
     return updatedProduct;
   }
 
@@ -202,7 +221,8 @@ export class ProductWriteService {
     if (!ids || ids.length === 0) return { count: 0 };
 
     // 1. Cập nhật DB
-    const result = await this.prisma.product.updateMany({
+    // Lưu ý: updateMany không trả về record, nên ta phải update xong rồi query lại
+    await this.prisma.product.updateMany({
       where: { id: { in: ids } },
       data: {
         status: status,
@@ -210,11 +230,24 @@ export class ProductWriteService {
       }
     });
 
-    // 2. Invalidate Cache cho từng sản phẩm (Đã sửa lỗi bất đồng bộ)
-    // [GENIUS FIX] Dùng Promise.all để chờ tất cả cache được xóa xong
-    await Promise.all(ids.map(id => this.productCache.invalidateProduct(id)));
+    // 2. Lấy danh sách các sản phẩm vừa update để sync Redis
+    const products = await this.prisma.product.findMany({
+        where: { id: { in: ids } },
+        include: {
+            shop: { select: { id: true, name: true, avatar: true } }
+        }
+    });
 
-    return result;
+    // 3. Thực hiện Sync và Invalidate Cache song song
+    await Promise.all(products.map(async (product) => {
+        // Invalidate cache chi tiết
+        await this.productCache.invalidateProduct(product.id);
+        
+        // Sync sang Redis Search
+        await this.productReadService.syncProductToRedis(product);
+    }));
+
+    return { count: ids.length };
   }
 
   // --- 3. Update (Updated for Shop Module) ---
