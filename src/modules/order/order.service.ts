@@ -385,7 +385,9 @@ export class OrderService {
     
     // Bắt đầu Transaction tạo đơn hàng loạt
     const result = await this.prisma.$transaction(async (tx) => {
-      const createdOrders = [];
+      // [FIX QUAN TRỌNG] Khai báo kiểu Order[] để tránh lỗi 'never'
+      const createdOrders: Order[] = []; 
+      
       const receiver = dto.receiverInfo || {};
 
       // A. Xử lý Voucher (Chung cho cả giao dịch)
@@ -432,15 +434,6 @@ export class OrderService {
       }
 
       // C. TẠO ĐƠN HÀNG RIÊNG CHO TỪNG SHOP
-      // Lưu ý: Discount (Coin/Voucher) đang được tính trên tổng. 
-      // Để đơn giản, ta sẽ lưu totalAmount của từng đơn con = (Subtotal + Ship). 
-      // Việc chia discount vào từng đơn con khá phức tạp (cần chia tỉ lệ), ở đây ta tạm thời chấp nhận
-      // tổng các đơn con sẽ > số tiền khách phải trả thực tế (nếu có discount).
-      // HOẶC: Bạn chia đều discount cho các đơn.
-      
-      // Cách đơn giản nhất: Lưu order con đúng giá trị thực của nó, 
-      // và logic Payment sẽ lấy con số `grandTotal` từ preview để thanh toán.
-
       for (const shopOrder of preview.orders) {
           // C.1. Trừ kho sản phẩm
           for (const item of shopOrder.items) {
@@ -455,7 +448,6 @@ export class OrderService {
           const newOrder = await tx.order.create({
             data: {
               userId,
-              // Lưu ý: Đây là total của riêng Shop này (chưa trừ voucher chung)
               totalAmount: shopOrder.total, 
               shippingFee: shopOrder.shippingFee,
               
@@ -467,8 +459,8 @@ export class OrderService {
 
               paymentMethod: dto.paymentMethod,
               paymentStatus: 'PENDING',
-
-              // Nếu schema Order có trường shopId thì bỏ comment dòng dưới
+              
+              // Nếu bạn có cột shopId trong bảng Order thì bỏ comment dòng dưới:
               // shopId: shopOrder.shopId, 
 
               items: {
@@ -482,7 +474,7 @@ export class OrderService {
             }
           });
           
-          createdOrders.push(newOrder);
+          createdOrders.push(newOrder); // Hết lỗi vì mảng đã có kiểu Order[]
       }
 
       // D. Dọn giỏ hàng
@@ -493,20 +485,15 @@ export class OrderService {
 
     // --- [GHN & PAYMENT INTEGRATION] ---
     
-    // 1. GHN: Phải tạo đơn vận chuyển cho TỪNG đơn hàng con (vì mỗi shop gửi 1 gói)
-    // Chỉ tạo nếu là COD. Nếu Online Payment thì đợi webhook success mới tạo.
+    // 1. GHN: Phải tạo đơn vận chuyển cho TỪNG đơn hàng con
     if (dto.paymentMethod === 'cod') {
+        // TypeScript giờ đã hiểu 'result' là mảng Order[] nên không báo lỗi property nữa
         for (const order of result) {
-            // Tìm thông tin preview tương ứng để lấy weight
-            // (Do result đã lưu vào DB, ta cần map lại items để lấy weight hoặc lấy từ preview cũ)
-            // Cách nhanh: Tìm trong preview.orders xem order nào khớp items (đơn giản hóa bằng cách loop tương ứng index)
-            // Tuy nhiên result và preview.orders cùng thứ tự loop nên có thể dùng index.
-            
-            const matchingPreview = preview.orders.find(o => 
-                o.items.some((i: any) => i.productId === order.items[0]?.productId) // Tìm tạm bằng sp đầu tiên
-            ); // Hoặc dùng index nếu chắc chắn thứ tự transaction không đổi.
-
-            if (!matchingPreview) continue;
+            // Tìm thông tin weight từ preview cũ để gửi sang GHN (dùng index cho nhanh)
+            const index = result.findIndex(o => o.id === order.id);
+            // Dùng optional chaining (?.) để tránh lỗi nếu index không khớp
+            const weight = preview.orders[index]?.weight || 200; 
+            const items = preview.orders[index]?.items || [];
 
             try {
                 const ghnOrderData = {
@@ -515,9 +502,9 @@ export class OrderService {
                     to_address: order.recipientAddress,
                     to_ward_code: dto.receiverInfo['wardCode'],
                     to_district_id: Number(dto.receiverInfo['districtId']),
-                    cod_amount: Math.floor(Number(order.totalAmount)), // Thu hộ số tiền của đơn này
-                    weight: matchingPreview.weight || 200,
-                    items: matchingPreview.items.map((i: any) => ({
+                    cod_amount: Math.floor(Number(order.totalAmount)), 
+                    weight: weight,
+                    items: items.map((i: any) => ({
                         name: i.name,
                         code: i.productId,
                         quantity: i.quantity,
@@ -545,12 +532,8 @@ export class OrderService {
     let paymentUrl: any = null;
     if (dto.paymentMethod === 'pay2s') {
         try {
-            // Pay2S thường chỉ nhận 1 Transaction ID. 
-            // Ta sẽ dùng ID của đơn hàng ĐẦU TIÊN làm "Key" đại diện, 
-            // nhưng số tiền thanh toán là TỔNG CỘNG (grandTotal).
-            
-            const representativeOrderId = result[0].id; // Đơn đại diện
-            const totalToPay = preview.summary.total;   // Tổng tiền phải trả (đã trừ coin/voucher)
+            const representativeOrderId = result[0].id; // Lấy ID đơn đầu tiên làm đại diện
+            const totalToPay = preview.summary.total;   // Tổng tiền user phải trả
 
             paymentUrl = await this.paymentService.createPay2SPayment(
                 representativeOrderId, 
@@ -561,15 +544,14 @@ export class OrderService {
         }
     }
 
-    // Tracking
     this.trackingService.trackEvent(userId, 'server', {
       type: EventType.PURCHASE,
-      targetId: result[0].id, // Track ID đại diện
+      targetId: result[0].id, 
       metadata: { revenue: preview.summary.total, orderCount: result.length }
     });
 
     return {
-        orders: result, // Trả về mảng các đơn hàng đã tạo
+        orders: result, 
         paymentUrl 
     };
   }
