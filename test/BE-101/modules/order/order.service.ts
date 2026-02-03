@@ -6,7 +6,7 @@ import { TrackingService } from '../../modules/tracking/tracking.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EventType } from '../../modules/tracking/dto/track-event.dto';
 import { PointService } from '../../modules/point/point.service';
-import { OrderStatus, PointType, Prisma, Order } from '@prisma/client';
+import { OrderStatus, PointType, Prisma } from '@prisma/client';
 import { GhnService } from '../../modules/ghn/ghn.service';
 import { PaymentService } from '../payment/payment.service';
 
@@ -26,19 +26,6 @@ export class OrderService {
     private ghnService: GhnService,
     private paymentService: PaymentService
   ) {}
-
-  private groupItemsByShop(items: any[]) {
-    return items.reduce((groups, item) => {
-      const shopId = item.shopId; // Đảm bảo resolveItems trả về shopId
-      if (!groups[shopId]) {
-        groups[shopId] = { shopId, shopName: item.shopName, items: [], weight: 0, subtotal: 0 };
-      }
-      groups[shopId].items.push(item);
-      groups[shopId].weight += item.weight;
-      groups[shopId].subtotal += item.subtotal;
-      return groups;
-    }, {});
-  }
 
   // --- HELPER: Lấy items và check tồn kho & tính khối lượng ---
   private async resolveItems(userId: string, dto: CreateOrderDto) {
@@ -74,8 +61,6 @@ export class OrderService {
           price: true, 
           originalPrice: true, 
           stock: true, 
-          shopId: true, // [NEW] Lấy Shop ID
-          shop: { select: { name: true } }, // [NEW] Lấy tên Shop
           weight: true,
           images: true,        
           variants: true       
@@ -125,8 +110,7 @@ export class OrderService {
         productVariantId: item.productVariantId, 
         name: product.name,
         imageUrl: finalImageUrl, 
-        shopId: product.shopId,     // [NEW]
-        shopName: product.shop?.name, // [NEW]
+        
         price: finalPrice,
         originalPrice: product.originalPrice ? Number(product.originalPrice) : undefined, 
         
@@ -145,59 +129,29 @@ export class OrderService {
 
   // --- 1. TÍNH TOÁN GIÁ & PHÍ SHIP (Preview) ---
   async previewOrder(userId: string, dto: CreateOrderDto) {
-    const { finalItems } = await this.resolveItems(userId, dto);
+    const { finalItems, subtotal } = await this.resolveItems(userId, dto);
 
-    // 1. Group sản phẩm theo Shop
-    const shopGroups = this.groupItemsByShop(finalItems);
+    // [GHN UPDATE] Tính tổng khối lượng đơn hàng
+    const totalWeight = finalItems.reduce((sum, item) => sum + item.weight, 0);
+
+    // [GHN UPDATE] Tính phí ship động
+    let shippingFee = 30000; // Giá fallback
     const receiver = dto.receiverInfo;
-    
-    // Mảng chứa các đơn hàng con (mỗi shop 1 đơn)
-    const ordersPreview: any[] = [];
-    
-    let totalShippingFee = 0;
-    let totalSubtotal = 0;
-    let totalWeightAll = 0;
 
-    // 2. Duyệt qua từng Shop để tính toán riêng biệt
-    for (const shopId in shopGroups) {
-        const group = shopGroups[shopId];
-        
-        // [GHN UPDATE] Tính phí ship động cho TỪNG SHOP
-        let shippingFee = 30000; // Giá fallback mặc định
-        
-        if (receiver && receiver['districtId'] && receiver['wardCode']) {
-             try {
-                // NOTE: Thực tế bạn nên lấy địa chỉ kho của Shop (group.shopId) để làm `fromDistrictId`
-                // Ở đây tạm thời dùng logic cũ tính theo cân nặng
-                shippingFee = await this.ghnService.calculateFee({
-                    toDistrictId: Number(receiver['districtId']),
-                    toWardCode: String(receiver['wardCode']),
-                    weight: group.weight, // Chỉ tính cân nặng của hàng trong shop này
-                    insuranceValue: group.subtotal
-                });
-            } catch (error) {
-                this.logger.warn(`Không thể tính phí GHN cho shop ${group.shopName}, dùng phí mặc định`);
-            }
+    // Yêu cầu DTO receiverInfo phải có districtId và wardCode (được gửi từ Frontend)
+    if (receiver && receiver['districtId'] && receiver['wardCode']) {
+        try {
+            shippingFee = await this.ghnService.calculateFee({
+                toDistrictId: Number(receiver['districtId']),
+                toWardCode: String(receiver['wardCode']),
+                weight: totalWeight,
+                insuranceValue: subtotal // Khai báo giá trị để tính bảo hiểm
+            });
+        } catch (error) {
+            this.logger.warn('Không thể tính phí GHN, dùng phí mặc định', error);
         }
-
-        const shopOrderTotal = group.subtotal + shippingFee;
-
-        ordersPreview.push({
-            shopId: group.shopId,
-            shopName: group.shopName,
-            items: group.items,
-            subtotal: group.subtotal,
-            shippingFee: shippingFee,
-            total: shopOrderTotal,
-            weight: group.weight
-        });
-
-        totalShippingFee += shippingFee;
-        totalSubtotal += group.subtotal;
-        totalWeightAll += group.weight;
     }
 
-    // 3. Tính Phí Quà Tặng (Nếu có, áp dụng 1 lần hoặc chia đều - ở đây làm đơn giản là cộng vào tổng)
     let giftFee = 0;
     if (dto.isGift) {
       const wrapPrice = GIFT_WRAP_PRICES[dto.giftWrapIndex || 0] || 0;
@@ -205,39 +159,37 @@ export class OrderService {
       giftFee = wrapPrice + cardPrice;
     }
 
-    // 4. Tính Voucher & Coin (Áp dụng trên TỔNG TOÀN BỘ ĐƠN HÀNG)
     const { totalDiscount, appliedVouchers } = await this.promotionService.validateAndCalculateVouchers(
       dto.voucherIds || [],
-      totalSubtotal,
+      subtotal,
       finalItems
     );
 
     let coinDiscount = 0;
     if (dto.useCoins) {
+        // Lấy ví điểm của user
         const wallet = await this.prisma.pointWallet.findUnique({ where: { userId } });
         const userPoints = wallet?.balance || 0;
+        
+        // Logic: Dùng tối đa 1000 xu HOẶC dùng hết số xu đang có nếu ít hơn 1000
+        // Ví dụ: Có 500 xu -> coinDiscount = 500. Có 2000 xu -> coinDiscount = 1000.
         coinDiscount = Math.min(userPoints, 1000); 
     }
 
-    // 5. Tổng thanh toán cuối cùng (Subtotal các shop + Ship các shop + Gift - Discount)
-    const grandTotal = Math.max(0, totalSubtotal + totalShippingFee + giftFee - totalDiscount - coinDiscount);
+    // Đảm bảo không âm
+    const total = Math.max(0, subtotal + shippingFee + giftFee - totalDiscount - coinDiscount);
 
     return {
-      orders: ordersPreview, // Trả về danh sách đơn lẻ để FE hiển thị nếu cần
-      summary: {
-        subtotal: totalSubtotal,
-        shippingFee: totalShippingFee,
-        giftFee,
-        discounts: {
-            voucher: totalDiscount,
-            coin: coinDiscount 
-        },
-        total: grandTotal
+      items: finalItems,
+      subtotal,
+      shippingFee,
+      giftFee,
+      discounts: {
+        voucher: totalDiscount,
+        coin: coinDiscount 
       },
-      appliedVouchers,
-      // Giữ lại các field cũ để tương thích ngược nếu cần
-      items: finalItems, 
-      total: grandTotal 
+      appliedVouchers, 
+      total
     };
   }
 
@@ -382,13 +334,17 @@ export class OrderService {
   // --- 2. TẠO ORDER ---
   async createOrder(userId: string, dto: CreateOrderDto) {
     const preview = await this.previewOrder(userId, dto);
-    
-    // Bắt đầu Transaction tạo đơn hàng loạt
-    const result = await this.prisma.$transaction(async (tx) => {
-      const createdOrders = [];
-      const receiver = dto.receiverInfo || {};
+    const order = await this.prisma.$transaction(async (tx) => {
+      // A. Trừ kho
+      for (const item of preview.items) {
+        const update = await tx.product.updateMany({
+          where: { id: item.productId, stock: { gte: item.quantity } },
+          data: { stock: { decrement: item.quantity } }
+        });
+        if (update.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} vừa hết hàng.`);
+      }
 
-      // A. Xử lý Voucher (Chung cho cả giao dịch)
+      // B. Xử lý Voucher
       if (preview.appliedVouchers.length > 0) {
         for (const voucher of preview.appliedVouchers) {
           const vUpdate = await tx.voucher.updateMany({
@@ -408,168 +364,137 @@ export class OrderService {
         }
       }
 
-      // B. Xử lý Trừ Xu (Chung cho cả giao dịch)
-      if (dto.useCoins && preview.summary.discounts.coin > 0) {
-        const amountToDeduct = preview.summary.discounts.coin;
+      // C. Lưu Order vào DB
+      const receiver = dto.receiverInfo || {};
+      
+      const newOrder = await tx.order.create({
+        data: {
+          userId,
+          totalAmount: preview.total,
+          shippingFee: preview.shippingFee, // Lưu phí ship GHN vào DB
+          
+          recipientName: receiver.name || dto.senderInfo?.name,
+          recipientPhone: receiver.phone || dto.senderInfo?.phone,
+          recipientAddress: receiver.address || receiver.fullAddress,
+          message: dto.isGift ? 'Gửi tặng món quà ý nghĩa' : null,
+          isGift: dto.isGift || false,
+
+          paymentMethod: dto.paymentMethod,
+          paymentStatus: 'PENDING',
+
+          items: {
+            create: preview.items.map(i => ({
+              productId: i.productId,
+              quantity: i.quantity,
+              price: i.price
+            }))
+          },
+          voucherId: preview.appliedVouchers[0]?.id || null,
+        }
+      });
+
+      if (!dto.isBuyNow) await this.cartService.clearCart(userId);
+
+      // D. Trừ Xu
+      if (dto.useCoins && preview.discounts.coin > 0) {
+        // [FIX] Lấy số lượng xu cần trừ từ kết quả preview (vd: 500)
+        const amountToDeduct = preview.discounts.coin;
+
         const wallet = await tx.pointWallet.findUnique({ where: { userId } });
         
+        // Check xem có đủ số xu dự kiến không (thường là đủ vì đã tính ở preview)
         if (!wallet || wallet.balance < amountToDeduct) {
-            throw new BadRequestException(`Không đủ xu.`);
+            throw new BadRequestException(`Không đủ xu. Bạn có ${wallet?.balance || 0}, cần ${amountToDeduct}.`);
         }
+            
         await tx.pointWallet.update({
             where: { userId },
-            data: { balance: { decrement: amountToDeduct } }
+            data: { balance: { decrement: amountToDeduct } } // [FIX] Trừ đúng số amountToDeduct
         });
+            
         await tx.pointHistory.create({
             data: {
                 userId,
-                amount: -amountToDeduct,
+                amount: -amountToDeduct, // [FIX] Lưu log đúng số tiền trừ
                 type: PointType.SPEND_ORDER,
                 source: 'ORDER',
-                description: `Dùng ${amountToDeduct} xu cho đơn hàng multi-shop`
+                description: `Dùng ${amountToDeduct} xu giảm giá đơn hàng`
             }
         });
       }
 
-      // C. TẠO ĐƠN HÀNG RIÊNG CHO TỪNG SHOP
-      // Lưu ý: Discount (Coin/Voucher) đang được tính trên tổng. 
-      // Để đơn giản, ta sẽ lưu totalAmount của từng đơn con = (Subtotal + Ship). 
-      // Việc chia discount vào từng đơn con khá phức tạp (cần chia tỉ lệ), ở đây ta tạm thời chấp nhận
-      // tổng các đơn con sẽ > số tiền khách phải trả thực tế (nếu có discount).
-      // HOẶC: Bạn chia đều discount cho các đơn.
-      
-      // Cách đơn giản nhất: Lưu order con đúng giá trị thực của nó, 
-      // và logic Payment sẽ lấy con số `grandTotal` từ preview để thanh toán.
-
-      for (const shopOrder of preview.orders) {
-          // C.1. Trừ kho sản phẩm
-          for (const item of shopOrder.items) {
-            const update = await tx.product.updateMany({
-              where: { id: item.productId, stock: { gte: item.quantity } },
-              data: { stock: { decrement: item.quantity } }
-            });
-            if (update.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} vừa hết hàng.`);
-          }
-
-          // C.2. Tạo Record Order
-          const newOrder = await tx.order.create({
-            data: {
-              userId,
-              // Lưu ý: Đây là total của riêng Shop này (chưa trừ voucher chung)
-              totalAmount: shopOrder.total, 
-              shippingFee: shopOrder.shippingFee,
-              
-              recipientName: receiver.name || dto.senderInfo?.name,
-              recipientPhone: receiver.phone || dto.senderInfo?.phone,
-              recipientAddress: receiver.address || receiver.fullAddress,
-              message: dto.isGift ? 'Quà tặng' : null,
-              isGift: dto.isGift || false,
-
-              paymentMethod: dto.paymentMethod,
-              paymentStatus: 'PENDING',
-
-              // Nếu schema Order có trường shopId thì bỏ comment dòng dưới
-              // shopId: shopOrder.shopId, 
-
-              items: {
-                create: shopOrder.items.map((i: any) => ({
-                  productId: i.productId,
-                  quantity: i.quantity,
-                  price: i.price
-                }))
-              },
-              voucherId: preview.appliedVouchers[0]?.id || null,
-            }
-          });
-          
-          createdOrders.push(newOrder);
-      }
-
-      // D. Dọn giỏ hàng
-      if (!dto.isBuyNow) await this.cartService.clearCart(userId);
-
-      return createdOrders;
+      return newOrder;
     });
 
-    // --- [GHN & PAYMENT INTEGRATION] ---
+    // --- [GHN INTEGRATION] TẠO ĐƠN GHN ---
+    // Chỉ tạo đơn GHN khi phương thức là COD hoặc (nếu muốn) sau khi thanh toán Online thành công.
+    // Ở đây ta làm mẫu cho trường hợp COD.
     
-    // 1. GHN: Phải tạo đơn vận chuyển cho TỪNG đơn hàng con (vì mỗi shop gửi 1 gói)
-    // Chỉ tạo nếu là COD. Nếu Online Payment thì đợi webhook success mới tạo.
-    if (dto.paymentMethod === 'cod') {
-        for (const order of result) {
-            // Tìm thông tin preview tương ứng để lấy weight
-            // (Do result đã lưu vào DB, ta cần map lại items để lấy weight hoặc lấy từ preview cũ)
-            // Cách nhanh: Tìm trong preview.orders xem order nào khớp items (đơn giản hóa bằng cách loop tương ứng index)
-            // Tuy nhiên result và preview.orders cùng thứ tự loop nên có thể dùng index.
-            
-            const matchingPreview = preview.orders.find(o => 
-                o.items.some((i: any) => i.productId === order.items[0]?.productId) // Tìm tạm bằng sp đầu tiên
-            ); // Hoặc dùng index nếu chắc chắn thứ tự transaction không đổi.
-
-            if (!matchingPreview) continue;
-
-            try {
-                const ghnOrderData = {
-                    to_name: order.recipientName,
-                    to_phone: order.recipientPhone,
-                    to_address: order.recipientAddress,
-                    to_ward_code: dto.receiverInfo['wardCode'],
-                    to_district_id: Number(dto.receiverInfo['districtId']),
-                    cod_amount: Math.floor(Number(order.totalAmount)), // Thu hộ số tiền của đơn này
-                    weight: matchingPreview.weight || 200,
-                    items: matchingPreview.items.map((i: any) => ({
-                        name: i.name,
-                        code: i.productId,
-                        quantity: i.quantity,
-                        price: Number(i.price),
-                        weight: i.weight || 200
-                    })),
-                    note: `Đơn hàng #${order.id}`,
-                    required_note: 'CHOXEMHANGKHONGTHU'
-                };
-
-                const ghnResponse = await this.ghnService.createShippingOrder(ghnOrderData);
-                if (ghnResponse && ghnResponse.order_code) {
-                    await this.prisma.order.update({
-                        where: { id: order.id },
-                        data: { shippingOrderCode: ghnResponse.order_code }
-                    });
-                }
-            } catch (error) {
-                this.logger.error(`Lỗi GHN đơn ${order.id}:`, error);
-            }
-        }
-    }
-
-    // 2. PAYMENT LINK (Pay2S)
     let paymentUrl: any = null;
-    if (dto.paymentMethod === 'pay2s') {
+    if (order && dto.paymentMethod === 'cod') {
         try {
-            // Pay2S thường chỉ nhận 1 Transaction ID. 
-            // Ta sẽ dùng ID của đơn hàng ĐẦU TIÊN làm "Key" đại diện, 
-            // nhưng số tiền thanh toán là TỔNG CỘNG (grandTotal).
+            const receiver = dto.receiverInfo || {};
             
-            const representativeOrderId = result[0].id; // Đơn đại diện
-            const totalToPay = preview.summary.total;   // Tổng tiền phải trả (đã trừ coin/voucher)
+            const ghnOrderData = {
+                to_name: order.recipientName,
+                to_phone: order.recipientPhone,
+                to_address: order.recipientAddress,
+                to_ward_code: receiver['wardCode'],
+                to_district_id: Number(receiver['districtId']),
+                
+                // [FIX LỖI TẠI ĐÂY] Ép kiểu về số nguyên (Integer)
+                cod_amount: Math.floor(Number(order.totalAmount)), 
 
-            paymentUrl = await this.paymentService.createPay2SPayment(
-                representativeOrderId, 
-                Number(totalToPay)
-            );
+                weight: preview.items.reduce((sum, i) => sum + (i.weight || 200), 0),
+                items: preview.items.map(i => ({
+                    name: i.name,
+                    code: i.productId,
+                    quantity: i.quantity,
+                    price: Number(i.price), // [Nên ép kiểu cả giá sản phẩm cho chắc chắn]
+                    weight: i.weight || 200
+                })),
+                note: `Đơn hàng #${order.id} từ Gmall`,
+                required_note: 'CHOXEMHANGKHONGTHU'
+            };
+
+            const ghnResponse = await this.ghnService.createShippingOrder(ghnOrderData);
+
+            // Cập nhật lại Order với Mã vận đơn từ GHN
+            if (ghnResponse && ghnResponse.order_code) {
+                await this.prisma.order.update({
+                    where: { id: order.id },
+                    data: { 
+                        shippingOrderCode: ghnResponse.order_code,
+                        // Có thể cập nhật lại fee nếu muốn khớp 100% với lúc tạo
+                        // shippingFee: ghnResponse.total_fee 
+                    }
+                });
+                this.logger.log(`Tạo đơn GHN thành công: ${ghnResponse.order_code}`);
+            }
         } catch (error) {
-            this.logger.error(`Lỗi tạo Pay2S: ${(error as Error).message}`);
+            // Không throw lỗi ở đây để tránh rollback đơn hàng đã tạo trong DB
+            this.logger.error('Lỗi khi đẩy đơn sang GHN:', error);
+            // TODO: Bắn noti cho Admin hoặc đánh dấu đơn cần xử lý thủ công
+        }
+    }
+    else if (dto.paymentMethod === 'pay2s') {
+        try {
+            // Gọi service tạo link (đảm bảo bạn đã inject PaymentService)
+            paymentUrl = await this.paymentService.createPay2SPayment(order.id, Number(order.totalAmount));
+        } catch (error) {
+            this.logger.error(`Lỗi tạo Pay2S: ${error.message}`);
+            // Không throw lỗi để tránh rollback đơn hàng
         }
     }
 
-    // Tracking
     this.trackingService.trackEvent(userId, 'server', {
       type: EventType.PURCHASE,
-      targetId: result[0].id, // Track ID đại diện
-      metadata: { revenue: preview.summary.total, orderCount: result.length }
+      targetId: order.id,
+      metadata: { revenue: Number(order.totalAmount), items: preview.items }
     });
 
     return {
-        orders: result, // Trả về mảng các đơn hàng đã tạo
+        order,
         paymentUrl 
     };
   }
