@@ -24,18 +24,21 @@ export class OrderController {
   // API đặt hàng thật
   @Post()
   async create(@Request() req, @Body() dto: CreateOrderDto) {
-    // Hứng kết quả từ Service (Lúc này là { order, paymentUrl })
+    // Hứng kết quả từ Service (Lúc này là { orders: Order[], paymentUrl: ... })
     const result = await this.orderService.createOrder(req.user.id, dto);
 
-    // Kiểm tra cấu trúc để tránh lỗi (đề phòng service cũ trả về order trực tiếp)
-    const order = result.order || result; 
-    const paymentUrl = result.paymentUrl || null;
-
+    // [FIX] Không còn result.order nữa, mà là result.orders (mảng)
+    // Nếu bạn cần lấy ID để redirect, có thể lấy ID của đơn đầu tiên hoặc trả về cả danh sách
+    
     return {
       success: true,
       message: 'Đặt hàng thành công',
-      orderId: order.id,
-      paymentUrl: paymentUrl, // <--- THÊM DÒNG NÀY thì Frontend mới nhận được Link
+      // Trả về danh sách các đơn hàng đã được tạo (do tách shop)
+      orders: result.orders, 
+      // Hoặc nếu FE cần 1 ID đại diện để redirect:
+      // orderId: result.orders[0]?.id, 
+      
+      paymentUrl: result.paymentUrl, 
     };
   }
   @Post('review')
