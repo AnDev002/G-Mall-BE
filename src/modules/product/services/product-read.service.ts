@@ -382,6 +382,24 @@ export class ProductReadService implements OnModuleInit {
     return resultData || { data: [], meta: { total: 0, page: 1, limit, last_page: 0 } };
   }
 
+  async removeProductFromRedis(id: string, name: string) {
+    try {
+        const key = `product:${id}`;
+        
+        // 1. Xóa Hash Key -> Cái này quan trọng nhất
+        // Khi xóa key này, RediSearch sẽ TỰ ĐỘNG loại bỏ nó khỏi kết quả tìm kiếm (FT.SEARCH)
+        await this.redis.del(key);
+
+        // 2. Xóa khỏi Dictionary Gợi ý (Autocomplete)
+        // Lưu ý: Cần truyền đúng tên sản phẩm đã index
+        await this.redis.call('FT.SUGDEL', SUGGESTION_KEY, name);
+        
+        this.logger.log(`🗑️ Removed product from Redis: ${name} (${id})`);
+    } catch (e: any) {
+        this.logger.error(`❌ Remove Redis Error: ${e.message}`);
+    }
+  }
+
   // ===========================================================================
   // Các hàm phụ trợ giữ nguyên
   // ===========================================================================

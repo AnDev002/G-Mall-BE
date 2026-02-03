@@ -251,42 +251,62 @@ export class ProductWriteService {
   }
 
   async delete(id: string) {
-    // Kiểm tra xem sản phẩm có tồn tại không
-    const product = await this.prisma.product.findUnique({ where: { id } });
+    // 1. Lấy thông tin sản phẩm TRƯỚC khi xóa (để lấy tên xóa cache suggestion)
+    const product = await this.prisma.product.findUnique({ 
+        where: { id },
+        select: { id: true, name: true, slug: true } // Lấy slug để xóa cache detail
+    });
+
     if (!product) {
       throw new NotFoundException('Sản phẩm không tồn tại');
     }
 
-    // Xoá (Hard delete). Nếu muốn soft delete thì đổi thành update status = 'DELETED'
-    // Lưu ý: Cần xử lý ràng buộc khoá ngoại (Variant, Option, v.v)
-    // Prisma dùng onDelete: Cascade trong schema sẽ tự xử lý, hoặc dùng transaction
-    return this.prisma.$transaction(async (tx) => {
-        // Xoá các quan hệ nếu schema không có cascade
+    // 2. Thực hiện xóa trong DB
+    await this.prisma.$transaction(async (tx) => {
         await tx.productVariant.deleteMany({ where: { productId: id } });
         await tx.productOption.deleteMany({ where: { productId: id } });
         await tx.productCrossSell.deleteMany({ where: { productId: id } });
-        
-        const deleted = await tx.product.delete({
-            where: { id }
-        });
-        return deleted;
+        await tx.product.delete({ where: { id } });
     });
+
+    // 3. [FIX] Xóa Cache & Redis Index SAU KHI xóa DB thành công
+    // A. Xóa khỏi RediSearch & Suggestion (để hết hiện ở trang chủ/admin)
+    await this.productReadService.removeProductFromRedis(product.id, product.name);
+    
+    // B. Xóa Cache chi tiết (để link cũ vào sẽ 404 thay vì hiện data cũ)
+    await this.productCache.invalidateProduct(product.id, product.slug);
+
+    return { success: true, message: 'Deleted successfully' };
   }
 
-  // --- 7. Bulk Delete (NEW) ---
+  // --- 7. Bulk Delete (CẬP NHẬT) ---
   async bulkDelete(ids: string[]) {
       if (!ids || ids.length === 0) return { count: 0 };
 
-      // Xử lý xoá nhiều (Dùng transaction để đảm bảo an toàn)
-      return this.prisma.$transaction(async (tx) => {
+      // 1. Lấy danh sách sản phẩm để xóa cache
+      const productsToDelete = await this.prisma.product.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true, slug: true }
+      });
+
+      // 2. Xóa trong DB
+      await this.prisma.$transaction(async (tx) => {
           await tx.productVariant.deleteMany({ where: { productId: { in: ids } } });
           await tx.productOption.deleteMany({ where: { productId: { in: ids } } });
           await tx.productCrossSell.deleteMany({ where: { productId: { in: ids } } });
-
-          return await tx.product.deleteMany({
-              where: { id: { in: ids } }
-          });
+          await tx.product.deleteMany({ where: { id: { in: ids } } });
       });
+
+      // 3. [FIX] Xóa Cache Loop
+      // Dùng Promise.all để xóa song song cho nhanh
+      await Promise.all(productsToDelete.map(async (p) => {
+          // Xóa Index & Suggestion
+          await this.productReadService.removeProductFromRedis(p.id, p.name);
+          // Xóa Detail Cache
+          await this.productCache.invalidateProduct(p.id, p.slug);
+      }));
+
+      return { count: ids.length };
   }
 
   // --- 3. Update (Updated for Shop Module) ---
