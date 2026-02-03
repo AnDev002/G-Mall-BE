@@ -250,45 +250,6 @@ export class ProductWriteService {
     return { count: ids.length };
   }
 
-  async delete(id: string) {
-    // Kiểm tra xem sản phẩm có tồn tại không
-    const product = await this.prisma.product.findUnique({ where: { id } });
-    if (!product) {
-      throw new NotFoundException('Sản phẩm không tồn tại');
-    }
-
-    // Xoá (Hard delete). Nếu muốn soft delete thì đổi thành update status = 'DELETED'
-    // Lưu ý: Cần xử lý ràng buộc khoá ngoại (Variant, Option, v.v)
-    // Prisma dùng onDelete: Cascade trong schema sẽ tự xử lý, hoặc dùng transaction
-    return this.prisma.$transaction(async (tx) => {
-        // Xoá các quan hệ nếu schema không có cascade
-        await tx.productVariant.deleteMany({ where: { productId: id } });
-        await tx.productOption.deleteMany({ where: { productId: id } });
-        await tx.productCrossSell.deleteMany({ where: { productId: id } });
-        
-        const deleted = await tx.product.delete({
-            where: { id }
-        });
-        return deleted;
-    });
-  }
-
-  // --- 7. Bulk Delete (NEW) ---
-  async bulkDelete(ids: string[]) {
-      if (!ids || ids.length === 0) return { count: 0 };
-
-      // Xử lý xoá nhiều (Dùng transaction để đảm bảo an toàn)
-      return this.prisma.$transaction(async (tx) => {
-          await tx.productVariant.deleteMany({ where: { productId: { in: ids } } });
-          await tx.productOption.deleteMany({ where: { productId: { in: ids } } });
-          await tx.productCrossSell.deleteMany({ where: { productId: { in: ids } } });
-
-          return await tx.product.deleteMany({
-              where: { id: { in: ids } }
-          });
-      });
-  }
-
   // --- 3. Update (Updated for Shop Module) ---
   async update(id: string, userId: string, dto: UpdateProductDto) {
     // [MỚI] Tìm Shop trước

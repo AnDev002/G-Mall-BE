@@ -116,19 +116,6 @@ export class AdminProductController {
     if (!query) return [];
     return this.productReadService.searchProductsForAdmin(query);
   }
-
-  @Delete(':id')
-  @Roles(Role.ADMIN)
-  async deleteProduct(@Param('id') id: string) {
-      return this.productWriteService.delete(id);
-  }
-
-  // 4. API Xoá nhiều sản phẩm
-  @Delete('bulk/delete') // DELETE body có thể không hoạt động ở một số proxy, nhưng chuẩn REST vẫn cho phép
-  @Roles(Role.ADMIN)
-  async bulkDeleteProduct(@Body() body: { ids: string[] }) {
-      return this.productWriteService.bulkDelete(body.ids);
-  }
   
   @Get(':id')
   // [GENIUS FIX] Chi tiết cũng không nên cache khi admin đang edit/duyệt
