@@ -540,6 +540,8 @@ model ProductVariant {
   id        String  @id @default(uuid())
   productId String
   price     Decimal
+  originalPrice Decimal? @db.Decimal(15, 2) 
+  discountValue Decimal? @default(0)        
   stock     Int
   sku       String? // Mã SKU riêng cho biến thể
   image     String? // Ảnh riêng cho biến thể (VD: Ảnh áo màu đỏ)
