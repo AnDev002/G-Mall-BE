@@ -34,12 +34,9 @@ export class OrderService {
   private async resolveItemsAndGroup(userId: string, dto: CreateOrderDto) {
     let itemsToCheckout: any[] = [];
 
-    // Ưu tiên: Nếu payload có items thì dùng luôn (cho cả BuyNow và Checkout từ giỏ)
-    if (dto.items && dto.items.length > 0) {
+    if (dto.isBuyNow && dto.items?.length) {
       itemsToCheckout = dto.items;
-    } 
-    // Fallback: Nếu không gửi items, mới lấy toàn bộ từ Cart (Logic cũ)
-    else if (!dto.isBuyNow) {
+    } else {
       const cart = await this.cartService.getCart(userId);
       if (cart?.items) {
         itemsToCheckout = cart.items.map(i => {
@@ -53,9 +50,8 @@ export class OrderService {
       }
     }
 
-    if (!itemsToCheckout.length) throw new BadRequestException('Giỏ hàng trống hoặc chưa chọn sản phẩm');
+    if (!itemsToCheckout.length) throw new BadRequestException('Giỏ hàng trống');
 
-    // ... (Giữ nguyên phần query database lấy product info và group shop phía dưới)
     const productIds = itemsToCheckout.map(i => i.productId);
     
     const products = await this.prisma.product.findMany({
@@ -70,12 +66,12 @@ export class OrderService {
     const shopGroups: Record<string, any> = {};
 
     for (const item of itemsToCheckout) {
-      // ... (Logic trong vòng lặp giữ nguyên)
       const product = products.find(p => p.id === item.productId);
       if (!product) throw new NotFoundException(`Sản phẩm ID ${item.productId} không tồn tại`);
       if (product.stock < item.quantity) throw new BadRequestException(`Sản phẩm ${product.name} không đủ hàng`);
       if (!product.shopId) throw new BadRequestException(`Dữ liệu sản phẩm ${product.name} lỗi (thiếu ShopId)`);
 
+      // [FIX] Khai báo kiểu any rõ ràng để tránh lỗi 'never'
       let selectedVariant: any = null;
       let finalPrice = Number(product.price);
 
@@ -104,6 +100,7 @@ export class OrderService {
       
       shopGroups[product.shopId].items.push({
         productId: product.id,
+        // [FIX] Bây giờ selectedVariant đã có kiểu any hoặc null, truy cập .id an toàn
         variantId: selectedVariant?.id || null, 
         name: product.name,
         imageUrl: finalImageUrl,
@@ -294,24 +291,9 @@ export class OrderService {
           createdOrders.push(newOrder);
       }
 
-      if (!dto.isBuyNow) {
-           // Chỉ xóa những items đã mua, không xóa toàn bộ cart
-           // Vì dto.items chứa danh sách các item được chọn
-           if (dto.items && dto.items.length > 0) {
-               for (const item of dto.items) {
-                   await this.cartService.removeItem(userId, item.productId);
-               }
-           } else {
-               // Fallback cũ: Nếu không có list items thì mới clear all (ít khi xảy ra với logic mới)
-               await this.cartService.clearCart(userId);
-           }
-      }
+      if (!dto.isBuyNow) await this.cartService.clearCart(userId);
 
-      return {
-        orders: result,
-        paymentUrl: null, // Hoặc biến paymentUrl logic cũ
-        totalAmount: preview.summary.total
-      };
+      return createdOrders;
     });
     
     // --- PAY2S ---
