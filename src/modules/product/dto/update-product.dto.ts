@@ -1,13 +1,22 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateProductDto } from './create-product.dto';
-import { IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min, IsString, IsArray, ValidateNested } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 
 export enum DiscountType {
   PERCENT = 'PERCENT',
-  AMOUNT = 'AMOUNT',
 }
+export class ProductVariantDiscountDto {
+  @ApiProperty()
+  @IsString()
+  id: string; // Cần ID để tìm variant trong DB
 
+  @ApiProperty()
+  @IsNumber()
+  @Min(0)
+  discountValue: number; // % giảm giá
+}
 export class UpdateProductDiscountDto {
   @ApiProperty()
   @IsEnum(DiscountType)
@@ -34,6 +43,13 @@ export class UpdateProductDiscountDto {
   @IsBoolean()
   @IsOptional()
   isDiscountActive: boolean;
+
+  @ApiProperty({ type: [ProductVariantDiscountDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductVariantDiscountDto)
+  variants: ProductVariantDiscountDto[];
 }
 
 

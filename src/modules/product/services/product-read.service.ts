@@ -486,7 +486,7 @@ export class ProductReadService implements OnModuleInit {
             options: opt.values.map(v => v.value), 
             images: opt.values.map(v => v.image || '') 
         })),
-        variations: product.variants.map(v => {
+        variants: product.variants.map(v => {
             let safeTierIndex: number[] = [];
             if (Array.isArray(v.tierIndex)) {
                 safeTierIndex = v.tierIndex as number[];

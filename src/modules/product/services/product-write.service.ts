@@ -385,9 +385,9 @@ export class ProductWriteService {
 
     // --- LOGIC XỬ LÝ BIẾN THỂ (VARIANTS) ---
     // Chỉ chạy khi user gửi danh sách variations (Cài đặt riêng)
-    if (dto.isDiscountActive && dto.variations && dto.variations.length > 0) {
+    if (dto.isDiscountActive && dto.variants && dto.variants.length > 0) {
         
-        const updates = dto.variations.map(async (vDto) => {
+        const updates = dto.variants.map(async (vDto) => {
             const currentVariant = product.variants.find(v => v.id === vDto.id);
             if (!currentVariant) return;
 
