@@ -214,13 +214,11 @@ export class OrderService {
         noteMap['ALL'] = dto.note;
     }
 
-    // [BẮT ĐẦU TRANSACTION]
-    // Biến result sẽ hứng giá trị return từ block này
+    // [FIX 1] Cấu hình timeout cho Transaction
     const result = await this.prisma.$transaction(async (tx) => {
       const createdOrders: Order[] = [];
       const totalOrderValue = preview.summary.subtotal;
 
-      // ... (Logic trừ xu, cập nhật voucher giữ nguyên) ...
       if (preview.summary.discounts.coin > 0) {
         const amount = preview.summary.discounts.coin;
         await tx.pointWallet.update({ where: { userId }, data: { balance: { decrement: amount } } });
@@ -231,12 +229,19 @@ export class OrderService {
 
       for (const voucher of preview.appliedVouchers) {
          await tx.voucher.update({ where: { id: voucher.id }, data: { usageCount: { increment: 1 } } });
-         // ... (Logic cập nhật userVoucher giữ nguyên)
+         // Logic userVoucher...
+         const userVoucher = await tx.userVoucher.findUnique({
+             where: { userId_voucherId: { userId, voucherId: voucher.id } }
+         });
+         if (userVoucher) {
+             await tx.userVoucher.update({ where: { id: userVoucher.id }, data: { isUsed: true, usedAt: new Date() } });
+         } else {
+             await tx.userVoucher.create({ data: { userId, voucherId: voucher.id, isUsed: true, usedAt: new Date() } });
+         }
       }
 
-      // ... (Vòng lặp tạo từng đơn hàng theo shop) ...
       for (const group of preview.breakdown) {
-          // ... (Tính toán phân bổ giảm giá giữ nguyên) ...
+          // ... Logic tính toán discount giữ nguyên ...
           let ratio = 0;
           if (totalOrderValue > 0) ratio = group.subtotal / totalOrderValue;
           const allocatedSystemDisc = Math.floor(preview.summary.discounts.systemVoucher * ratio);
@@ -246,7 +251,6 @@ export class OrderService {
               group.subtotal + group.shippingFee - group.shopDiscount - allocatedSystemDisc - allocatedCoinDisc
           );
 
-          // ... (Logic tìm voucherIdToSave giữ nguyên) ...
           const shopVoucher = preview.appliedVouchers.find((v: any) => v.shopId === group.shopId);
           const systemVoucher = preview.appliedVouchers.find((v: any) => v.isSystem === true);
           const voucherIdToSave = shopVoucher ? shopVoucher.id : (systemVoucher ? systemVoucher.id : null);
@@ -262,7 +266,6 @@ export class OrderService {
 
           const note = noteMap[group.shopId] || noteMap['ALL'] || '';
           
-          // Tạo Order
           const newOrder = await tx.order.create({
              data: {
                  userId,
@@ -289,31 +292,43 @@ export class OrderService {
           createdOrders.push(newOrder);
       }
 
-      // Xóa giỏ hàng (sử dụng logic mới đã fix ở bước trước)
-      if (!dto.isBuyNow) {
-           if (dto.items && dto.items.length > 0) {
-               for (const item of dto.items) {
-                   await this.cartService.removeItem(userId, item.productId);
-               }
-           } else {
-               await this.cartService.clearCart(userId);
-           }
-      }
+      // [FIX 2] Đã xóa logic clearCart ở đây để giảm tải cho DB Transaction
+      // return createdOrders ra ngoài để dùng tiếp
+      return createdOrders;
 
-      return createdOrders; // Trả về danh sách đơn hàng
+    }, {
+        // [QUAN TRỌNG] Tăng timeout lên 40s (mặc định là 5s) để xử lý đơn hàng lớn
+        maxWait: 5000, 
+        timeout: 40000 
     }); 
-    // [KẾT THÚC TRANSACTION]
-    // Lúc này 'result' mới có dữ liệu. Mọi logic sử dụng 'result' PHẢI nằm dưới dòng này.
 
-    // --- PAY2S (Đã Fix vị trí) ---
+    // [FIX 3] Di chuyển logic xóa giỏ hàng (Redis) ra ngoài transaction DB
+    // Redis nhanh nhưng network I/O có thể làm chậm DB lock nếu để bên trong
+    try {
+        if (!dto.isBuyNow) {
+            if (dto.items && dto.items.length > 0) {
+                // Xóa từng item đã mua (Partial Checkout)
+                // Dùng Promise.all để chạy song song cho nhanh hơn
+                await Promise.all(dto.items.map(item => 
+                    this.cartService.removeItem(userId, item.productId)
+                ));
+            } else {
+                // Fallback: Xóa hết
+                await this.cartService.clearCart(userId);
+            }
+        }
+    } catch (e) {
+        // Log lỗi xóa cart nhưng không chặn flow đặt hàng thành công
+        this.logger.warn(`Lỗi xóa giỏ hàng sau khi đặt đơn: ${e.message}`);
+    }
+
+    // --- PAY2S Logic (Giữ nguyên) ---
     let paymentUrl: string | null = null;
     if (dto.paymentMethod === 'pay2s') {
         try {
-            // [FIX] Truy cập result[0] ở đây là an toàn vì transaction đã xong
             const masterOrderId = result[0].id; 
             const totalPay = preview.summary.total;
             const desc = `Thanh toan ${result.length} don hang`;
-            
             paymentUrl = await this.paymentService.createPay2SPayment(
                 masterOrderId,
                 Number(totalPay),
@@ -324,15 +339,14 @@ export class OrderService {
         }
     }
 
-    // --- GHN (Đã Fix log) ---
+    // --- GHN Logic (Giữ nguyên) ---
     if (dto.paymentMethod === 'cod') {
-        for (const order of result) {
+         // ... (Logic GHN cũ giữ nguyên)
+         for (const order of result) {
             const groupInfo = preview.breakdown.find((g: any) => g.shopId === order.shopId);
             if (!groupInfo) continue;
             
-            // [FIX] Bỏ qua GHN nếu thiếu thông tin địa chỉ quan trọng để tránh lỗi 400
             if (!dto.receiverInfo?.wardCode || !dto.receiverInfo?.districtId) {
-                this.logger.warn(`Skip GHN for Order ${order.id}: Missing district/ward`);
                 continue;
             }
 
@@ -360,13 +374,12 @@ export class OrderService {
                     });
                 }
             } catch (err: any) {
-                // Log gọn hơn để đỡ spam console
-                this.logger.warn(`GHN Error Order ${order.id}: ${err.message || JSON.stringify(err)}`);
+                this.logger.warn(`GHN Error Order ${order.id}: ${err.message}`);
             }
         }
     }
 
-    // --- Tracking ---
+    // ... (Tracking và Return giữ nguyên)
     this.trackingService.trackEvent(userId, 'server', {
         type: EventType.PURCHASE,
         targetId: result[0].id,
