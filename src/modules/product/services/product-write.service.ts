@@ -5,8 +5,8 @@ import { Injectable, BadRequestException, ForbiddenException, NotFoundException 
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
-import { Prisma, ProductStatus } from '@prisma/client';
-import { UpdateProductDto } from '../dto/update-product.dto';
+import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
+import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { ProductReadService } from './product-read.service';
 @Injectable()
 export class ProductWriteService {
@@ -368,6 +368,119 @@ export class ProductWriteService {
     });
   }
 
+  async updateDiscount(sellerId: string, productId: string, dto: UpdateProductDiscountDto) {
+    // 1. Lấy sản phẩm hiện tại để check quyền và lấy giá gốc
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+    });
+
+    if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
+    
+    // Check quyền: Phải đúng shop của seller đó
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+    if (!shop || product.shopId !== shop.id) {
+        throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
+    }
+
+    // Nếu chưa có originalPrice, gán nó bằng price hiện tại
+    let originalPrice = Number(product.originalPrice);
+    if (originalPrice === 0) {
+      originalPrice = Number(product.price);
+    }
+
+    // 2. Tính toán giá mới (finalPrice)
+    let finalPrice = originalPrice;
+
+    if (dto.isDiscountActive) {
+      if (dto.discountType === DiscountType.PERCENT) {
+        if (dto.discountValue > 100) throw new BadRequestException('Giảm giá không được quá 100%');
+        finalPrice = originalPrice * (1 - dto.discountValue / 100);
+      } else if (dto.discountType === DiscountType.AMOUNT) {
+        if (dto.discountValue > originalPrice) throw new BadRequestException('Số tiền giảm không được lớn hơn giá gốc');
+        finalPrice = originalPrice - dto.discountValue;
+      }
+    } else {
+        // Nếu tắt giảm giá, quay về giá gốc
+        finalPrice = originalPrice;
+    }
+
+    // Đảm bảo giá không âm
+    if (finalPrice < 0) finalPrice = 0;
+
+    // 3. Update vào DB
+    const updatedProduct = await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        originalPrice: originalPrice, 
+        price: finalPrice,            // Giá bán thực tế (đã giảm)
+        discountType: dto.discountType,
+        discountValue: dto.discountValue,
+        discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
+        discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
+        isDiscountActive: dto.isDiscountActive,
+      },
+      // [QUAN TRỌNG] Include shop và variants để phục vụ việc Sync Redis bên dưới
+      include: {
+        shop: { select: { id: true, name: true, avatar: true } },
+        variants: true, 
+      }
+    });
+
+    // --- 4. XỬ LÝ CACHE & REDIS (MỚI BỔ SUNG) ---
+
+    // A. Xóa Cache chi tiết (Product Detail)
+    // Để khi khách hàng vào xem chi tiết, hệ thống buộc phải load lại giá mới từ DB
+    await this.productCache.invalidateProduct(updatedProduct.id, updatedProduct.slug);
+
+    // B. Đồng bộ sang Redis Search (Product Listing)
+    // Để update lại giá bán (price) trong Index tìm kiếm. 
+    // Giúp khách hàng filter theo khoảng giá hoặc sort giá thấp/cao sẽ thấy đúng giá sau giảm.
+    await this.productReadService.syncProductToRedis(updatedProduct);
+
+    return updatedProduct;
+  }
+
+  async deleteBySeller(userId: string, productId: string) {
+    // 1. Tìm Shop của User
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
+    if (!shop) {
+      throw new ForbiddenException('Bạn không có quyền thực hiện hành động này.');
+    }
+
+    // 2. Tìm sản phẩm và đảm bảo nó thuộc về Shop này
+    const product = await this.prisma.product.findFirst({
+      where: { 
+        id: productId,
+        shopId: shop.id // [QUAN TRỌNG] Ràng buộc shopId
+      },
+      select: { id: true, name: true, slug: true } // Lấy slug để xóa cache
+    });
+
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại hoặc không thuộc quyền quản lý của bạn.');
+    }
+
+    // 3. Thực hiện xóa trong DB (Transaction)
+    await this.prisma.$transaction(async (tx) => {
+        // Xóa các bảng quan hệ trước
+        await tx.productVariant.deleteMany({ where: { productId: productId } });
+        await tx.productOption.deleteMany({ where: { productId: productId } });
+        await tx.productCrossSell.deleteMany({ where: { productId: productId } });
+        
+        // Xóa sản phẩm chính
+        await tx.product.delete({ where: { id: productId } });
+    });
+
+    // 4. [XỬ LÝ CACHE REDIS]
+    // A. Xóa khỏi RediSearch & Suggestion (để Search Bar không gợi ý sp đã xóa nữa)
+    // Lưu ý: Hàm removeProductFromRedis cần được public bên ProductReadService
+    await this.productReadService.removeProductFromRedis(product.id, product.name);
+    
+    // B. Xóa Cache chi tiết (để user truy cập link cũ sẽ thấy 404 thay vì cache cũ)
+    await this.productCache.invalidateProduct(product.id, product.slug);
+
+    return { success: true, message: 'Đã xóa sản phẩm thành công' };
+  }
   // --- 5. Find All By Seller (Updated) ---
   async findAllBySeller(userId: string, status?: string) {
     // [MỚI] Lấy Shop ID

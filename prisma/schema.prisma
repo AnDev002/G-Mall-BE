@@ -406,6 +406,10 @@ enum ProductStatus {
   HIDDEN // Seller tự ẩn
 }
 
+enum DiscountType {
+  PERCENT
+  AMOUNT
+}
 
 model Product {
   id          String  @id @default(uuid())
@@ -466,6 +470,12 @@ model Product {
 
   cartItems  CartItem[]
   orderItems OrderItem[]
+
+  discountType      DiscountType? 
+  discountValue     Decimal?      @default(0) // Số % hoặc Số tiền
+  discountStartDate DateTime?
+  discountEndDate   DateTime?
+  isDiscountActive  Boolean       @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
