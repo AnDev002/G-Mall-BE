@@ -479,24 +479,22 @@ export class OrderService {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new NotFoundException('Shop không tồn tại');
 
+    // Lấy thông tin đơn hàng hiện tại
     const order = await this.prisma.order.findFirst({
-        where: { id: orderId, shopId: shop.id }
+        where: { id: orderId, shopId: shop.id } 
     });
 
     if (!order) throw new NotFoundException('Đơn hàng không tồn tại hoặc không thuộc quyền quản lý');
 
-    // [DEBUG] Log trạng thái ban đầu và input
-    this.logger.log(`[OrderUpdate] Start update Order #${orderId}. Input Status: "${status}". Order Total: ${order.totalAmount}`);
-
+    // [QUAN TRỌNG] Nếu đơn đã giao thành công rồi thì không xử lý lại (tránh cộng điểm 2 lần)
     if (order.status === 'DELIVERED') {
-         // Nếu đã giao rồi thì chỉ update status (nếu cần) mà không cộng lại xu
-         this.logger.warn(`[OrderUpdate] Order #${orderId} was already DELIVERED. Skipping reward logic.`);
          return this.prisma.order.update({
              where: { id: orderId },
-             data: { status }
+             data: { status } // Vẫn update status nếu cần, nhưng không cộng điểm
          });
     }
 
+    // Sử dụng Transaction để đảm bảo Update Status + Cộng Xu cùng thành công
     return this.prisma.$transaction(async (tx) => {
       // 1. Cập nhật trạng thái đơn hàng
       const updatedOrder = await tx.order.update({
@@ -504,48 +502,28 @@ export class OrderService {
         data: { status }
       });
 
-      this.logger.log(`[OrderUpdate] DB Update Status Success: ${updatedOrder.status}`);
-
-      // [FIX LOGIC] Chuẩn hóa status về UpperCase để so sánh cho chắc chắn
-      // Và đảm bảo so sánh với Enum hoặc string chuẩn
-      if (String(status).toUpperCase() === 'DELIVERED') {
-          
-          // Tính toán
-          const rawPoints = Number(order.totalAmount) / 10000;
-          const pointsToEarn = Math.floor(rawPoints);
-
-          // [DEBUG] Log tính toán chi tiết
-          this.logger.log(`[OrderUpdate] Calculation: Total=${order.totalAmount} / 10000 = ${rawPoints} -> Floor = ${pointsToEarn} points.`);
+      // 2. Logic cộng xu: Chỉ khi status mới là DELIVERED
+      if (status === 'DELIVERED') {
+          // Tỷ lệ: 10.000 VND = 1 Xu
+          const pointsToEarn = Math.floor(Number(order.totalAmount) / 10000);
 
           if (pointsToEarn > 0) {
-              try {
-                  // Gọi pointService với Transaction Context (tx)
-                  const newBalance = await this.pointService.addPoints(
-                      order.userId,
-                      pointsToEarn,
-                      PointType.EARN_ORDER, 
-                      `REWARD_${order.id}`, 
-                      `Hoàn xu đơn hàng #${order.id.slice(0, 8)}`,
-                      tx 
-                  );
-                  this.logger.log(`[Reward] SUCCESS! User ${order.userId} received ${pointsToEarn} points. New Balance: ${newBalance}`);
-              } catch (err) {
-                  // [QUAN TRỌNG] Log lỗi nếu addPoints thất bại (ví dụ do Enum sai)
-                  this.logger.error(`[Reward] FAILED to add points: ${err.message}`, err.stack);
-                  // Tùy bạn quyết định: Có throw lỗi để rollback status Order không?
-                  // Nếu muốn rollback order khi cộng xu lỗi thì uncomment dòng dưới:
-                  // throw err; 
-              }
-          } else {
-              this.logger.warn(`[Reward] SKIPPED. Reason: Calculated points is 0 (Order value too low).`);
+              await this.pointService.addPoints(
+                  order.userId,
+                  pointsToEarn,
+                  // [LƯU Ý] Đảm bảo Enum PointType trong schema.prisma đã có value 'EARN_ORDER'
+                  // Nếu chưa có, bạn cần thêm vào file schema.prisma: enum PointType { ... EARN_ORDER ... }
+                  PointType.EARN_ORDER, 
+                  `REWARD_${order.id}`, // Reference ID để không cộng trùng
+                  `Hoàn xu đơn hàng #${order.id.slice(0, 8)}`,
+                  tx // Truyền transaction context vào PointService
+              );
+              
+              this.logger.log(`[Reward] User ${order.userId} received ${pointsToEarn} points for Order ${order.id}`);
           }
-      } else {
-          this.logger.log(`[OrderUpdate] Logic skipped because status "${status}" is not DELIVERED.`);
       }
 
       return updatedOrder;
-    }, {
-        timeout: 20000 // Tăng timeout nếu cần
     });
   }
 
