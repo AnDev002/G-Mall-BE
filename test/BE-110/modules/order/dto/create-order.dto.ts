@@ -1,5 +1,3 @@
-// BE-110/modules/order/dto/create-order.dto.ts
-
 import { IsBoolean, IsOptional, IsString, IsArray, ValidateNested, IsNumber, Min, IsObject, IsNotEmpty } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -11,10 +9,6 @@ export class CartItemDto {
   @IsNumber()
   @Min(1)
   quantity: number;
-
-  @IsOptional()
-  @IsString()
-  variantId?: string;
 }
 
 export class CreateOrderDto {
@@ -32,6 +26,7 @@ export class CreateOrderDto {
   @Type(() => CartItemDto)
   items?: CartItemDto[];
 
+  // [SỬA] Đổi từ voucherId sang voucherIds (mảng)
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -51,29 +46,22 @@ export class CreateOrderDto {
   paymentMethod: string;
 
   @IsOptional()
-  @IsObject()
-  receiverInfo?: any;
-
-  // [FIX] Thêm senderInfo
-  @IsOptional()
-  @IsObject()
-  senderInfo?: any;
-
-  // [FIX] Thêm giftWrapIndex
-  @IsOptional()
   @IsNumber()
   giftWrapIndex?: number;
 
-  // [FIX] Thêm cardIndex
   @IsOptional()
   @IsNumber()
   cardIndex?: number;
 
-  // Note có thể là String (gộp) hoặc Object (từng shop)
   @IsOptional()
-  note?: string | Record<string, string>;
+  @IsObject()
+  senderInfo?: any;
 
   @IsOptional()
+  @IsObject()
+  receiverInfo?: any;
+  
+  @IsOptional()
   @IsNumber()
-  shippingFee?: number;
+  totalAmount?: number;
 }
