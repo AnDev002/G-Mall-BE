@@ -95,7 +95,8 @@ export class ProductReadService implements OnModuleInit {
 
   // Helper cho TAG (@systemTags): KHÔNG dùng \, chỉ thay thế ký tự lỗi
   private sanitizeTagKeyword(str: string): string {
-      return str.replace(/[{}\|@*()\\\[\]]/g, ' ').trim().replace(/\s+/g, ' ');
+    // Regex này thay thế tất cả ký tự KHÔNG PHẢI là: Chữ cái, Số, Khoảng trắng, Chữ Tiếng Việt
+    return str.replace(/[^a-zA-Z0-9\s\u00C0-\u1EF9]/g, ' ').trim().replace(/\s+/g, ' ');
   }
 
   private async ensureSearchIndex() {
