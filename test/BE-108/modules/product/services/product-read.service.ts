@@ -152,11 +152,7 @@ export class ProductReadService implements OnModuleInit {
             select: { 
                 id: true, name: true, price: true, salesCount: true, 
                 status: true, slug: true, images: true, originalPrice: true,
-                systemTags: true, createdAt: true,
-                // [FIX CRITICAL]: Select thêm các trường Discount để Frontend tính toán
-                isDiscountActive: true,
-                discountType: true,
-                discountValue: true
+                systemTags: true, createdAt: true // [NEW] Select thêm createdAt
             }
         });
 
@@ -167,8 +163,6 @@ export class ProductReadService implements OnModuleInit {
             const key = `product:${p.id}`;
             const image = Array.isArray(p.images) && p.images.length > 0 ? (p.images[0] as any) : '';
             const tagsString = this.cleanSystemTags(p.systemTags);
-            
-            // [FIX CRITICAL]: Thêm discount info vào JSON gửi cho Frontend
             const frontendJson = JSON.stringify({
                 id: p.id,
                 name: p.name,
@@ -177,16 +171,13 @@ export class ProductReadService implements OnModuleInit {
                 originalPrice: Number(p.originalPrice || 0),
                 images: [image],
                 salesCount: p.salesCount || 0,
-                isDiscountActive: p.isDiscountActive,
-                discountType: p.discountType,
-                discountValue: Number(p.discountValue || 0)
             });
 
             pipeline.hset(key, {
                 name: p.name,
                 price: Number(p.price),
                 salesCount: p.salesCount || 0,
-                createdAt: p.createdAt ? new Date(p.createdAt).getTime() : 0, 
+                createdAt: p.createdAt ? new Date(p.createdAt).getTime() : 0, // [NEW] Convert to Timestamp
                 status: p.status,
                 id: p.id,
                 slug: p.slug,
@@ -213,7 +204,6 @@ export class ProductReadService implements OnModuleInit {
     const image = Array.isArray(product.images) && product.images.length > 0 ? (product.images[0] as any) : '';
     const tagsString = this.cleanSystemTags(product.systemTags);
 
-    // [FIX CRITICAL]: Thêm discount info vào JSON gửi cho Frontend
     const frontendJson = JSON.stringify({
         id: product.id,
         name: product.name,
@@ -222,16 +212,13 @@ export class ProductReadService implements OnModuleInit {
         originalPrice: Number(product.originalPrice || 0),
         images: [image],
         salesCount: product.salesCount || 0,
-        isDiscountActive: product.isDiscountActive,
-        discountType: product.discountType,
-        discountValue: Number(product.discountValue || 0)
     });
 
     await this.redis.hset(key, {
       name: product.name,
       price: Number(product.price),
       salesCount: product.salesCount || 0,
-      createdAt: product.createdAt ? new Date(product.createdAt).getTime() : 0, 
+      createdAt: product.createdAt ? new Date(product.createdAt).getTime() : 0, // [NEW]
       status: product.status,
       id: product.id,
       slug: product.slug,
@@ -350,10 +337,8 @@ export class ProductReadService implements OnModuleInit {
                 orderBySql = Prisma.sql`ORDER BY price DESC`;
             }
 
-            // [FIX CRITICAL]: Thêm các trường Discount vào SELECT
             const products = await this.prisma.$queryRaw<any[]>`
-                SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, 
-                       isDiscountActive, discountType, discountValue
+                SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt
                 FROM Product 
                 WHERE status = 'ACTIVE'
                 AND (
@@ -384,10 +369,6 @@ export class ProductReadService implements OnModuleInit {
                     price: Number(p.price),
                     originalPrice: Number(p.originalPrice || 0),
                     images: typeof p.images === 'string' ? JSON.parse(p.images) : p.images,
-                    // [FIX CRITICAL]: Map thêm discount info
-                    isDiscountActive: Boolean(p.isDiscountActive),
-                    discountType: p.discountType,
-                    discountValue: Number(p.discountValue || 0)
                 })),
                 meta: { total, page, limit, last_page: Math.ceil(total / limit) },
             };
@@ -415,7 +396,7 @@ export class ProductReadService implements OnModuleInit {
         
         this.logger.log(`🗑️ Removed product from Redis: ${name} (${id})`);
     } catch (e: any) {
-        this.logger.error(`Remove Error: ${e.message}`);
+        this.logger.error(`❌ Remove Redis Error: ${e.message}`);
     }
   }
 
