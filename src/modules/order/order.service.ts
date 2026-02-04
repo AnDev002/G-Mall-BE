@@ -479,14 +479,51 @@ export class OrderService {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new NotFoundException('Shop không tồn tại');
 
+    // Lấy thông tin đơn hàng hiện tại
     const order = await this.prisma.order.findFirst({
         where: { id: orderId, shopId: shop.id } 
     });
+
     if (!order) throw new NotFoundException('Đơn hàng không tồn tại hoặc không thuộc quyền quản lý');
 
-    return this.prisma.order.update({
-      where: { id: orderId },
-      data: { status }
+    // [QUAN TRỌNG] Nếu đơn đã giao thành công rồi thì không xử lý lại (tránh cộng điểm 2 lần)
+    if (order.status === 'DELIVERED') {
+         return this.prisma.order.update({
+             where: { id: orderId },
+             data: { status } // Vẫn update status nếu cần, nhưng không cộng điểm
+         });
+    }
+
+    // Sử dụng Transaction để đảm bảo Update Status + Cộng Xu cùng thành công
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Cập nhật trạng thái đơn hàng
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: { status }
+      });
+
+      // 2. Logic cộng xu: Chỉ khi status mới là DELIVERED
+      if (status === 'DELIVERED') {
+          // Tỷ lệ: 10.000 VND = 1 Xu
+          const pointsToEarn = Math.floor(Number(order.totalAmount) / 10000);
+
+          if (pointsToEarn > 0) {
+              await this.pointService.addPoints(
+                  order.userId,
+                  pointsToEarn,
+                  // [LƯU Ý] Đảm bảo Enum PointType trong schema.prisma đã có value 'EARN_ORDER'
+                  // Nếu chưa có, bạn cần thêm vào file schema.prisma: enum PointType { ... EARN_ORDER ... }
+                  PointType.EARN_ORDER, 
+                  `REWARD_${order.id}`, // Reference ID để không cộng trùng
+                  `Hoàn xu đơn hàng #${order.id.slice(0, 8)}`,
+                  tx // Truyền transaction context vào PointService
+              );
+              
+              this.logger.log(`[Reward] User ${order.userId} received ${pointsToEarn} points for Order ${order.id}`);
+          }
+      }
+
+      return updatedOrder;
     });
   }
 
