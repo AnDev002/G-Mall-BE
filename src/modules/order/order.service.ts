@@ -506,7 +506,8 @@ export class OrderService {
 
       // B. Tính toán xu thưởng (Ví dụ: 1% giá trị đơn hàng, làm tròn xuống)
       // Logic: 100.000đ = 10 xu (Tùy logic dự án của bạn)
-      const rawPoints = Number(order.totalAmount) / 10000; 
+      const conversionRate = await this.pointService.getConversionRate();
+      const rawPoints = Number(order.totalAmount) / conversionRate; 
       const pointsToEarn = Math.floor(rawPoints);
 
       let newBalance = 0;

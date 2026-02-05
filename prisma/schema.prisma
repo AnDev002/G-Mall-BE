@@ -115,6 +115,14 @@ model User {
   @@index([createdAt])
   
 }
+
+model SystemSetting {
+  key         String   @id // Ví dụ: "POINT_CONVERSION_RATE"
+  value       String   // Ví dụ: "10000"
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
 model ProductReview {
   id        String   @id @default(uuid())
   content   String?  @db.Text

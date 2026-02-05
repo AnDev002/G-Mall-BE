@@ -37,6 +37,21 @@ export class PointController {
     return this.pointService.initiateTransfer(user.id, body.receiverId, body.amount);
   }
 
+  // [NEW] Lấy tỷ lệ hiện tại (Admin xem)
+  @Get('rate')
+  @Roles(Role.ADMIN) // Chỉ Admin được xem cấu hình hệ thống
+  async getRate() {
+    const rate = await this.pointService.getConversionRate();
+    return { rate };
+  }
+
+  // [NEW] Cập nhật tỷ lệ (Admin sửa)
+  @Post('rate')
+  @Roles(Role.ADMIN)
+  async updateRate(@Body('rate') rate: number) {
+    return this.pointService.updateConversionRate(Number(rate));
+  }
+
   @Post('transfer/confirm')
   async confirmTransfer(
     @User() user,
