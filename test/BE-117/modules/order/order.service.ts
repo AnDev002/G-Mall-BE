@@ -474,73 +474,7 @@ export class OrderService {
       return updatedOrder;
     });
   }
-  async confirmOrderReceived(userId: string, orderId: string) {
-    // 1. Kiểm tra đơn hàng có tồn tại và thuộc về user này không
-    const order = await this.prisma.order.findFirst({
-      where: { id: orderId, userId },
-      include: { items: true } // Lấy items để tính toán nếu cần
-    });
 
-    if (!order) throw new NotFoundException('Đơn hàng không tồn tại');
-
-    // [SAFETY CHECK 1] Chặn nếu đơn hàng đã hoàn thành hoặc hủy
-    if (order.status === 'DELIVERED' || order.status === 'CANCELLED') {
-      throw new BadRequestException('Đơn hàng này đã được xử lý trước đó.');
-    }
-
-    // [SAFETY CHECK 2] Chỉ cho phép xác nhận khi đang vận chuyển hoặc đã xác nhận
-    if (!['SHIPPING', 'CONFIRMED'].includes(order.status)) {
-      throw new BadRequestException('Trạng thái đơn hàng không hợp lệ để xác nhận.');
-    }
-
-    // 2. TRANSACTION: Cập nhật trạng thái + Cộng xu + Ghi lịch sử
-    return this.prisma.$transaction(async (tx) => {
-      // A. Cập nhật trạng thái sang DELIVERED
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: { 
-            status: 'DELIVERED',
-            updatedAt: new Date() 
-        }
-      });
-
-      // B. Tính toán xu thưởng (Ví dụ: 1% giá trị đơn hàng, làm tròn xuống)
-      // Logic: 100.000đ = 10 xu (Tùy logic dự án của bạn)
-      const rawPoints = Number(order.totalAmount) / 10000; 
-      const pointsToEarn = Math.floor(rawPoints);
-
-      let newBalance = 0;
-
-      // C. Cộng xu (Nếu có)
-      if (pointsToEarn > 0) {
-         // Gọi hàm addPoints nhưng truyền transaction (tx) vào để đảm bảo atomic
-         // Lưu ý: Cần sửa hàm addPoints trong PointService để nhận tx (đã có trong file bạn gửi)
-         newBalance = await this.pointService.addPoints(
-            userId,
-            pointsToEarn,
-            PointType.EARN_ORDER,
-            `REWARD_${orderId}`,
-            `Hoàn xu đơn hàng #${orderId.slice(0, 8)}`,
-            tx
-         );
-      } else {
-         // Nếu không có xu thưởng thì lấy balance hiện tại để trả về FE update store
-         const wallet = await tx.pointWallet.findUnique({ where: { userId } });
-         newBalance = wallet?.balance || 0;
-      }
-
-      return {
-        success: true,
-        orderId: updatedOrder.id,
-        earnedPoints: pointsToEarn,
-        newBalance: newBalance // Trả về số dư mới nhất để FE cập nhật ngay lập tức
-      };
-
-    }, {
-      timeout: 10000, // Timeout 10s tránh deadlock
-      maxWait: 5000
-    });
-  }
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new NotFoundException('Shop không tồn tại');
