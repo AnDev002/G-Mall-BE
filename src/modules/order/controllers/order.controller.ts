@@ -58,6 +58,12 @@ export class OrderController {
     return this.orderService.getSellerOrders(req.user.id, status);
   }
 
+  @Post(':id/confirm')
+  async confirmReceived(@Request() req, @Param('id') id: string) {
+    // Gọi xuống service method mà chúng ta đã viết ở bước trước
+    return this.orderService.confirmOrderReceived(req.user.id, id);
+  }
+
 
   @Get(':id')
   async findOne(@Request() req, @Param('id') id: string) {
