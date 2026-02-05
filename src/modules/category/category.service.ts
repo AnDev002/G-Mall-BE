@@ -271,6 +271,7 @@ export class CategoryService {
   }
 
   async getBreadcrumbs(categoryId: string) {
+    // 1. Query đệ quy ngược lên cha (Giả sử tối đa 4 cấp)
     const category = await this.prisma.category.findUnique({
       where: { id: categoryId },
       include: {
@@ -292,11 +293,13 @@ export class CategoryService {
 
     if (!category) return [];
 
-    // [FIX]: Thêm kiểu dữ liệu rõ ràng cho mảng này
+    // 2. Làm phẳng cây phả hệ thành mảng tuyến tính
+    // Định nghĩa kiểu dữ liệu rõ ràng để tránh lỗi TypeScript
     const breadcrumbs: { id: string; name: string; slug: string }[] = []; 
     
     let current: any = category;
     
+    // Duyệt ngược từ node con lên cha và đẩy vào đầu mảng
     while (current) {
       breadcrumbs.unshift({
         id: current.id,
