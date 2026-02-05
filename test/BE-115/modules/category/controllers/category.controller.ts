@@ -50,9 +50,4 @@ export class CategoryController {
   async updateBatch(@Body() items: any[]) {
       return this.categoryService.updateBatch(items);
   }
-
-  @Get(':id/breadcrumbs')
-  async getBreadcrumbs(@Param('id') id: string) {
-    return this.categoryService.getBreadcrumbs(id);
-  }
 }

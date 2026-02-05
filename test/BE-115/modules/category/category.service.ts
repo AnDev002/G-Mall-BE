@@ -269,43 +269,4 @@ export class CategoryService {
   private generateSlug(text: string) {
     return text.toLowerCase().replace(/ /g, '-').replace(/[^\w-]+/g, '');
   }
-
-  async getBreadcrumbs(categoryId: string) {
-    const category = await this.prisma.category.findUnique({
-      where: { id: categoryId },
-      include: {
-        parent: {
-          select: {
-            id: true, name: true, slug: true,
-            parent: {
-              select: {
-                id: true, name: true, slug: true,
-                parent: {
-                   select: { id: true, name: true, slug: true }
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (!category) return [];
-
-    // [FIX]: Thêm kiểu dữ liệu rõ ràng cho mảng này
-    const breadcrumbs: { id: string; name: string; slug: string }[] = []; 
-    
-    let current: any = category;
-    
-    while (current) {
-      breadcrumbs.unshift({
-        id: current.id,
-        name: current.name,
-        slug: current.slug
-      });
-      current = current.parent;
-    }
-
-    return breadcrumbs;
-  }
 }
