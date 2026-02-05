@@ -2,7 +2,6 @@ import { BadRequestException, Injectable, InternalServerErrorException, NotFound
 import { PrismaService } from '../../database/prisma/prisma.service'; // Đường dẫn tuỳ project bạn
 import slugify from 'slugify'; // Cần cài: npm i slugify
 import { UpdateCategoryOrderDto } from './dto/update-category-order.dto';
-import { generateSlug } from 'src/common/utils/slug.util';
 
 @Injectable()
 export class CategoryService {
@@ -311,29 +310,5 @@ export class CategoryService {
     }
 
     return breadcrumbs;
-  }
-
-  async fixAllSlugs() {
-    const categories = await this.prisma.category.findMany();
-    let count = 0;
-
-    for (const cat of categories) {
-      // Tạo slug mới bằng hàm chuẩn (xử lý tiếng Việt)
-      const newSlug = generateSlug(cat.name);
-      
-      // Chỉ update nếu slug thực sự thay đổi
-      if (newSlug !== cat.slug) {
-        try {
-            await this.prisma.category.update({
-              where: { id: cat.id },
-              data: { slug: newSlug }
-            });
-            count++;
-        } catch (e) {
-            console.error(`Lỗi update slug cho danh mục ${cat.name}:`, e);
-        }
-      }
-    }
-    return { message: `Đã sửa lỗi slug thành công cho ${count} danh mục.` };
   }
 }
