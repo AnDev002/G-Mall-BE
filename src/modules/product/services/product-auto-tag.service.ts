@@ -24,93 +24,44 @@ export class ProductAutoTagService {
    * API Trigger quét sản phẩm theo danh sách luật (Rules) được gửi từ FE
    * Hoặc lấy từ SystemConfig trong DB nếu bạn lưu cấu hình ở đó.
    */
-  async scanAndTagAllProducts(customRules?: TagRule[]) {
-    this.logger.log('🚀 Bắt đầu quy trình Auto-Tag sản phẩm...');
-    
-    // Nếu không truyền rules, dùng rules mặc định (hoặc lấy từ DB)
-    const activeRules = customRules || []; 
-
-    if (activeRules.length === 0) {
-        return { message: "Không có luật Tag nào được cung cấp." };
-    }
-
-    // 1. Lấy toàn bộ sản phẩm đang ACTIVE
-    const products = await this.prisma.product.findMany({
+  async scanAndTagAllProducts(rules: { code: string, keywords: string[] }[]) {
+  // 1. Lấy tất cả sản phẩm đang active
+  const products = await this.prisma.product.findMany({ 
       where: { status: 'ACTIVE' },
-      select: { id: true, name: true, description: true, slug: true, systemTags: true }
-    });
+      select: { id: true, name: true, description: true, systemTags: true }
+  });
 
-    let updatedCount = 0;
-    const errors: string[] = [];
+  let updatedCount = 0;
 
-    // 2. Xử lý từng sản phẩm
-    for (const product of products) {
-      try {
-        const textToScan = (product.name + ' ' + (product.description || '')).toLowerCase();
-        
-        // Parse tags hiện tại
-        let currentTags: string[] = [];
-        try {
-          if (typeof product.systemTags === 'string') {
-             currentTags = JSON.parse(product.systemTags);
-          } else if (Array.isArray(product.systemTags)) {
-             currentTags = product.systemTags as any;
-          }
-        } catch (e) {
-          currentTags = [];
-        }
+  for (const product of products) {
+      const searchText = (product.name + ' ' + (product.description || '')).toLowerCase();
+      let currentTags = (product.systemTags as string[]) || [];
+      const originalTags = [...currentTags];
 
-        const tagSet = new Set(currentTags);
-        const originalSize = tagSet.size;
-
-        // --- CORE LOGIC: So khớp từ khóa ---
-        activeRules.forEach(rule => {
-          // Kiểm tra xem sản phẩm có chứa bất kỳ keyword nào của rule không
-          const isMatch = rule.keywords.some(k => textToScan.includes(k.toLowerCase()));
+      // 2. Loop qua rules để check
+      for (const rule of rules) {
+          const hasKeyword = rule.keywords.some(k => searchText.includes(k.toLowerCase()));
           
-          if (isMatch) {
-             tagSet.add(rule.code);
+          if (hasKeyword) {
+              if (!currentTags.includes(rule.code)) {
+                  currentTags.push(rule.code);
+              }
           } else {
-             // Tùy chọn: Có muốn XÓA tag nếu không còn khớp keyword không?
-             // Nếu muốn cơ chế "đồng bộ hoàn toàn", hãy uncomment dòng dưới:
-             // tagSet.delete(rule.code); 
+              // (Optional) Nếu không còn chứa keyword, có thể gỡ tag cũ ra?
+              // Tùy nghiệp vụ, ở đây ta chỉ thêm vào.
           }
-        });
-
-        // Chỉ update DB nếu có thay đổi
-        if (tagSet.size !== originalSize /* || logic check delete */) {
-          const newTags = Array.from(tagSet);
-
-          const updatedProduct = await this.prisma.product.update({
-            where: { id: product.id },
-            data: { 
-                systemTags: JSON.stringify(newTags) as any 
-            },
-            include: {
-                shop: { select: { id: true, name: true, avatar: true } },
-                variants: true,
-                category: true
-            }
-          });
-
-          // Sync Redis & Search Engine
-          await this.productCache.invalidateProduct(updatedProduct.id, updatedProduct.slug);
-          await this.productRead.syncProductToRedis(updatedProduct);
-
-          updatedCount++;
-        }
-      } catch (err: any) {
-        errors.push(product.id);
       }
-    }
 
-    this.logger.log(`✅ Hoàn tất Auto-tag. Đã cập nhật: ${updatedCount}/${products.length} sản phẩm.`);
-    
-    return {
-      totalScanned: products.length,
-      updated: updatedCount,
-      errors: errors.length,
-      appliedRules: activeRules.length
-    };
+      // 3. Nếu tags thay đổi thì update DB
+      if (JSON.stringify(originalTags) !== JSON.stringify(currentTags)) {
+          await this.prisma.product.update({
+              where: { id: product.id },
+              data: { systemTags: currentTags } // Prisma tự handle JSON array mapping
+          });
+          updatedCount++;
+      }
   }
+
+  return { updatedCount };
+}
 }
