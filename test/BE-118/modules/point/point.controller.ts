@@ -47,11 +47,11 @@ export class PointController {
     return { rate };
   }
 
+  // [NEW] Cập nhật tỷ lệ (Admin sửa)
   @Post('rate')
-  @UseGuards(JwtAuthGuard)
   @Roles(Role.ADMIN)
-  async updateConversionRate(@Body() body: { amount: number }) {
-    return this.pointService.updateConversionRate(body.amount);
+  async updateRate(@Body('rate') rate: number) {
+    return this.pointService.updateConversionRate(Number(rate));
   }
 
   @Post('transfer/confirm')
