@@ -1,7 +1,7 @@
 // type: uploaded file
 // fileName: Back-end/modules/product/controllers/admin-product.controller.ts
 
-import { Controller, Get, UseGuards, Param, Delete, Patch, Body, Query, Header, Post } from '@nestjs/common'; // [GENIUS] Thêm Header
+import { Controller, Get, UseGuards, Param, Delete, Patch, Body, Query, Header } from '@nestjs/common'; // [GENIUS] Thêm Header
 import { ProductWriteService } from '../services/product-write.service';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
@@ -11,13 +11,12 @@ import { PrismaService } from 'src/database/prisma/prisma.service';
 import { ProductStatus } from '@prisma/client';
 import { ProductReadService } from '../services/product-read.service';
 import { CategoryService } from '../../category/category.service';
-import { ProductAutoTagService, TagRule } from '../services/product-auto-tag.service';
 
 @Controller('admin/products')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN)
 export class AdminProductController {
-  constructor(private readonly productWriteService: ProductWriteService, private readonly prisma: PrismaService, private readonly productReadService: ProductReadService, private readonly categoryService: CategoryService, private readonly productAutoTagService: ProductAutoTagService) {}
+  constructor(private readonly productWriteService: ProductWriteService, private readonly prisma: PrismaService, private readonly productReadService: ProductReadService, private readonly categoryService: CategoryService) {}
 
   // Admin cần xem danh sách full (kể cả hàng ẩn/hết hàng) để quản lý
   @Get()
@@ -123,12 +122,6 @@ export class AdminProductController {
   async deleteProduct(@Param('id') id: string) {
       return this.productWriteService.delete(id);
   }
-
-  @Post('auto-tag/scan')
-    @Roles(Role.ADMIN)
-    async triggerAutoTag(@Body() body: { rules: TagRule[] }) {
-        return this.productAutoTagService.scanAndTagAllProducts(body.rules);
-    }
 
   // 4. API Xoá nhiều sản phẩm
   @Delete('bulk/delete') // DELETE body có thể không hoạt động ở một số proxy, nhưng chuẩn REST vẫn cho phép

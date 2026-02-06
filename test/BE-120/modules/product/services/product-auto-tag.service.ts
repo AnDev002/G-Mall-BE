@@ -2,13 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { ProductReadService } from './product-read.service';
 import { ProductCacheService } from './product-cache.service';
-
-// Định nghĩa kiểu dữ liệu cho luật tag
-export interface TagRule {
-  code: string;       // VD: 'recipient:baby'
-  label: string;      // VD: 'Trẻ sơ sinh'
-  keywords: string[]; // VD: ['sơ sinh', 'tã', 'bỉm', 'newborn']
-}
+import { AUTO_TAG_RULES } from '../constants/tag-rules';
 
 @Injectable()
 export class ProductAutoTagService {
@@ -21,23 +15,22 @@ export class ProductAutoTagService {
   ) {}
 
   /**
-   * API Trigger quét sản phẩm theo danh sách luật (Rules) được gửi từ FE
-   * Hoặc lấy từ SystemConfig trong DB nếu bạn lưu cấu hình ở đó.
+   * Quét toàn bộ sản phẩm ACTIVE và cập nhật lại Tags
    */
-  async scanAndTagAllProducts(customRules?: TagRule[]) {
-    this.logger.log('🚀 Bắt đầu quy trình Auto-Tag sản phẩm...');
+  async scanAndTagAllProducts() {
+    this.logger.log('🚀 Starting Auto-Tagging Process...');
     
-    // Nếu không truyền rules, dùng rules mặc định (hoặc lấy từ DB)
-    const activeRules = customRules || []; 
-
-    if (activeRules.length === 0) {
-        return { message: "Không có luật Tag nào được cung cấp." };
-    }
-
-    // 1. Lấy toàn bộ sản phẩm đang ACTIVE
+    // 1. Lấy sản phẩm (BỎ isDeleted, chỉ lấy status ACTIVE)
     const products = await this.prisma.product.findMany({
-      where: { status: 'ACTIVE' },
-      select: { id: true, name: true, description: true, slug: true, systemTags: true }
+      where: { 
+          status: 'ACTIVE' // [ĐÃ SỬA] Chỉ lọc theo status
+      },
+      // Select đủ trường để sync qua Redis không bị lỗi thiếu data
+      include: {
+        shop: { select: { id: true, name: true, avatar: true } },
+        variants: true,
+        category: true
+      }
     });
 
     let updatedCount = 0;
@@ -63,24 +56,17 @@ export class ProductAutoTagService {
         const tagSet = new Set(currentTags);
         const originalSize = tagSet.size;
 
-        // --- CORE LOGIC: So khớp từ khóa ---
-        activeRules.forEach(rule => {
-          // Kiểm tra xem sản phẩm có chứa bất kỳ keyword nào của rule không
+        // Apply Rules
+        AUTO_TAG_RULES.forEach(rule => {
           const isMatch = rule.keywords.some(k => textToScan.includes(k.toLowerCase()));
-          
-          if (isMatch) {
-             tagSet.add(rule.code);
-          } else {
-             // Tùy chọn: Có muốn XÓA tag nếu không còn khớp keyword không?
-             // Nếu muốn cơ chế "đồng bộ hoàn toàn", hãy uncomment dòng dưới:
-             // tagSet.delete(rule.code); 
-          }
+          if (isMatch) tagSet.add(rule.code);
         });
 
-        // Chỉ update DB nếu có thay đổi
-        if (tagSet.size !== originalSize /* || logic check delete */) {
+        // Chỉ update nếu có thay đổi
+        if (tagSet.size !== originalSize) {
           const newTags = Array.from(tagSet);
 
+          // A. Update Database
           const updatedProduct = await this.prisma.product.update({
             where: { id: product.id },
             data: { 
@@ -93,24 +79,53 @@ export class ProductAutoTagService {
             }
           });
 
-          // Sync Redis & Search Engine
+          // B. Sync Redis Cache & Search Index
           await this.productCache.invalidateProduct(updatedProduct.id, updatedProduct.slug);
           await this.productRead.syncProductToRedis(updatedProduct);
 
           updatedCount++;
         }
       } catch (err: any) {
+        this.logger.error(`Failed to tag product ${product.id}: ${err.message}`);
         errors.push(product.id);
       }
     }
 
-    this.logger.log(`✅ Hoàn tất Auto-tag. Đã cập nhật: ${updatedCount}/${products.length} sản phẩm.`);
+    this.logger.log(`✅ Auto-tagging finished. Updated: ${updatedCount}/${products.length} products.`);
     
     return {
       totalScanned: products.length,
       updated: updatedCount,
-      errors: errors.length,
-      appliedRules: activeRules.length
+      errors: errors.length
     };
+  }
+
+  /**
+   * Lấy thống kê số lượng sản phẩm theo từng Tag
+   */
+  async getTagStats() {
+    // [ĐÃ SỬA] Bỏ isDeleted: false
+    const products = await this.prisma.product.findMany({
+      where: { status: 'ACTIVE' }, 
+      select: { systemTags: true }
+    });
+
+    const counts: Record<string, number> = {};
+
+    products.forEach(p => {
+      try {
+        const tags = typeof p.systemTags === 'string' ? JSON.parse(p.systemTags) : p.systemTags;
+        if (Array.isArray(tags)) {
+          tags.forEach((t: string) => {
+            counts[t] = (counts[t] || 0) + 1;
+          });
+        }
+      } catch {}
+    });
+
+    return AUTO_TAG_RULES.map(rule => ({
+      ...rule,
+      count: counts[rule.code] || 0
+    })).sort((a, b) => b.count - a.count);
   }
 }
