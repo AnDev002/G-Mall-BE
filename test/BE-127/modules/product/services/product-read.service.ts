@@ -6,7 +6,6 @@ import { ProductCacheService } from './product-cache.service';
 import { CategoryService } from '../../category/category.service';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
-import { AUTO_TAG_RULES } from '../constants/tag-rules';
 
 interface FindAllPublicDto {
   page?: number;
@@ -19,7 +18,7 @@ interface FindAllPublicDto {
   maxPrice?: number;
   rating?: number;
   sort?: string;
-  tag?: string; // Param này giờ sẽ map ra keywords
+  tag?: string;
 }
 
 const SUGGESTION_KEY = 'sug:products';
@@ -28,6 +27,7 @@ const INDEX_NAME = 'idx:products';
 @Injectable()
 export class ProductReadService implements OnModuleInit {
   private readonly logger = new Logger(ProductReadService.name);
+  private readonly INDEX_NAME = 'idx:products';
   constructor(
     private readonly prisma: PrismaService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -38,15 +38,6 @@ export class ProductReadService implements OnModuleInit {
   async onModuleInit() {
     // Tự động kiểm tra và tạo lại Index khi khởi động
     await this.ensureSearchIndex();
-  }
-  // ===========================================================================
-  // [NEW] HELPER: Lấy keywords từ Tag Code
-  // ===========================================================================
-  private getKeywordsFromTag(tagCode: string): string[] {
-    if (!tagCode) return [];
-    // Tìm rule tương ứng trong file cấu hình
-    const rule = AUTO_TAG_RULES.find(r => r.code === tagCode);
-    return rule ? rule.keywords : [];
   }
 
   // ===========================================================================
@@ -86,6 +77,7 @@ export class ProductReadService implements OnModuleInit {
   
   // Helper cho TEXT (@name): Escape ký tự đặc biệt bằng \
   private escapeRediSearchText(str: string): string {
+    // Escape các ký tự đặc biệt: . - : , @ & | { } [ ] ( ) " ' ` ~ ^ * ?
     return str.replace(/([.?\-,:@&|{}[\]()"\\`~^*])/g, '\\$1').trim();
   }
 
@@ -105,15 +97,16 @@ export class ProductReadService implements OnModuleInit {
           'ON', 'HASH',
           'PREFIX', '1', 'product:',
           'SCHEMA',
-          'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', // Quan trọng nhất là field này
+          'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE',
           'slug', 'TEXT', 'NOSTEM',
           'price', 'NUMERIC', 'SORTABLE',
           'salesCount', 'NUMERIC', 'SORTABLE',
           'createdAt', 'NUMERIC', 'SORTABLE',
           'status', 'TAG',
+          // [FIX]: Định nghĩa TAG với separator dấu phẩy rõ ràng
           'systemTags', 'TAG', 'SEPARATOR', ',' 
         );
-        this.logger.log('✅ RediSearch Index created');
+        this.logger.log('✅ RediSearch Index created with correct TAG schema!');
         await this.syncAllProductsToRedis();
       }
     } catch (e: any) {
@@ -121,6 +114,30 @@ export class ProductReadService implements OnModuleInit {
         this.logger.error(`Index Error: ${e.message}`);
       }
     }
+  }
+
+  private async createSearchIndex() {
+      try {
+        await this.redis.call(
+            'FT.CREATE', this.INDEX_NAME, 
+            'ON', 'HASH', 
+            'PREFIX', '1', 'product:', 
+            'SCHEMA', 
+            'name', 'TEXT', 'WEIGHT', '5.0', 'SORTABLE', 
+            'slug', 'TEXT', 'NOSTEM', 
+            'price', 'NUMERIC', 'SORTABLE',
+            'salesCount', 'NUMERIC', 'SORTABLE',
+            'createdAt', 'NUMERIC', 'SORTABLE',
+            'status', 'TAG',
+            'systemTags', 'TAG', 'SEPARATOR', ',' // [QUAN TRỌNG] Định nghĩa separator
+        );
+        this.logger.log('✅ RediSearch Index created');
+        await this.syncAllProductsToRedis();
+      } catch (e: any) {
+         if(!e.message?.includes('already exists')) {
+             this.logger.error(`Create Index Error: ${e.message}`);
+         }
+      }
   }
 
   async syncAllProductsToRedis() {
@@ -230,96 +247,87 @@ export class ProductReadService implements OnModuleInit {
 
     let resultData: any = null;
     const searchKeyword = query.search ? query.search.trim() : '';
-    const tagCode = query.tag ? query.tag.trim() : '';
+    const tagKeyword = query.tag ? query.tag.trim() : '';
 
-    // [STEP 1] Mapping Tag -> Keywords
-    let tagKeywords: string[] = [];
-    if (tagCode) {
-        tagKeywords = this.getKeywordsFromTag(tagCode);
-        // Nếu tag không tồn tại trong config, ta có thể log warning hoặc bỏ qua
-        if (tagKeywords.length === 0) {
-            this.logger.warn(`No keywords found for tag: ${tagCode}`);
-        }
-    }
-
-    // --- BƯỚC 2: REDIS SEARCH (Đã cập nhật logic mới) ---
-    // Mặc dù ưu tiên MySQL, nhưng ta vẫn giữ logic Redis phòng khi VPS nâng cấp
-    if ((searchKeyword.length > 0 || tagKeywords.length > 0) && false) { // Tạm thời disable bằng && false nếu bạn muốn test cứng MySQL
+    // --- BƯỚC 1: REDIS SEARCH ---
+    if (searchKeyword.length > 0 || tagKeyword.length > 0) {
         try {
+            // Base Query: Status Active
             let ftQuery = `@status:{ACTIVE}`;
             
-            // Logic cũ: Search keyword người dùng nhập
+            // 1. Filter by Name (Keyword)
             if (searchKeyword) {
+                // Escape text search để tránh lỗi syntax
                 const cleanName = this.escapeRediSearchText(searchKeyword);
                 if (cleanName) {
+                    // Fuzzy match + prefix match
                     const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
                     ftQuery += ` @name:(${nameTokens})`;
                 }
             }
 
-            // [FIX] Logic mới: Tag -> Keywords -> Search trong @name
-            if (tagKeywords.length > 0) {
-                // Tạo query dạng: @name:(keyword1 | keyword2 | keyword3)
-                // Dùng dấu | (OR) trong RediSearch
-                const orConditions = tagKeywords
-                    .map(k => {
-                        const cleanK = this.escapeRediSearchText(k);
-                        return cleanK ? `"${cleanK}"` : ''; // Dùng exact match phrase hoặc prefix tùy nhu cầu
-                    })
-                    .filter(k => k !== '')
-                    .join('|');
-                
-                if (orConditions) {
-                    ftQuery += ` @name:(${orConditions})`;
-                }
+            // 2. Filter by Tag
+            // [FIX LOGIC] Dùng cú pháp TAG @field:{value} và escape value đúng cách
+            if (tagKeyword) {
+               // Ví dụ tagKeyword là "recipient:pregnant" -> escaped thành "recipient\:pregnant"
+               const safeTag = this.escapeTagValue(tagKeyword);
+               if (safeTag) {
+                   ftQuery += ` @systemTags:{${safeTag}}`; 
+               }
             }
 
-            // ... (Phần gọi Redis.call giữ nguyên) ...
-            // const searchRes = await this.redis.call(...)
-            // Nếu Redis fail hoặc trả về null -> resultData = null -> Fallback
-        } catch (e) {
-            resultData = null;
+            // this.logger.debug(`RediSearch Query: ${ftQuery}`); // Uncomment để debug query thực tế
+
+            const searchRes: any = await this.redis.call(
+                'FT.SEARCH', INDEX_NAME, 
+                ftQuery,
+                'LIMIT', skip, limit,
+                'SORTBY', sortByField, sortDirection,
+                'RETURN', '1', 'json' 
+            );
+
+            const total = searchRes[0];
+            if (total > 0) {
+                const products: any[] = [];
+                for (let i = 1; i < searchRes.length; i += 2) {
+                    const fields = searchRes[i + 1];
+                    if (fields && fields.length >= 2) {
+                        const jsonStr = fields[fields.indexOf('json') + 1];
+                        if(jsonStr) products.push(JSON.parse(jsonStr));
+                    }
+                }
+                resultData = {
+                    data: products,
+                    meta: { total, page, limit, last_page: Math.ceil(total / limit) },
+                };
+            } else {
+                 // Nếu Redis trả về 0 kết quả dù có tag, có thể do index chưa sync kịp
+                 // Cho phép Fallback xuống DB
+                 resultData = null; 
+            }
+        } catch (e: any) {
+            this.logger.error(`❌ [Redis Search Fail] Query: ${searchKeyword} | Tag: ${tagKeyword} - Error: ${e.message}`);
+            resultData = null; // Fallback to DB
         }
     }
 
-    // --- BƯỚC 3: DATABASE FALLBACK (PRIORITY) ---
-    // Logic này sẽ chạy chính hiện tại
+    // --- BƯỚC 2: DATABASE FALLBACK ---
     if (!resultData) {
         try {
             const whereConditions: Prisma.Sql[] = [Prisma.sql`status = 'ACTIVE'`];
 
-            // 1. Xử lý Search box thông thường
+            // Filter by Tag (LIKE %tag%)
+            if (tagKeyword) {
+                // MySQL xử lý JSON: tìm kiếm giá trị trong mảng JSON
+                // Sử dụng JSON_CONTAINS để tìm chính xác tag trong cột systemTags
+                whereConditions.push(Prisma.sql`JSON_CONTAINS(systemTags, CAST(${JSON.stringify(tagKeyword)} AS JSON))`);
+            }
+
             if (searchKeyword) {
                 const rawSearch = `%${searchKeyword}%`;
                 whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
             }
 
-            // 2. [CORE CHANGE] Xử lý Filter theo Tag bằng cách quét Title
-            if (tagKeywords.length > 0) {
-                // Tạo mảng các điều kiện LIKE: name LIKE '%kw1%' OR name LIKE '%kw2%'
-                const keywordConditions = tagKeywords.map(kw => {
-                    const likeStr = `%${kw}%`;
-                    return Prisma.sql`name LIKE ${likeStr}`;
-                });
-
-                // Gom nhóm các điều kiện bằng OR và bọc trong ngoặc đơn AND (...)
-                // Kết quả SQL: AND (name LIKE '%ông%' OR name LIKE '%bà%' ...)
-                if (keywordConditions.length > 0) {
-                    whereConditions.push(Prisma.sql`(${Prisma.join(keywordConditions, ' OR ')})`);
-                }
-            }
-            // 3. Xử lý các filter khác (Category, Price...)
-            if (query.categoryId) {
-                whereConditions.push(Prisma.sql`categoryId = ${query.categoryId}`);
-            }
-             if (query.minPrice !== undefined) {
-                whereConditions.push(Prisma.sql`price >= ${query.minPrice}`);
-            }
-            if (query.maxPrice !== undefined) {
-                whereConditions.push(Prisma.sql`price <= ${query.maxPrice}`);
-            }
-
-            // Build SQL
             const whereClause = whereConditions.length > 0 
                 ? Prisma.sql`WHERE ${Prisma.join(whereConditions, ' AND ')}` 
                 : Prisma.sql``;
@@ -329,7 +337,6 @@ export class ProductReadService implements OnModuleInit {
             else if (query.sort === 'price_asc') orderBySql = Prisma.sql`ORDER BY price ASC`;
             else if (query.sort === 'price_desc') orderBySql = Prisma.sql`ORDER BY price DESC`;
 
-            // Execute Query
             const products = await this.prisma.$queryRaw<any[]>`
                 SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, systemTags,
                        isDiscountActive, discountType, discountValue
@@ -339,7 +346,8 @@ export class ProductReadService implements OnModuleInit {
                 LIMIT ${limit} OFFSET ${skip}
             `;
             
-            // Count Total
+            // Fix count query cho raw SQL
+            // Lưu ý: Đếm count(*) với raw query trả về BigInt, cần convert
             const countResult = await this.prisma.$queryRaw<any[]>`
                 SELECT COUNT(*) as total FROM Product ${whereClause}
             `;
