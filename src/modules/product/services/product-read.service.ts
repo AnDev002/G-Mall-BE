@@ -98,8 +98,12 @@ export class ProductReadService implements OnModuleInit {
   }
 
   private async getKeywordsFromDynamicConfig(tagCode: string): Promise<string[]> {
+    // 1. [DEBUG] Check xem có bị dính Hardcode Rule không?
     const staticRule = AUTO_TAG_RULES.find(r => r.code === tagCode);
-    if (staticRule) return staticRule.keywords;
+    if (staticRule) {
+        console.log(`⚠️ [Tag Debug] Tag "${tagCode}" found in AUTO_TAG_RULES (Hardcoded):`, staticRule.keywords);
+        return staticRule.keywords;
+    }
 
     try {
         const CONFIG_KEYS = ['HEADER_RECIPIENT', 'HEADER_OCCASION', 'HEADER_BUSINESS'];
@@ -109,20 +113,36 @@ export class ProductReadService implements OnModuleInit {
 
         if (!configs || configs.length === 0) return [];
 
+        let foundKeywords: string[] | null = null;
+
+        // Hàm đệ quy tìm kiếm
         const findKeywords = (items: any[]): string[] | null => {
             if (!Array.isArray(items)) return null;
             
             for (const item of items) {
-                // Kiểm tra nếu item match code HOẶC link chứa tag
-                if ((item.code === tagCode) || (item.link && item.link.includes(`tag=${tagCode}`))) {
-                    // [FIX] Xử lý an toàn cho cả String và Array
+                // Kiểm tra match Code HOẶC Link chứa tag
+                const isMatch = (item.code === tagCode) || (item.link && item.link.includes(`tag=${tagCode}`));
+                
+                if (isMatch) {
+                    // [DEBUG QUAN TRỌNG] In ra toàn bộ item tìm được để xem DB lưu cái gì
+                    console.log(`✅ [Tag Debug] Found Item match for "${tagCode}":`, JSON.stringify(item));
+                    
+                    // Logic lấy keywords linh hoạt
                     if (item.keywords) {
-                        if (Array.isArray(item.keywords)) return item.keywords; // Đã là mảng thì trả về luôn
-                        if (typeof item.keywords === 'string') return item.keywords.split(',').map((k: string) => k.trim());
+                        if (Array.isArray(item.keywords)) {
+                             console.log("   -> Type: Array");
+                             return item.keywords;
+                        }
+                        if (typeof item.keywords === 'string') {
+                             console.log("   -> Type: String");
+                             // [FIX] Split bằng cả dấu phẩy thường và phẩy tiếng Việt (nếu có), hoặc dấu chấm phẩy
+                             return item.keywords.split(/[,;]+/).map((k: string) => k.trim()).filter(Boolean);
+                        }
+                    } else {
+                        console.log("   -> ❌ Item has NO keywords property!");
                     }
                 }
                 
-                // Đệ quy tìm con
                 const foundInChild = findKeywords(item.children || item.items);
                 if (foundInChild) return foundInChild;
             }
@@ -131,11 +151,19 @@ export class ProductReadService implements OnModuleInit {
 
         for (const config of configs) {
             const menuTree = typeof config.value === 'string' ? JSON.parse(config.value) : config.value;
-            const result = findKeywords(menuTree);
-            if (result) return result;
+            foundKeywords = findKeywords(menuTree);
+            if (foundKeywords) break;
         }
+
+        if (foundKeywords) {
+            console.log(`🎉 [Tag Debug] Final Keywords for "${tagCode}":`, foundKeywords);
+            return foundKeywords;
+        }
+
+        console.log(`⚠️ [Tag Debug] No keywords found anywhere for "${tagCode}"`);
         return [];
     } catch (e) { 
+        console.error(`❌ [Tag Debug] Error:`, e);
         return []; 
     }
   }
