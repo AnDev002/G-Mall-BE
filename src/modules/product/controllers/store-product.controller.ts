@@ -8,6 +8,22 @@ import { PrismaService } from 'src/database/prisma/prisma.service';
 export class StoreProductController {
   constructor(private readonly productReadService: ProductReadService, private readonly prisma: PrismaService) {}
 
+
+
+  @Public()
+  @Get()
+  async findAll(@Query() query: any) {
+    return this.productReadService.getAdminProductSelector(query);
+  }
+
+  // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
+  // URL: GET /products/search?keyword=abc&shopId=...
+  @Public()
+  @Get('search')
+  async search(@Query() query: any) {
+    return this.productReadService.searchPublic(query);
+  }
+
   @Get()
   @Public()
   @UseGuards(JwtAuthGuard)

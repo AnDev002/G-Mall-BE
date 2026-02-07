@@ -256,9 +256,6 @@ export class ProductReadService implements OnModuleInit {
   // [QUAN TRỌNG] HÀM ĐƯỢC FIX LỖI "TOTAL 0"
   // ===========================================================================
   async findAllPublic(query: FindAllPublicDto) {
-    console.log("🔥 [Backend] findAllPublic Called");
-    console.log("   - Query Search:", query.search);
-    console.log("   - Query Tag:", query.tag);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
@@ -455,7 +452,117 @@ export class ProductReadService implements OnModuleInit {
 
     return resultData || { data: [], meta: { total: 0, page, limit, last_page: 0 } };
   }
-  
+  async getAdminProductSelector(query: any) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.max(1, Number(query.limit) || 20);
+    const skip = (page - 1) * limit;
+    const { keyword, shopId } = query;
+
+    // 1. Điều kiện lọc cơ bản
+    const where: any = {
+        isDeleted: false,
+        status: 'ACTIVE', // Chỉ lấy sản phẩm đang hoạt động để hiển thị lên Home
+    };
+
+    // 2. Lọc theo Shop (Bắt buộc hoặc tùy chọn tùy logic của bạn)
+    if (shopId) {
+        where.shopId = shopId;
+    }
+
+    // 3. Tìm kiếm (Search) - Query trực tiếp DB cho chính xác
+    if (keyword) {
+        where.OR = [
+            { name: { contains: keyword, mode: 'insensitive' } },
+            { sku: { contains: keyword, mode: 'insensitive' } }
+        ];
+    }
+
+    try {
+        const [products, total] = await Promise.all([
+            this.prisma.product.findMany({
+                where,
+                take: limit,
+                skip,
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    id: true,
+                    name: true,
+                    price: true,
+                    images: true, // Lấy ảnh
+                    shop: {
+                        select: { id: true, name: true } // Lấy tên shop để hiển thị nếu cần
+                    }
+                }
+            }),
+            this.prisma.product.count({ where })
+        ]);
+
+        // Mapping dữ liệu ảnh cho an toàn (tránh lỗi JSON/String)
+        const safeData = products.map(p => {
+            let parsedImages = [];
+            try {
+                parsedImages = typeof p.images === 'string' ? JSON.parse(p.images) : p.images;
+            } catch (e) {
+                parsedImages = [];
+            }
+
+            return {
+                ...p,
+                price: Number(p.price),
+                images: Array.isArray(parsedImages) ? parsedImages : [parsedImages]
+            };
+        });
+
+        return {
+            data: safeData,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
+
+    } catch (error) {
+        console.error("Error in getAdminProductSelector:", error);
+        return { data: [], meta: { total: 0, page, limit, totalPages: 0 } };
+    }
+  }
+  async searchPublic(query: any) {
+    const keyword = query.keyword || '';
+    const limit = Number(query.limit) || 20;
+    
+    if (!keyword) return { data: [] };
+
+    const where: any = {
+      status: 'ACTIVE',
+      isDeleted: false,
+      OR: [
+        { name: { contains: keyword, mode: 'insensitive' } },
+        { sku: { contains: keyword, mode: 'insensitive' } }, // Search cả SKU
+      ],
+    };
+
+    // QUAN TRỌNG: Nếu đang chọn Shop, chỉ search trong Shop đó
+    if (query.shopId) {
+      where.shopId = query.shopId;
+    }
+
+    const products = await this.prisma.product.findMany({
+      where,
+      take: limit,
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        images: true,
+        shop: { select: { name: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    return { data: products };
+  }
   // ... (Giữ nguyên các hàm removeProductFromRedis, escapeTagValue, searchSuggestions, findOnePublic, findRelated, findMoreFromShop, searchProductsForAdmin, findAllForSeller, findShopProducts, findBoughtTogether, getPersonalizedFeed)
   async removeProductFromRedis(id: string, name: string) {
       await this.redis.del(`product:${id}`);
