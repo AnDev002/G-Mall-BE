@@ -85,4 +85,10 @@ export const AUTO_TAG_RULES: TagRule[] = [
     label: 'Quà tặng Chồng', 
     keywords: ['iphone', 'điện thoại', 'đồng hồ', 'áo sơ mi'] 
   },
+  { 
+    code: 'recipient_qua_tang_con_trai',
+    group: 'recipient', 
+    label: 'Quà tặng Con trai', 
+    keywords: ['váy'] 
+  },
 ];
