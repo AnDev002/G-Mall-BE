@@ -100,30 +100,44 @@ export class ProductReadService implements OnModuleInit {
   private async getKeywordsFromDynamicConfig(tagCode: string): Promise<string[]> {
     const staticRule = AUTO_TAG_RULES.find(r => r.code === tagCode);
     if (staticRule) return staticRule.keywords;
+
     try {
         const CONFIG_KEYS = ['HEADER_RECIPIENT', 'HEADER_OCCASION', 'HEADER_BUSINESS'];
         const configs = await this.prisma.systemConfig.findMany({
             where: { key: { in: CONFIG_KEYS } }
         });
+
         if (!configs || configs.length === 0) return [];
+
         const findKeywords = (items: any[]): string[] | null => {
             if (!Array.isArray(items)) return null;
+            
             for (const item of items) {
+                // Kiểm tra nếu item match code HOẶC link chứa tag
                 if ((item.code === tagCode) || (item.link && item.link.includes(`tag=${tagCode}`))) {
-                    if (item.keywords) return item.keywords.split(',').map((k: string) => k.trim());
+                    // [FIX] Xử lý an toàn cho cả String và Array
+                    if (item.keywords) {
+                        if (Array.isArray(item.keywords)) return item.keywords; // Đã là mảng thì trả về luôn
+                        if (typeof item.keywords === 'string') return item.keywords.split(',').map((k: string) => k.trim());
+                    }
                 }
+                
+                // Đệ quy tìm con
                 const foundInChild = findKeywords(item.children || item.items);
                 if (foundInChild) return foundInChild;
             }
             return null;
         };
+
         for (const config of configs) {
             const menuTree = typeof config.value === 'string' ? JSON.parse(config.value) : config.value;
             const result = findKeywords(menuTree);
             if (result) return result;
         }
         return [];
-    } catch (e) { return []; }
+    } catch (e) { 
+        return []; 
+    }
   }
 
   async syncAllProductsToRedis() {
