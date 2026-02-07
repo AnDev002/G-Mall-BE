@@ -456,24 +456,23 @@ export class ProductReadService implements OnModuleInit {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
-    const { keyword, shopId } = query;
+    const { keyword, shopId } = query; // Lấy keyword nếu frontend gửi tên là 'keyword' hoặc 'search'
 
     // 1. Điều kiện lọc cơ bản
-    const where: any = {
-        isDeleted: false,
-        status: 'ACTIVE', // Chỉ lấy sản phẩm đang hoạt động để hiển thị lên Home
+    const where: Prisma.ProductWhereInput = {
+        status: 'ACTIVE', // Chỉ lấy sản phẩm đang hoạt động
     };
 
-    // 2. Lọc theo Shop (Bắt buộc hoặc tùy chọn tùy logic của bạn)
+    // 2. Lọc theo Shop (QUAN TRỌNG)
     if (shopId) {
         where.shopId = shopId;
     }
 
-    // 3. Tìm kiếm (Search) - Query trực tiếp DB cho chính xác
-    if (keyword) {
+    // 3. Tìm kiếm (Search) - Query trực tiếp DB
+    const searchTerm = keyword || query.search;
+    if (searchTerm) {
         where.OR = [
-            { name: { contains: keyword, mode: 'insensitive' } },
-            { sku: { contains: keyword, mode: 'insensitive' } }
+            { name: { contains: searchTerm } },
         ];
     }
 
@@ -490,7 +489,7 @@ export class ProductReadService implements OnModuleInit {
                     price: true,
                     images: true, // Lấy ảnh
                     shop: {
-                        select: { id: true, name: true } // Lấy tên shop để hiển thị nếu cần
+                        select: { id: true, name: true }
                     }
                 }
             }),
@@ -499,17 +498,24 @@ export class ProductReadService implements OnModuleInit {
 
         // Mapping dữ liệu ảnh cho an toàn (tránh lỗi JSON/String)
         const safeData = products.map(p => {
-            let parsedImages = [];
+            let parsedImages: string[] = [];
             try {
-                parsedImages = typeof p.images === 'string' ? JSON.parse(p.images) : p.images;
+                if (Array.isArray(p.images)) {
+                    parsedImages = p.images as string[];
+                } else if (typeof p.images === 'string') {
+                    parsedImages = JSON.parse(p.images);
+                }
             } catch (e) {
                 parsedImages = [];
             }
 
+            // Đảm bảo images luôn là mảng và lấy ảnh đầu tiên làm thumbnail
+            const displayImage = parsedImages.length > 0 ? parsedImages[0] : '/placeholder.png';
+
             return {
                 ...p,
                 price: Number(p.price),
-                images: Array.isArray(parsedImages) ? parsedImages : [parsedImages]
+                images: [displayImage] // Trả về format mảng để frontend ProductSelector dễ render
             };
         });
 

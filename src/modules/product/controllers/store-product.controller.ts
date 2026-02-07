@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Request, Headers, UseGuards, Post, ParseUUIDPipe, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Param, Query, Request, Headers, UseGuards, Post, ParseUUIDPipe, DefaultValuePipe, ParseIntPipe, Header } from '@nestjs/common';
 import { ProductReadService } from '../services/product-read.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
@@ -47,6 +47,13 @@ export class StoreProductController {
       sort,
       tag,
     });
+  }
+
+  
+  @Get('selector')
+  @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
+  async getProductSelector(@Query() query: any) {
+      return this.productReadService.getAdminProductSelector(query);
   }
 
   @Get(':id')
@@ -190,10 +197,6 @@ export class StoreProductController {
     };
   }
   
-  @Get('selector')
-  async getProductSelector(@Query() query: any) {
-      return this.productReadService.getAdminProductSelector(query);
-  }
 
   // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
   // URL: GET /products/search?keyword=abc&shopId=...
