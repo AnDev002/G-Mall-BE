@@ -124,48 +124,58 @@ export class ProductReadService implements OnModuleInit {
   }
 
   private async getKeywordsFromDynamicConfig(tagCode: string): Promise<string[]> {
+    // 1. Ưu tiên tìm trong file tĩnh trước (để đỡ query DB nếu có)
     const staticRule = AUTO_TAG_RULES.find(r => r.code === tagCode);
     if (staticRule) return staticRule.keywords;
 
+    // 2. Nếu không có, tìm trong SystemConfig (Cache Redis hoặc DB)
+    // Giả sử bạn lưu key cấu hình là 'HEADER_RECIPIENT'
+    // Lưu ý: Nên cache biến này lại để không query DB liên tục
     try {
-        // [FIX 1]: Tìm trong danh sách các key menu hệ thống thay vì chỉ 1 key
-        const CONFIG_KEYS = ['HEADER_RECIPIENT', 'HEADER_OCCASION', 'HEADER_BUSINESS'];
-        
-        const configs = await this.prisma.systemConfig.findMany({
-            where: { key: { in: CONFIG_KEYS } }
+        const configRecord = await this.prisma.systemConfig.findUnique({
+            where: { key: 'HEADER_RECIPIENT' } // Tên key trong bảng config của bạn
         });
 
-        if (!configs || configs.length === 0) return [];
+        if (!configRecord || !configRecord.value) return [];
 
-        // Hàm đệ quy tìm kiếm (giữ nguyên logic cũ nhưng tối ưu)
+        // Parse JSON cây menu
+        const menuTree = typeof configRecord.value === 'string' 
+            ? JSON.parse(configRecord.value) 
+            : configRecord.value;
+
+        // Hàm đệ quy để tìm tag trong cây menu
         const findKeywords = (items: any[]): string[] | null => {
-            if (!Array.isArray(items)) return null;
             for (const item of items) {
-                // Check code hoặc link chứa tag
-                if ((item.code === tagCode) || (item.link && item.link.includes(`tag=${tagCode}`))) {
+                // Check nếu item này có link chứa tag mình cần
+                // Ví dụ link: "/search?tag=recipient_qua_tang_bo"
+                if (item.link && item.link.includes(`tag=${tagCode}`)) {
+                    // Tách keywords từ chuỗi (VD: "bàn chải điện, máy cạo râu")
                     if (item.keywords) {
                         return item.keywords.split(',').map((k: string) => k.trim());
                     }
                 }
-                const foundInChild = findKeywords(item.children || item.items);
-                if (foundInChild) return foundInChild;
+                
+                // Nếu có con, tìm tiếp trong con (children hoặc items)
+                if (item.children) {
+                    const result = findKeywords(item.children);
+                    if (result) return result;
+                }
+                if (item.items) {
+                     const result = findKeywords(item.items);
+                     if (result) return result;
+                }
             }
             return null;
         };
 
-        // Duyệt qua từng cấu hình để tìm
-        for (const config of configs) {
-            const menuTree = typeof config.value === 'string' ? JSON.parse(config.value) : config.value;
-            const result = findKeywords(menuTree);
-            if (result) return result; // Tìm thấy thì return ngay
-        }
+        const foundKeywords = findKeywords(menuTree);
+        return foundKeywords || [];
 
-        return [];
     } catch (e) {
         this.logger.error(`Error parsing dynamic config: ${e.message}`);
         return [];
     }
-}
+  }
 
   async syncAllProductsToRedis() {
     try {
@@ -287,7 +297,7 @@ export class ProductReadService implements OnModuleInit {
 
     // --- BƯỚC 2: REDIS SEARCH (Đã cập nhật logic mới) ---
     // Mặc dù ưu tiên MySQL, nhưng ta vẫn giữ logic Redis phòng khi VPS nâng cấp
-    if ((searchKeyword.length > 0 || tagKeywords.length > 0)) { // Tạm thời disable bằng && false nếu bạn muốn test cứng MySQL
+    if ((searchKeyword.length > 0 || tagKeywords.length > 0) && false) { // Tạm thời disable bằng && false nếu bạn muốn test cứng MySQL
         try {
             let ftQuery = `@status:{ACTIVE}`;
             
@@ -333,21 +343,8 @@ export class ProductReadService implements OnModuleInit {
 
             // 1. Xử lý Search box thông thường
             if (searchKeyword) {
-                // Nếu search có dấu phẩy (vd: "iphone, váy"), tự động chuyển sang tìm kiếm OR
-                if (searchKeyword.includes(',')) {
-                    const keywords = searchKeyword.split(',').map(k => k.trim()).filter(Boolean);
-                    const orConditions = keywords.map(kw => {
-                        const likeStr = `%${kw}%`;
-                        return Prisma.sql`(name LIKE ${likeStr} OR description LIKE ${likeStr})`;
-                    });
-                    if (orConditions.length > 0) {
-                        whereConditions.push(Prisma.sql`(${Prisma.join(orConditions, ' OR ')})`);
-                    }
-                } else {
-                    // Search thường (giữ nguyên)
-                    const rawSearch = `%${searchKeyword}%`;
-                    whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
-                }
+                const rawSearch = `%${searchKeyword}%`;
+                whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
             }
 
             // 2. [CORE CHANGE] Xử lý Filter theo Tag bằng cách quét Title
