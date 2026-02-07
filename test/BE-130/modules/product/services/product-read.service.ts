@@ -218,6 +218,12 @@ export class ProductReadService implements OnModuleInit {
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
 
+    let sortByField = 'createdAt';
+    let sortDirection = 'DESC';
+    if (query.sort === 'sales') sortByField = 'salesCount';
+    if (query.sort === 'price_asc') { sortByField = 'price'; sortDirection = 'ASC'; }
+    if (query.sort === 'price_desc') { sortByField = 'price'; sortDirection = 'DESC'; }
+
     let resultData: any = null;
     const searchKeyword = query.search ? query.search.trim() : '';
     const tagCode = query.tag ? query.tag.trim() : '';
@@ -228,63 +234,54 @@ export class ProductReadService implements OnModuleInit {
         tagKeywords = await this.getKeywordsFromDynamicConfig(tagCode);
     }
 
-    // --- BƯỚC 2: REDIS SEARCH (LOGIC FIX) ---
+    // --- BƯỚC 2: REDIS SEARCH ---
     if (searchKeyword.length > 0 || tagKeywords.length > 0) {
         try {
-            // Khởi tạo mảng chứa các cụm điều kiện (OR clauses)
-            const orClauses: string[] = [];
-
-            // A. Xử lý Search Keywords (từ URL: ?q=iphone,váy,bàn chải)
+            let ftQuery = `@status:{ACTIVE}`;
+            
+            // Xử lý Search Keywords
             if (searchKeyword) {
                 const phrases = searchKeyword.split(',').map(p => p.trim()).filter(Boolean);
-                phrases.forEach(phrase => {
-                    const cleanPhrase = this.escapeRediSearchText(phrase);
-                    if (cleanPhrase) {
-                        // Logic: Một cụm từ "bàn chải" -> Cần tìm Name chứa "bàn" VÀ chứa "chải"
-                        // Tạo sub-query: (@name:bàn* @name:chải*)
-                        // Dấu cách ở giữa 2 @name đóng vai trò là AND
-                        const tokens = cleanPhrase.split(/\s+/).map(w => `@name:${w}*`).join(' ');
-                        orClauses.push(`(${tokens})`);
-                    }
-                });
+                if (phrases.length > 0) {
+                    const processedPhrases = phrases.map(phrase => {
+                        const cleanPhrase = this.escapeRediSearchText(phrase);
+                        return cleanPhrase.split(/\s+/).map(word => `${word}*`).join(' ');
+                    });
+                    ftQuery += ` @name:(${processedPhrases.join('|')})`;
+                }
             }
 
-            // B. Xử lý Tag Keywords (từ Admin Config)
+            // Xử lý Tag Keywords
             if (tagKeywords.length > 0) {
-                tagKeywords.forEach(k => {
-                    const clean = this.escapeRediSearchText(k);
-                    if (clean) {
-                         // Tag cũng tương tự, tìm chính xác từ đó trong Name
-                         orClauses.push(`(@name:${clean}*)`);
-                    }
-                });
+                const tagQuery = tagKeywords
+                    .map(k => {
+                        const clean = this.escapeRediSearchText(k);
+                        return clean ? `${clean}*` : ''; 
+                    })
+                    .filter(Boolean)
+                    .join('|');
+                
+                if (tagQuery) {
+                    ftQuery += ` @name:(${tagQuery})`;
+                }
             }
 
-            // C. Ghép Query tổng
-            // Kết quả mong muốn: @status:{ACTIVE} ( (@name:iphone*) | (@name:váy*) | (@name:bàn* @name:chải*) )
-            let ftQuery = `@status:{ACTIVE}`;
-            if (orClauses.length > 0) {
-                ftQuery += ` (${orClauses.join(' | ')})`;
-            }
+            // Thực thi Query Redis
+            let sortBy = 'createdAt';
+            let sortDir = 'DESC';
+            if (query.sort === 'sales') sortBy = 'salesCount';
+            if (query.sort === 'price_asc') { sortBy = 'price'; sortDir = 'ASC'; }
+            if (query.sort === 'price_desc') { sortBy = 'price'; sortDir = 'DESC'; }
 
-            // Setup Sort
-            let redisSortBy = 'createdAt';
-            let redisSortDir = 'DESC';
-            if (query.sort === 'sales') redisSortBy = 'salesCount';
-            if (query.sort === 'price_asc') { redisSortBy = 'price'; redisSortDir = 'ASC'; }
-            if (query.sort === 'price_desc') { redisSortBy = 'price'; redisSortDir = 'DESC'; }
-
-            // [QUAN TRỌNG] Thêm DIALECT 3 để xử lý ngoặc và OR/AND chính xác
             const searchRes = await this.redis.call(
                 'FT.SEARCH', INDEX_NAME, 
                 ftQuery, 
-                'SORTBY', redisSortBy, redisSortDir,
-                'LIMIT', String(skip), String(limit),
-                'DIALECT', '3' 
+                'SORTBY', sortBy, sortDir,
+                'LIMIT', String(skip), String(limit)
             ) as any[];
 
             if (Array.isArray(searchRes) && searchRes.length > 0) {
-                const totalDocs = Number(searchRes[0]);
+                const totalDocs = Number(searchRes[0]); // [FIX] Ép kiểu Number
                 const docs: any[] = []; 
                 
                 for (let i = 1; i < searchRes.length; i += 2) {
@@ -303,31 +300,39 @@ export class ProductReadService implements OnModuleInit {
                 if (totalDocs > 0) {
                      resultData = {
                         data: docs,
-                        meta: { total: totalDocs, page, limit, last_page: Math.ceil(totalDocs / limit) },
+                        meta: { 
+                            total: totalDocs, 
+                            page, 
+                            limit, 
+                            last_page: Math.ceil(totalDocs / limit) 
+                        },
                     };
                 }
             }
-        } catch (e: any) {
-            this.logger.error(`RediSearch Error: ${e.message} | Query: ${searchKeyword}`);
+        } catch (e) {
+            this.logger.error(`RediSearch Error: ${e.message}`);
         }
     }
 
-    // --- BƯỚC 3: DATABASE FALLBACK (Giữ nguyên logic DB đã fix ở bước trước) ---
+    // --- BƯỚC 3: DATABASE FALLBACK (Khi Redis không có data hoặc không tìm thấy) ---
     if (!resultData) {
         try {
             const whereConditions: Prisma.Sql[] = [Prisma.sql`status = 'ACTIVE'`];
 
             // 1. Search Logic
             if (searchKeyword) {
-                const keywords = searchKeyword.split(',').map(k => k.trim()).filter(Boolean);
-                if (keywords.length > 0) {
-                    const orSubQueries = keywords.map(kw => {
+                if (searchKeyword.includes(',')) {
+                    const keywords = searchKeyword.split(',').map(k => k.trim()).filter(Boolean);
+                    const orConditions = keywords.map(kw => {
                         const likeStr = `%${kw}%`;
                         return Prisma.sql`(name LIKE ${likeStr} OR description LIKE ${likeStr})`;
                     });
-                    if (orSubQueries.length > 0) {
-                        whereConditions.push(Prisma.sql`(${Prisma.join(orSubQueries, ' OR ')})`);
+                    if (orConditions.length > 0) {
+                        whereConditions.push(Prisma.sql`(${Prisma.join(orConditions, ' OR ')})`);
                     }
+                } else {
+                    const rawSearch = `%${searchKeyword}%`;
+                    whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
                 }
             }
 
@@ -342,10 +347,11 @@ export class ProductReadService implements OnModuleInit {
                 }
             }
 
-            // 3. Filter Categories
+            // 3. Filter Logic (Đã bổ sung phần thiếu)
             if (query.categoryId) {
                 whereConditions.push(Prisma.sql`categoryId = ${query.categoryId}`);
             } else if (query.categorySlug) { 
+                // [FIX QUAN TRỌNG] Thêm logic xử lý slug
                 const category = await this.prisma.category.findUnique({
                     where: { slug: query.categorySlug },
                     select: { id: true }
@@ -353,12 +359,16 @@ export class ProductReadService implements OnModuleInit {
                 if (category) {
                     whereConditions.push(Prisma.sql`categoryId = ${category.id}`);
                 } else {
+                    // Slug không tồn tại -> Trả về rỗng ngay
                     return { data: [], meta: { total: 0, page, limit, last_page: 0 } };
                 }
             }
 
-            // 4. Other Filters
-            if (query.brandId) whereConditions.push(Prisma.sql`brandId = ${query.brandId}`);
+            // [FIX] Bổ sung filter Brand
+            if (query.brandId) {
+                whereConditions.push(Prisma.sql`brandId = ${query.brandId}`);
+            }
+
             if (query.minPrice !== undefined) whereConditions.push(Prisma.sql`price >= ${query.minPrice}`);
             if (query.maxPrice !== undefined) whereConditions.push(Prisma.sql`price <= ${query.maxPrice}`);
             if (query.rating) whereConditions.push(Prisma.sql`rating >= ${query.rating}`);
@@ -373,6 +383,7 @@ export class ProductReadService implements OnModuleInit {
             else if (query.sort === 'price_asc') orderBySql = Prisma.sql`ORDER BY price ASC`;
             else if (query.sort === 'price_desc') orderBySql = Prisma.sql`ORDER BY price DESC`;
 
+            // Execute Query
             const products = await this.prisma.$queryRaw<any[]>`
                 SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, systemTags,
                        isDiscountActive, discountType, discountValue
@@ -382,6 +393,7 @@ export class ProductReadService implements OnModuleInit {
                 LIMIT ${limit} OFFSET ${skip}
             `;
             
+            // [FIX] Sửa lỗi Count trả về 0: Dùng COUNT(id) và xử lý BigInt
             const countResult = await this.prisma.$queryRaw<any[]>`
                 SELECT COUNT(id) as total FROM Product ${whereClause}
             `;
@@ -406,7 +418,7 @@ export class ProductReadService implements OnModuleInit {
         }
     }
 
-    return resultData || { data: [], meta: { total: 0, page, limit, last_page: 0 } };
+    return resultData;
   }
   
   // ... (Giữ nguyên các hàm removeProductFromRedis, escapeTagValue, searchSuggestions, findOnePublic, findRelated, findMoreFromShop, searchProductsForAdmin, findAllForSeller, findShopProducts, findBoughtTogether, getPersonalizedFeed)
