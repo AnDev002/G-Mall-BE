@@ -11,7 +11,7 @@ export class StoreProductController {
 
 
   @Public()
-  @Get()
+  @Get('selector')
   async findAll(@Query() query: any) {
     return this.productReadService.getAdminProductSelector(query);
   }
