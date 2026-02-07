@@ -228,6 +228,9 @@ export class ProductReadService implements OnModuleInit {
   // [QUAN TRỌNG] HÀM ĐƯỢC FIX LỖI "TOTAL 0"
   // ===========================================================================
   async findAllPublic(query: FindAllPublicDto) {
+    console.log("🔥 [Backend] findAllPublic Called");
+    console.log("   - Query Search:", query.search);
+    console.log("   - Query Tag:", query.tag);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
@@ -287,7 +290,8 @@ export class ProductReadService implements OnModuleInit {
             if (query.sort === 'sales') redisSortBy = 'salesCount';
             if (query.sort === 'price_asc') { redisSortBy = 'price'; redisSortDir = 'ASC'; }
             if (query.sort === 'price_desc') { redisSortBy = 'price'; redisSortDir = 'DESC'; }
-
+            console.log("⚡ [Redis Query]:", ftQuery); 
+            
             // [QUAN TRỌNG] Thêm DIALECT 3 để xử lý ngoặc và OR/AND chính xác
             const searchRes = await this.redis.call(
                 'FT.SEARCH', INDEX_NAME, 
@@ -296,7 +300,8 @@ export class ProductReadService implements OnModuleInit {
                 'LIMIT', String(skip), String(limit),
                 'DIALECT', '3' 
             ) as any[];
-
+            
+            console.log("   -> Redis Results Count:", searchRes?.[0]); // In số lượng tìm thấy
             if (Array.isArray(searchRes) && searchRes.length > 0) {
                 const totalDocs = Number(searchRes[0]);
                 const docs: any[] = []; 
