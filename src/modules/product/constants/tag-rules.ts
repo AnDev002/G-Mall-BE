@@ -71,4 +71,18 @@ export const AUTO_TAG_RULES: TagRule[] = [
   { code: 'corporate:gift-ad', group: 'corporate', label: 'Quà tặng quảng cáo', keywords: ['quà tặng doanh nghiệp', 'in logo'] },
   { code: 'corporate:item-helmet', group: 'corporate', label: 'Mũ bảo hiểm', keywords: ['mũ bảo hiểm'] },
   { code: 'corporate:item-umbrella', group: 'corporate', label: 'Ô dù / Áo mưa', keywords: ['ô dù', 'áo mưa'] },
+
+  { 
+    code: 'recipient_qua_tang_bo', // Khớp chính xác với ?tag= trên URL
+    group: 'recipient', 
+    label: 'Quà tặng Bố', 
+    // Đây là các từ khóa sẽ được đem đi so sánh với Product Name
+    keywords: ['bàn chải điện', 'máy cạo râu', 'thực phẩm chức năng', 'bố', 'nam trung niên'] 
+  },
+  { 
+    code: 'recipient_qua_tang_chong',
+    group: 'recipient', 
+    label: 'Quà tặng Chồng', 
+    keywords: ['iphone', 'điện thoại', 'đồng hồ', 'áo sơ mi'] 
+  },
 ];
