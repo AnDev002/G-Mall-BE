@@ -382,7 +382,14 @@ export class ProductReadService implements OnModuleInit {
   // ===========================================================================
   // Các hàm phụ trợ giữ nguyên
   // ===========================================================================
-
+  private escapeTagValue(str: string): string {
+    // 1. Xóa các ký tự nguy hiểm có thể phá vỡ cú pháp {} như { hoặc }
+    let safeTag = str.replace(/[{}]/g, '');
+    
+    // 2. Escape các ký tự đặc biệt trong giá trị tag (trừ phi bạn muốn dùng wildcard *)
+    // RediSearch yêu cầu escape non-alphanumeric bằng backslash để coi nó là ký tự thường
+    return safeTag.replace(/([^a-zA-Z0-9\u00C0-\u1EF9\s])/g, '\\$1').trim();
+  }
   async searchSuggestions(keyword: string) {
     if (!keyword || keyword.length < 2) return [];
     try {
