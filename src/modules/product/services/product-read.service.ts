@@ -110,7 +110,7 @@ export class ProductReadService implements OnModuleInit {
         const configs = await this.prisma.systemConfig.findMany({
             where: { key: { in: CONFIG_KEYS } }
         });
-
+        console.log("🔍 [FULL CONFIG DUMP]:", JSON.stringify(configs));
         if (!configs || configs.length === 0) return [];
 
         let foundKeywords: string[] | null = null;
