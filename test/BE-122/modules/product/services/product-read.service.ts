@@ -253,65 +253,66 @@ export class ProductReadService implements OnModuleInit {
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    // --- [CONFIG] LOGIC MAPPING SORT PARAM ---
-    let sortByField = 'createdAt'; 
+    // --- [NEW] LOGIC MAPPING SORT PARAM ---
+    let sortByField = 'createdAt'; // Mặc định là Mới nhất
     let sortDirection = 'DESC';
 
     switch (query.sort) {
-        case 'sales': 
-            sortByField = 'salesCount'; sortDirection = 'DESC'; break;
-        case 'price_asc': 
-            sortByField = 'price'; sortDirection = 'ASC'; break;
-        case 'price_desc': 
-            sortByField = 'price'; sortDirection = 'DESC'; break;
-        case 'newest': 
+        case 'sales': // Bán chạy
+            sortByField = 'salesCount';
+            sortDirection = 'DESC';
+            break;
+        case 'price_asc': // Giá thấp -> cao
+            sortByField = 'price';
+            sortDirection = 'ASC';
+            break;
+        case 'price_desc': // Giá cao -> thấp
+            sortByField = 'price';
+            sortDirection = 'DESC';
+            break;
+        case 'newest': // Mới nhất
         default:
-            sortByField = 'createdAt'; sortDirection = 'DESC'; break;
+            sortByField = 'createdAt';
+            sortDirection = 'DESC';
+            break;
     }
+    // --------------------------------------
 
     let resultData: any = null;
     const searchKeyword = query.search ? query.search.trim() : '';
-    const tagKeyword = query.tag ? query.tag.trim() : ''; // [NEW] Lấy tag từ query
 
     // --- BƯỚC 1: REDIS SEARCH ---
-    // Chạy nếu có search text HOẶC có tag filter
-    if (searchKeyword.length > 0 || tagKeyword.length > 0) {
+    if (searchKeyword.length > 0 || query.tag) {
         try {
-            // Bắt đầu query Active
+            // ... (Giữ nguyên logic build filter conditions)
             let ftQuery = `@status:{ACTIVE}`;
-            
-            // Xây dựng điều kiện
-            // Logic: (Name có chứa Keyword) AND (Tags có chứa TagKeyword)
-            
+            const conditions: string[] = [];
+
             if (searchKeyword) {
                 const cleanName = this.escapeRediSearchText(searchKeyword);
                 if (cleanName) {
-                    // Tokenize để tìm kiếm linh hoạt hơn
                     const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
-                    // Thêm vào query (mặc định RediSearch nối các mệnh đề là AND)
-                    ftQuery += ` @name:(${nameTokens})`;
+                    conditions.push(`@name:(${nameTokens})`);
+                }
+                const cleanTagKw = this.sanitizeTagKeyword(searchKeyword);
+                if (cleanTagKw) {
+                    conditions.push(`@systemTags:{${cleanTagKw}}`);
                 }
             }
+            if (conditions.length > 0) ftQuery += ` (${conditions.join(' | ')})`;
 
-            if (tagKeyword) {
-                const cleanTag = this.escapeRediSearchText(tagKeyword);
-                // Tag trong Redis lưu dạng text phân tách bởi dấu phẩy, search exact hoặc contain
-                // Cú pháp Tag: @systemTags:{ value }
-                ftQuery += ` @systemTags:{${cleanTag}}`;
-            }
-
-            // Gọi Redis
+            // Gọi Redis với SORT động
             const searchRes: any = await this.redis.call(
                 'FT.SEARCH', INDEX_NAME, 
                 ftQuery,
                 'LIMIT', skip, limit,
-                'SORTBY', sortByField, sortDirection,
+                'SORTBY', sortByField, sortDirection, // [UPDATED] Sử dụng biến dynamic
                 'RETURN', '1', 'json' 
             );
 
-            // Parse kết quả Redis
-            const total = searchRes[0];
-            if (total > 0) {
+            // ... (Giữ nguyên logic parse kết quả)
+             const total = searchRes[0];
+             if (total > 0) {
                 const products: any[] = [];
                 for (let i = 1; i < searchRes.length; i += 2) {
                     const fields = searchRes[i + 1];
@@ -325,6 +326,7 @@ export class ProductReadService implements OnModuleInit {
                     meta: { total, page, limit, last_page: Math.ceil(total / limit) },
                 };
             }
+
         } catch (e: any) {
             this.logger.error(`❌ [Redis] Error (Will Fallback): ${e.message}`);
         }
@@ -332,62 +334,48 @@ export class ProductReadService implements OnModuleInit {
 
     // --- BƯỚC 2: FALLBACK DATABASE (RAW SQL) ---
     if (!resultData || resultData.data.length === 0) {
-        // Chỉ log warn nếu không phải query rỗng (trang chủ load all)
-        if (searchKeyword || tagKeyword) {
-            this.logger.warn(`⚠️ [DB Fallback] Executing Raw SQL. Search: "${searchKeyword}", Tag: "${tagKeyword}"`);
-        }
+        this.logger.warn(`⚠️ [DB Fallback] Executing Raw SQL for: "${searchKeyword}"`);
+        const rawKeyword = `%${searchKeyword}%`;
+        const encodedKeyword = `%${encodeURIComponent(searchKeyword)}%`;
 
         try {
-            // --- XÂY DỰNG CÂU WHERE ĐỘNG VỚI PRISMA.SQL ---
+            // [NEW] Xây dựng câu ORDER BY cho SQL
+            // Lưu ý: Prisma $queryRaw không hỗ trợ biến cho tên cột/chiều sort, phải dùng Prisma.sql
+            let orderBySql = Prisma.sql`ORDER BY createdAt DESC`; // Default
             
-            // 1. Điều kiện cơ bản
-            const conditions: any[] = [Prisma.sql`status = 'ACTIVE'`];
-
-            // 2. Nếu có Tag -> Thêm điều kiện AND systemTags LIKE ...
-            if (tagKeyword) {
-                const tagPattern = `%${tagKeyword}%`;
-                conditions.push(Prisma.sql`systemTags LIKE ${tagPattern}`);
+            if (query.sort === 'sales') {
+                orderBySql = Prisma.sql`ORDER BY salesCount DESC`;
+            } else if (query.sort === 'price_asc') {
+                orderBySql = Prisma.sql`ORDER BY price ASC`;
+            } else if (query.sort === 'price_desc') {
+                orderBySql = Prisma.sql`ORDER BY price DESC`;
             }
 
-            // 3. Nếu có Search -> Thêm điều kiện AND (name LIKE ... OR ...)
-            if (searchKeyword) {
-                const rawSearch = `%${searchKeyword}%`;
-                const encodedSearch = `%${encodeURIComponent(searchKeyword)}%`;
-                
-                // Gom nhóm OR trong ngoặc
-                conditions.push(Prisma.sql`(
-                    name LIKE ${rawSearch} 
-                    OR systemTags LIKE ${rawSearch} 
-                    OR systemTags LIKE ${encodedSearch}
-                )`);
-            }
-
-            // Nối các điều kiện bằng AND
-            const whereClause = conditions.length > 0 
-                ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` 
-                : Prisma.sql``;
-
-            // Xây dựng Order By
-            let orderBySql = Prisma.sql`ORDER BY createdAt DESC`;
-            if (query.sort === 'sales') orderBySql = Prisma.sql`ORDER BY salesCount DESC`;
-            else if (query.sort === 'price_asc') orderBySql = Prisma.sql`ORDER BY price ASC`;
-            else if (query.sort === 'price_desc') orderBySql = Prisma.sql`ORDER BY price DESC`;
-
-            // QUERY CHÍNH
+            // [FIX CRITICAL]: Thêm các trường Discount vào SELECT
             const products = await this.prisma.$queryRaw<any[]>`
                 SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, 
-                       isDiscountActive, discountType, discountValue, systemTags
+                       isDiscountActive, discountType, discountValue
                 FROM Product 
-                ${whereClause}
-                ${orderBySql}
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
+                ${orderBySql} -- [UPDATED] Inject Dynamic Order
                 LIMIT ${limit} OFFSET ${skip}
             `;
             
-            // QUERY COUNT TOTAL
-            const countResult = await this.prisma.$queryRaw<any[]>`
+            // ... (Giữ nguyên logic đếm total và return)
+             const countResult = await this.prisma.$queryRaw<any[]>`
                 SELECT COUNT(*) as total
                 FROM Product 
-                ${whereClause}
+                WHERE status = 'ACTIVE'
+                AND (
+                    name LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${rawKeyword} 
+                    OR systemTags LIKE ${encodedKeyword}
+                )
             `;
             const total = Number(countResult[0]?.total || 0);
 
@@ -397,11 +385,10 @@ export class ProductReadService implements OnModuleInit {
                     price: Number(p.price),
                     originalPrice: Number(p.originalPrice || 0),
                     images: typeof p.images === 'string' ? JSON.parse(p.images) : p.images,
+                    // [FIX CRITICAL]: Map thêm discount info
                     isDiscountActive: Boolean(p.isDiscountActive),
                     discountType: p.discountType,
-                    discountValue: Number(p.discountValue || 0),
-                    // Có thể parse tags nếu cần
-                    // systemTags: typeof p.systemTags === 'string' ? JSON.parse(p.systemTags) : p.systemTags
+                    discountValue: Number(p.discountValue || 0)
                 })),
                 meta: { total, page, limit, last_page: Math.ceil(total / limit) },
             };
@@ -411,6 +398,7 @@ export class ProductReadService implements OnModuleInit {
         }
     }
     
+    // ... Return kết quả
     return resultData || { data: [], meta: { total: 0, page: 1, limit, last_page: 0 } };
   }
 
