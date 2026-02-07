@@ -123,6 +123,60 @@ export class ProductReadService implements OnModuleInit {
     }
   }
 
+  private async getKeywordsFromDynamicConfig(tagCode: string): Promise<string[]> {
+    // 1. Ưu tiên tìm trong file tĩnh trước (để đỡ query DB nếu có)
+    const staticRule = AUTO_TAG_RULES.find(r => r.code === tagCode);
+    if (staticRule) return staticRule.keywords;
+
+    // 2. Nếu không có, tìm trong SystemConfig (Cache Redis hoặc DB)
+    // Giả sử bạn lưu key cấu hình là 'HEADER_RECIPIENT'
+    // Lưu ý: Nên cache biến này lại để không query DB liên tục
+    try {
+        const configRecord = await this.prisma.systemConfig.findUnique({
+            where: { key: 'HEADER_RECIPIENT' } // Tên key trong bảng config của bạn
+        });
+
+        if (!configRecord || !configRecord.value) return [];
+
+        // Parse JSON cây menu
+        const menuTree = typeof configRecord.value === 'string' 
+            ? JSON.parse(configRecord.value) 
+            : configRecord.value;
+
+        // Hàm đệ quy để tìm tag trong cây menu
+        const findKeywords = (items: any[]): string[] | null => {
+            for (const item of items) {
+                // Check nếu item này có link chứa tag mình cần
+                // Ví dụ link: "/search?tag=recipient_qua_tang_bo"
+                if (item.link && item.link.includes(`tag=${tagCode}`)) {
+                    // Tách keywords từ chuỗi (VD: "bàn chải điện, máy cạo râu")
+                    if (item.keywords) {
+                        return item.keywords.split(',').map((k: string) => k.trim());
+                    }
+                }
+                
+                // Nếu có con, tìm tiếp trong con (children hoặc items)
+                if (item.children) {
+                    const result = findKeywords(item.children);
+                    if (result) return result;
+                }
+                if (item.items) {
+                     const result = findKeywords(item.items);
+                     if (result) return result;
+                }
+            }
+            return null;
+        };
+
+        const foundKeywords = findKeywords(menuTree);
+        return foundKeywords || [];
+
+    } catch (e) {
+        this.logger.error(`Error parsing dynamic config: ${e.message}`);
+        return [];
+    }
+  }
+
   async syncAllProductsToRedis() {
     try {
         const products = await this.prisma.product.findMany({
@@ -235,11 +289,10 @@ export class ProductReadService implements OnModuleInit {
     // [STEP 1] Mapping Tag -> Keywords
     let tagKeywords: string[] = [];
     if (tagCode) {
-        tagKeywords = this.getKeywordsFromTag(tagCode);
-        // Nếu tag không tồn tại trong config, ta có thể log warning hoặc bỏ qua
-        if (tagKeywords.length === 0) {
-            this.logger.warn(`No keywords found for tag: ${tagCode}`);
-        }
+        tagKeywords = await this.getKeywordsFromDynamicConfig(tagCode);
+        
+        // Debug Log: Để kiểm tra xem có lấy được keywords không
+        this.logger.log(`Tag: ${tagCode} -> Keywords: ${JSON.stringify(tagKeywords)}`);
     }
 
     // --- BƯỚC 2: REDIS SEARCH (Đã cập nhật logic mới) ---
