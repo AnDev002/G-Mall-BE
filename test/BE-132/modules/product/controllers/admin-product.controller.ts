@@ -111,18 +111,6 @@ export class AdminProductController {
   ) {
       return this.productWriteService.approveProduct(id, body.status, body.reason);
   }
-
-  
-  @Get('selector')
-  async getProductSelector(@Query() query: any) {
-      return this.productReadService.getAdminProductSelector(query);
-  }
-  // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
-  // URL: GET /products/search?keyword=abc&shopId=...
-  @Get('search')
-  async search(@Query() query: any) {
-    return this.productReadService.searchPublic(query);
-  }
   
   @Get('search-for-blog')
   async searchForBlog(@Query('q') query: string) {

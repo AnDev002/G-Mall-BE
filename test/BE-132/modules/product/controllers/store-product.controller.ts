@@ -50,6 +50,11 @@ export class StoreProductController {
   }
 
   
+  @Get('selector')
+  @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
+  async getProductSelector(@Query() query: any) {
+      return this.productReadService.getAdminProductSelector(query);
+  }
 
   @Get(':id')
   @Public()
@@ -193,4 +198,11 @@ export class StoreProductController {
   }
   
 
+  // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
+  // URL: GET /products/search?keyword=abc&shopId=...
+  @Public()
+  @Get('search')
+  async search(@Query() query: any) {
+    return this.productReadService.searchPublic(query);
+  }
 }
