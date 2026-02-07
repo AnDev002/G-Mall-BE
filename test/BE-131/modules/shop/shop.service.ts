@@ -262,50 +262,6 @@ export class ShopService {
     };
   }
 
-  async getShops(query: any) {
-    const page = Number(query.page) || 1;
-    const limit = Number(query.limit) || 10;
-    const skip = (page - 1) * limit;
-    const search = query.search || '';
-
-    // Điều kiện lọc: Chỉ lấy shop đang hoạt động (ACTIVE)
-    const where: any = {
-      status: 'ACTIVE', 
-    };
-
-    // Nếu có tìm kiếm theo tên
-    if (search) {
-      where.name = { contains: search, mode: 'insensitive' };
-    }
-
-    const [shops, total] = await Promise.all([
-      this.prisma.shop.findMany({
-        where,
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          name: true,
-          avatar: true,
-          slug: true,
-          // Lấy thêm trường nếu cần thiết cho dropdown
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.shop.count({ where }),
-    ]);
-
-    return {
-      data: shops, // Trả về mảng shop
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
-
   async getShopVouchers(shopId: string) {
     // Lấy voucher ACTIVE và còn hạn
     const now = new Date();

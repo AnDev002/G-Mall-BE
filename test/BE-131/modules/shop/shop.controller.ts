@@ -24,13 +24,6 @@ export class ShopController {
   }
 
   @Public()
-  @Get() 
-  async getShops(@Query() query: any) {
-    // Gọi service xử lý logic tìm kiếm & phân trang
-    return this.shopService.getShops(query);
-  }
-
-  @Public()
   @Get(':id/categories')
   async getShopCategories(@Param('id') id: string) {
     return this.shopService.getShopCategories(id);
