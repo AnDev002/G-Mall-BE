@@ -61,13 +61,11 @@ export class ProductReadService implements OnModuleInit {
     const cleanedTags = tags
         .map(t => {
             if (typeof t !== 'string') return '';
-            // [FIX]: Thêm \: và \. vào regex để không bị xóa khi index
-            // Cho phép: Chữ, Số, Tiếng Việt, _, -, :, .
-            return t.trim().replace(/[^a-zA-Z0-9_\-\:\.\u00C0-\u1EF9\s]/g, ''); 
+            // Chuẩn hóa tag: Xóa ký tự đặc biệt, giữ lại chữ cái, số, dấu _ và dấu -
+            return t.trim().replace(/[^a-zA-Z0-9_\-\u00C0-\u1EF9\s]/g, ''); 
         })
         .filter(t => t.length > 0);
 
-    // Join bằng dấu phẩy để khớp với SEPARATOR ',' trong Schema
     return Array.from(new Set(cleanedTags)).join(','); 
   }
 
@@ -77,8 +75,7 @@ export class ProductReadService implements OnModuleInit {
   
   // Helper cho TEXT (@name): Escape ký tự đặc biệt bằng \
   private escapeRediSearchText(str: string): string {
-    // Escape các ký tự đặc biệt: . - : , @ & | { } [ ] ( ) " ' ` ~ ^ * ?
-    return str.replace(/([.?\-,:@&|{}[\]()"\\`~^*])/g, '\\$1').trim();
+    return str.replace(/([^a-zA-Z0-9\s\u00C0-\u1EF9\-])/g, '\\$1').trim();
   }
 
   // Helper cho TAG (@systemTags): KHÔNG dùng \, chỉ thay thế ký tự lỗi
@@ -103,16 +100,15 @@ export class ProductReadService implements OnModuleInit {
           'salesCount', 'NUMERIC', 'SORTABLE',
           'createdAt', 'NUMERIC', 'SORTABLE',
           'status', 'TAG',
-          // [FIX]: Định nghĩa TAG với separator dấu phẩy rõ ràng
+          // [FIX]: Định nghĩa TAG với separator dấu phẩy
           'systemTags', 'TAG', 'SEPARATOR', ',' 
         );
-        this.logger.log('✅ RediSearch Index created with correct TAG schema!');
+        this.logger.log('✅ RediSearch Index Created with systemTags!');
+        // Tự động sync lại dữ liệu khi tạo mới index
         await this.syncAllProductsToRedis();
       }
-    } catch (e: any) {
-      if (!e.message?.includes('already exists')) {
-        this.logger.error(`Index Error: ${e.message}`);
-      }
+    } catch (e) {
+      this.logger.error(`Index Error: ${e}`);
     }
   }
 
@@ -153,14 +149,11 @@ export class ProductReadService implements OnModuleInit {
         });
 
         const pipeline = this.redis.pipeline();
-        // Xóa suggestion cũ để build lại cho sạch
-        await this.redis.del(SUGGESTION_KEY); 
+        await this.redis.del(SUGGESTION_KEY);
 
         for (const p of products) {
             const key = `product:${p.id}`;
             const image = Array.isArray(p.images) && p.images.length > 0 ? (p.images[0] as any) : '';
-            
-            // [FIX]: Gọi hàm clean mới cho phép dấu ':'
             const tagsString = this.cleanSystemTags(p.systemTags);
             
             const frontendJson = JSON.stringify({
@@ -188,13 +181,14 @@ export class ProductReadService implements OnModuleInit {
                 systemTags: tagsString 
             });
 
+            // Sync Suggestion
             const score = p.salesCount > 0 ? p.salesCount : 1;
             const payload = JSON.stringify({ id: p.id, slug: p.slug, price: Number(p.price), image });
             pipeline.call('FT.SUGADD', SUGGESTION_KEY, p.name, score.toString(), 'PAYLOAD', payload);
         }
         
         await pipeline.exec();
-        this.logger.log(`Synced ${products.length} products to Redis with Tags.`);
+        this.logger.log(`Synced ${products.length} products to Redis.`);
     } catch (e: any) {
         this.logger.error(`Sync Error: ${e.message}`);
     }
@@ -257,29 +251,26 @@ export class ProductReadService implements OnModuleInit {
             
             // 1. Filter by Name (Keyword)
             if (searchKeyword) {
-                // Escape text search để tránh lỗi syntax
                 const cleanName = this.escapeRediSearchText(searchKeyword);
                 if (cleanName) {
-                    // Fuzzy match + prefix match
+                    // Dùng prefix match (*) cho từng từ
                     const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
                     ftQuery += ` @name:(${nameTokens})`;
                 }
             }
 
             // 2. Filter by Tag
-            // [FIX LOGIC] Dùng cú pháp TAG @field:{value} và escape value đúng cách
+            // [FIX LOGIC] Dùng cú pháp TAG {value}
             if (tagKeyword) {
-               // Ví dụ tagKeyword là "recipient:pregnant" -> escaped thành "recipient\:pregnant"
-               const safeTag = this.escapeTagValue(tagKeyword);
-               if (safeTag) {
-                   ftQuery += ` @systemTags:{${safeTag}}`; 
-               }
+                const cleanTag = this.sanitizeTagForQuery(tagKeyword);
+                if (cleanTag) {
+                   ftQuery += ` @systemTags:{${cleanTag}}`; 
+                }
             }
 
-            // this.logger.debug(`RediSearch Query: ${ftQuery}`); // Uncomment để debug query thực tế
-
+            // 3. Thực thi Query
             const searchRes: any = await this.redis.call(
-                'FT.SEARCH', INDEX_NAME, 
+                'FT.SEARCH', this.INDEX_NAME, 
                 ftQuery,
                 'LIMIT', skip, limit,
                 'SORTBY', sortByField, sortDirection,
@@ -300,14 +291,10 @@ export class ProductReadService implements OnModuleInit {
                     data: products,
                     meta: { total, page, limit, last_page: Math.ceil(total / limit) },
                 };
-            } else {
-                 // Nếu Redis trả về 0 kết quả dù có tag, có thể do index chưa sync kịp
-                 // Cho phép Fallback xuống DB
-                 resultData = null; 
             }
         } catch (e: any) {
             this.logger.error(`❌ [Redis Search Fail] Query: ${searchKeyword} | Tag: ${tagKeyword} - Error: ${e.message}`);
-            resultData = null; // Fallback to DB
+            // Fallback to DB
         }
     }
 
@@ -318,11 +305,10 @@ export class ProductReadService implements OnModuleInit {
 
             // Filter by Tag (LIKE %tag%)
             if (tagKeyword) {
-                // [FIX] Fallback DB cũng phải tìm chính xác tag hoặc chứa tag
-                // Do Prisma Raw query dùng chuỗi, ta vẫn giữ nguyên logic LIKE cho đơn giản
                 whereConditions.push(Prisma.sql`systemTags LIKE ${`%${tagKeyword}%`}`);
             }
 
+            // Filter by Search Keyword
             if (searchKeyword) {
                 const rawSearch = `%${searchKeyword}%`;
                 whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
@@ -346,8 +332,6 @@ export class ProductReadService implements OnModuleInit {
                 LIMIT ${limit} OFFSET ${skip}
             `;
             
-            // Fix count query cho raw SQL
-            // Lưu ý: Đếm count(*) với raw query trả về BigInt, cần convert
             const countResult = await this.prisma.$queryRaw<any[]>`
                 SELECT COUNT(*) as total FROM Product ${whereClause}
             `;
