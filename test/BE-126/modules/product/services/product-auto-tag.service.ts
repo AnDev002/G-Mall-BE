@@ -9,33 +9,32 @@ export interface TagRule {
   label: string;      // VD: 'Trẻ sơ sinh'
   keywords: string[]; // VD: ['sơ sinh', 'tã', 'bỉm', 'newborn']
 }
-
 function removeAccents(str: string) {
   return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
-
 @Injectable()
 export class ProductAutoTagService {
   private readonly logger = new Logger(ProductAutoTagService.name);
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly productRead: ProductReadService, // Đã inject sẵn, rất tốt
+    private readonly productRead: ProductReadService,
     private readonly productCache: ProductCacheService
   ) {}
-
+  /**
+   * API Trigger quét sản phẩm theo danh sách luật (Rules) được gửi từ FE
+   * Hoặc lấy từ SystemConfig trong DB nếu bạn lưu cấu hình ở đó.
+   */
   async scanAndTagAllProducts(rules: { code: string, keywords: string[] }[]) {
-      // [OPTIMIZE]: Lấy thêm các trường cần thiết để sync Redis luôn (price, slug, images...)
-      // để đỡ phải query lại DB trong hàm sync
       const products = await this.prisma.product.findMany({ 
           where: { status: 'ACTIVE' },
-          // Chọn đủ trường để sync lại Redis
-          include: { variants: true } 
+          select: { id: true, name: true, description: true, systemTags: true }
       });
 
       let updatedCount = 0;
 
       for (const product of products) {
+          // Tạo chuỗi text để search: gộp tên và mô tả, bỏ dấu
           const rawText = (product.name + ' ' + (product.description || ''));
           const normalizedText = removeAccents(rawText); 
           
@@ -43,9 +42,10 @@ export class ProductAutoTagService {
           const originalTags = [...currentTags];
 
           for (const rule of rules) {
+              // Check xem text sản phẩm có chứa keyword nào không
               const hasKeyword = rule.keywords.some(k => 
-                  normalizedText.includes(removeAccents(k)) || 
-                  rawText.toLowerCase().includes(k.toLowerCase()) 
+                  normalizedText.includes(removeAccents(k)) || // So sánh không dấu (mạnh hơn)
+                  rawText.toLowerCase().includes(k.toLowerCase()) // So sánh có dấu (chính xác)
               );
               
               if (hasKeyword) {
@@ -55,22 +55,12 @@ export class ProductAutoTagService {
               }
           }
 
-          // Nếu có thay đổi Tag -> Update DB -> Update Redis
           if (JSON.stringify(originalTags) !== JSON.stringify(currentTags)) {
-              
-              // 1. Update DB
-              const updatedProduct = await this.prisma.product.update({
+              await this.prisma.product.update({
                   where: { id: product.id },
-                  data: { systemTags: currentTags },
-                  // Include lại để đảm bảo dữ liệu đầy đủ nhất
-                  include: { variants: true, category: true }
+                  data: { systemTags: currentTags }
               });
-              
-              // 2. [FIX QUAN TRỌNG] Sync ngay sang Redis
-              await this.productRead.syncProductToRedis(updatedProduct);
-              
               updatedCount++;
-              this.logger.log(`Auto-tagged & Synced: ${product.name} -> Tags: ${currentTags.join(', ')}`);
           }
       }
 
