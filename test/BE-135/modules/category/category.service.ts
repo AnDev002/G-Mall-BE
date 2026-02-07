@@ -220,27 +220,24 @@ export class CategoryService {
 
   // 4. [FIX] Xóa an toàn
   async remove(id: string) {
-    // Sử dụng lại hàm helper có sẵn trong class để lấy ID của nó và toàn bộ con cháu
-    const idsToDelete = await this.getAllDescendantIds(id);
-
-    // [Optional] Kiểm tra an toàn: Có sản phẩm nào thuộc cây danh mục này không?
-    // Nếu bạn muốn xoá bất chấp sản phẩm (sản phẩm sẽ mất categoryId hoặc lỗi) thì bỏ đoạn check này đi.
-    const countProduct = await this.prisma.product.count({
-        where: { 
-          categoryId: { in: idsToDelete } 
-        }
+    // Kiểm tra xem có con không
+    const countChildren = await this.prisma.category.count({
+        where: { parentId: id }
     });
-    
-    if (countProduct > 0) {
-         throw new BadRequestException(`Đang có ${countProduct} sản phẩm thuộc danh mục này hoặc các danh mục con. Không thể xóa.`);
+
+    if (countChildren > 0) {
+        throw new BadRequestException('Không thể xóa danh mục này vì đang chứa danh mục con. Hãy xóa con trước.');
     }
 
-    // Thực hiện xoá tất cả danh mục tìm được (bao gồm cả cha và con)
-    return this.prisma.category.deleteMany({ 
-      where: { 
-        id: { in: idsToDelete } 
-      } 
+    // Kiểm tra xem có sản phẩm không (Optional - tuỳ logic business của bạn)
+    const countProduct = await this.prisma.product.count({
+        where: { categoryId: id }
     });
+    if (countProduct > 0) {
+         throw new BadRequestException('Đang có sản phẩm thuộc danh mục này. Không thể xóa.');
+    }
+
+    return this.prisma.category.delete({ where: { id } });
   }
 
   // 5. [MỚI] Update Bulk from JSON (Nguy hiểm - Chỉ dành cho Admin hiểu rõ)
