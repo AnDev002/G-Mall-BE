@@ -27,7 +27,7 @@ const INDEX_NAME = 'idx:products';
 @Injectable()
 export class ProductReadService implements OnModuleInit {
   private readonly logger = new Logger(ProductReadService.name);
-
+  private readonly INDEX_NAME = 'idx:products';
   constructor(
     private readonly prisma: PrismaService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -253,63 +253,57 @@ export class ProductReadService implements OnModuleInit {
     const limit = Math.max(1, Number(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    // --- [CONFIG] LOGIC MAPPING SORT PARAM ---
-    let sortByField = 'createdAt'; 
+    // 1. Xử lý Sort
+    let sortByField = 'createdAt';
     let sortDirection = 'DESC';
-
     switch (query.sort) {
-        case 'sales': 
-            sortByField = 'salesCount'; sortDirection = 'DESC'; break;
-        case 'price_asc': 
-            sortByField = 'price'; sortDirection = 'ASC'; break;
-        case 'price_desc': 
-            sortByField = 'price'; sortDirection = 'DESC'; break;
-        case 'newest': 
-        default:
-            sortByField = 'createdAt'; sortDirection = 'DESC'; break;
+        case 'sales': sortByField = 'salesCount'; sortDirection = 'DESC'; break;
+        case 'price_asc': sortByField = 'price'; sortDirection = 'ASC'; break;
+        case 'price_desc': sortByField = 'price'; sortDirection = 'DESC'; break;
     }
 
     let resultData: any = null;
     const searchKeyword = query.search ? query.search.trim() : '';
-    const tagKeyword = query.tag ? query.tag.trim() : ''; // [NEW] Lấy tag từ query
+    const tagKeyword = query.tag ? query.tag.trim() : ''; // [FIX] Lấy tag từ query
 
-    // --- BƯỚC 1: REDIS SEARCH ---
+    // --- BƯỚC 1: REDIS SEARCH (Ưu tiên) ---
     // Chạy nếu có search text HOẶC có tag filter
     if (searchKeyword.length > 0 || tagKeyword.length > 0) {
         try {
-            // Bắt đầu query Active
+            // Base Query: Status Active
             let ftQuery = `@status:{ACTIVE}`;
             
-            // Xây dựng điều kiện
-            // Logic: (Name có chứa Keyword) AND (Tags có chứa TagKeyword)
+            // Logic: (Name contains Keyword) AND (Tags contains TagKeyword)
             
             if (searchKeyword) {
                 const cleanName = this.escapeRediSearchText(searchKeyword);
                 if (cleanName) {
-                    // Tokenize để tìm kiếm linh hoạt hơn
                     const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
-                    // Thêm vào query (mặc định RediSearch nối các mệnh đề là AND)
                     ftQuery += ` @name:(${nameTokens})`;
                 }
             }
 
             if (tagKeyword) {
+                // [FIX] Redis tag search syntax: @field:{value}
+                // Tag thường lưu dạng string hoặc array string. 
+                // Nếu lưu string "tag1, tag2" -> dùng text search. Nếu lưu TAG field -> dùng {}.
+                // Giả sử bạn lưu systemTags là TEXT trong Redis schema:
                 const cleanTag = this.escapeRediSearchText(tagKeyword);
-                // Tag trong Redis lưu dạng text phân tách bởi dấu phẩy, search exact hoặc contain
-                // Cú pháp Tag: @systemTags:{ value }
-                ftQuery += ` @systemTags:{${cleanTag}}`;
+                if (cleanTag) {
+                   ftQuery += ` @systemTags:(${cleanTag})`; 
+                }
             }
 
             // Gọi Redis
             const searchRes: any = await this.redis.call(
-                'FT.SEARCH', INDEX_NAME, 
+                'FT.SEARCH', this.INDEX_NAME, 
                 ftQuery,
                 'LIMIT', skip, limit,
                 'SORTBY', sortByField, sortDirection,
                 'RETURN', '1', 'json' 
             );
 
-            // Parse kết quả Redis
+            // Parse kết quả
             const total = searchRes[0];
             if (total > 0) {
                 const products: any[] = [];
@@ -326,68 +320,67 @@ export class ProductReadService implements OnModuleInit {
                 };
             }
         } catch (e: any) {
-            this.logger.error(`❌ [Redis] Error (Will Fallback): ${e.message}`);
+            this.logger.error(`❌ [Redis] Error: ${e.message}`);
+            // Không return, để nó fallback xuống DB
         }
     }
 
-    // --- BƯỚC 2: FALLBACK DATABASE (RAW SQL) ---
+    // --- BƯỚC 2: DATABASE FALLBACK (Nếu Redis fail hoặc không có kết quả) ---
     if (!resultData || resultData.data.length === 0) {
-        // Chỉ log warn nếu không phải query rỗng (trang chủ load all)
+        // Chỉ log nếu có query mà không ra kết quả ở Redis
         if (searchKeyword || tagKeyword) {
-            this.logger.warn(`⚠️ [DB Fallback] Executing Raw SQL. Search: "${searchKeyword}", Tag: "${tagKeyword}"`);
+             this.logger.warn(`⚠️ [DB Fallback] Running SQL for Search: "${searchKeyword}", Tag: "${tagKeyword}"`);
         }
 
         try {
-            // --- XÂY DỰNG CÂU WHERE ĐỘNG VỚI PRISMA.SQL ---
-            
-            // 1. Điều kiện cơ bản
-            const conditions: any[] = [Prisma.sql`status = 'ACTIVE'`];
+            // [QUAN TRỌNG] Xây dựng câu lệnh WHERE động
+            const whereConditions: Prisma.Sql[] = [Prisma.sql`status = 'ACTIVE'`];
 
-            // 2. Nếu có Tag -> Thêm điều kiện AND systemTags LIKE ...
+            // Filter by Tag
             if (tagKeyword) {
-                const tagPattern = `%${tagKeyword}%`;
-                conditions.push(Prisma.sql`systemTags LIKE ${tagPattern}`);
+                // systemTags trong DB thường là JSON hoặc String. Dùng LIKE cho đơn giản và tương thích cao
+                whereConditions.push(Prisma.sql`systemTags LIKE ${`%${tagKeyword}%`}`);
             }
 
-            // 3. Nếu có Search -> Thêm điều kiện AND (name LIKE ... OR ...)
+            // Filter by Search Keyword
             if (searchKeyword) {
                 const rawSearch = `%${searchKeyword}%`;
-                const encodedSearch = `%${encodeURIComponent(searchKeyword)}%`;
-                
-                // Gom nhóm OR trong ngoặc
-                conditions.push(Prisma.sql`(
-                    name LIKE ${rawSearch} 
-                    OR systemTags LIKE ${rawSearch} 
-                    OR systemTags LIKE ${encodedSearch}
-                )`);
+                whereConditions.push(Prisma.sql`(name LIKE ${rawSearch} OR description LIKE ${rawSearch})`);
             }
 
-            // Nối các điều kiện bằng AND
-            const whereClause = conditions.length > 0 
-                ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` 
+            // Filter by Category
+            if (query.categorySlug) {
+                 // Cần join bảng Category nếu muốn filter chính xác, hoặc nếu bạn có lưu categorySlug trong Product thì dùng luôn
+                 // Tạm thời giả định bạn query bảng Product thuần:
+                 // whereConditions.push(Prisma.sql`...`); 
+            }
+
+            // Filter Price / Rating (Optional - thêm nếu cần)
+
+            // Combine conditions with AND
+            const whereClause = whereConditions.length > 0 
+                ? Prisma.sql`WHERE ${Prisma.join(whereConditions, ' AND ')}` 
                 : Prisma.sql``;
 
-            // Xây dựng Order By
+            // Order By
             let orderBySql = Prisma.sql`ORDER BY createdAt DESC`;
             if (query.sort === 'sales') orderBySql = Prisma.sql`ORDER BY salesCount DESC`;
             else if (query.sort === 'price_asc') orderBySql = Prisma.sql`ORDER BY price ASC`;
             else if (query.sort === 'price_desc') orderBySql = Prisma.sql`ORDER BY price DESC`;
 
-            // QUERY CHÍNH
+            // Query Data
             const products = await this.prisma.$queryRaw<any[]>`
-                SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, 
-                       isDiscountActive, discountType, discountValue, systemTags
+                SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, systemTags,
+                       isDiscountActive, discountType, discountValue
                 FROM Product 
                 ${whereClause}
                 ${orderBySql}
                 LIMIT ${limit} OFFSET ${skip}
             `;
             
-            // QUERY COUNT TOTAL
+            // Query Count
             const countResult = await this.prisma.$queryRaw<any[]>`
-                SELECT COUNT(*) as total
-                FROM Product 
-                ${whereClause}
+                SELECT COUNT(*) as total FROM Product ${whereClause}
             `;
             const total = Number(countResult[0]?.total || 0);
 
@@ -399,9 +392,7 @@ export class ProductReadService implements OnModuleInit {
                     images: typeof p.images === 'string' ? JSON.parse(p.images) : p.images,
                     isDiscountActive: Boolean(p.isDiscountActive),
                     discountType: p.discountType,
-                    discountValue: Number(p.discountValue || 0),
-                    // Có thể parse tags nếu cần
-                    // systemTags: typeof p.systemTags === 'string' ? JSON.parse(p.systemTags) : p.systemTags
+                    discountValue: Number(p.discountValue || 0)
                 })),
                 meta: { total, page, limit, last_page: Math.ceil(total / limit) },
             };
@@ -411,7 +402,27 @@ export class ProductReadService implements OnModuleInit {
         }
     }
     
-    return resultData || { data: [], meta: { total: 0, page: 1, limit, last_page: 0 } };
+    // Nếu vẫn null (không search, load trang chủ mặc định) -> dùng Prisma findMany thường
+    if (!resultData) {
+         // Logic fallback cuối cùng: Load sản phẩm mới nhất
+         const [items, total] = await Promise.all([
+             this.prisma.product.findMany({
+                 where: { status: 'ACTIVE' },
+                 orderBy: { createdAt: 'desc' },
+                 take: limit,
+                 skip: skip,
+                 include: { variants: true } // Include ít thôi
+             }),
+             this.prisma.product.count({ where: { status: 'ACTIVE' } })
+         ]);
+         
+         resultData = {
+             data: items,
+             meta: { total, page, limit, last_page: Math.ceil(total / limit) }
+         };
+    }
+
+    return resultData;
   }
 
   async removeProductFromRedis(id: string, name: string) {
