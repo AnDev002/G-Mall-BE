@@ -10,19 +10,6 @@ export class StoreProductController {
 
 
 
-  @Public()
-  @Get('selector')
-  async findAll(@Query() query: any) {
-    return this.productReadService.getAdminProductSelector(query);
-  }
-
-  // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
-  // URL: GET /products/search?keyword=abc&shopId=...
-  @Public()
-  @Get('search')
-  async search(@Query() query: any) {
-    return this.productReadService.searchPublic(query);
-  }
 
   @Get()
   @Public()
@@ -201,5 +188,18 @@ export class StoreProductController {
       },
       distribution // Trả về { 5: 10, 4: 2, ... }
     };
+  }
+  
+  @Get('selector')
+  async getProductSelector(@Query() query: any) {
+      return this.productReadService.getAdminProductSelector(query);
+  }
+
+  // 2. API Tìm kiếm sản phẩm (có hỗ trợ filter shopId)
+  // URL: GET /products/search?keyword=abc&shopId=...
+  @Public()
+  @Get('search')
+  async search(@Query() query: any) {
+    return this.productReadService.searchPublic(query);
   }
 }
