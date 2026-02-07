@@ -287,43 +287,102 @@ export class ProductReadService implements OnModuleInit {
 
     // --- BƯỚC 2: REDIS SEARCH (Đã cập nhật logic mới) ---
     // Mặc dù ưu tiên MySQL, nhưng ta vẫn giữ logic Redis phòng khi VPS nâng cấp
-    if ((searchKeyword.length > 0 || tagKeywords.length > 0)) { // Tạm thời disable bằng && false nếu bạn muốn test cứng MySQL
-        try {
-            let ftQuery = `@status:{ACTIVE}`;
-            
-            // Logic cũ: Search keyword người dùng nhập
-            if (searchKeyword) {
-                const cleanName = this.escapeRediSearchText(searchKeyword);
-                if (cleanName) {
-                    const nameTokens = cleanName.split(/\s+/).map(t => `${t}*`).join(' ');
-                    ftQuery += ` @name:(${nameTokens})`;
-                }
-            }
+    if (searchKeyword.length > 0 || tagKeywords.length > 0) {
+    try {
+        let ftQuery = `@status:{ACTIVE}`;
+        
+        // --- A. XỬ LÝ TỪ KHÓA SEARCH (Input hoặc Fallback từ Menu) ---
+        if (searchKeyword) {
+            // 1. Tách chuỗi theo dấu phẩy để xác định các nhóm OR
+            // Ví dụ: "iphone 15, váy đẹp" -> ["iphone 15", "váy đẹp"]
+            const phrases = searchKeyword.split(',').map(p => p.trim()).filter(Boolean);
 
-            // [FIX] Logic mới: Tag -> Keywords -> Search trong @name
-            if (tagKeywords.length > 0) {
-                // Tạo query dạng: @name:(keyword1 | keyword2 | keyword3)
-                // Dùng dấu | (OR) trong RediSearch
-                const orConditions = tagKeywords
-                    .map(k => {
-                        const cleanK = this.escapeRediSearchText(k);
-                        return cleanK ? `"${cleanK}"` : ''; // Dùng exact match phrase hoặc prefix tùy nhu cầu
-                    })
-                    .filter(k => k !== '')
-                    .join('|');
-                
-                if (orConditions) {
-                    ftQuery += ` @name:(${orConditions})`;
-                }
-            }
+            if (phrases.length > 0) {
+                // 2. Xử lý từng cụm: Escape ký tự + Thêm dấu * (prefix search)
+                const processedPhrases = phrases.map(phrase => {
+                    const cleanPhrase = this.escapeRediSearchText(phrase);
+                    // Biến "iphone 15" thành "iphone* 15*" (tìm chứa cả 2 từ)
+                    return cleanPhrase.split(/\s+/).map(word => `${word}*`).join(' ');
+                });
 
-            // ... (Phần gọi Redis.call giữ nguyên) ...
-            // const searchRes = await this.redis.call(...)
-            // Nếu Redis fail hoặc trả về null -> resultData = null -> Fallback
-        } catch (e) {
-            resultData = null;
+                // 3. Nối các cụm bằng dấu gạch đứng | (Toán tử OR trong RediSearch)
+                // Kết quả: @name:(iphone* 15* | váy* đẹp*)
+                ftQuery += ` @name:(${processedPhrases.join('|')})`;
+            }
         }
+
+        // --- B. XỬ LÝ TAG KEYWORDS (Lấy từ Config Menu) ---
+        if (tagKeywords.length > 0) {
+            // TagKeywords bản chất đã là mảng các từ khóa -> Nối bằng OR (|)
+            const tagQuery = tagKeywords
+                .map(k => {
+                    const clean = this.escapeRediSearchText(k);
+                    // Cũng áp dụng prefix search cho tag
+                    return clean ? `${clean}*` : ''; 
+                })
+                .filter(Boolean)
+                .join('|');
+            
+            if (tagQuery) {
+                // Lưu ý: Nếu có cả Search và Tag, RediSearch mặc định là AND
+                // Nghĩa là: (Search Query) AND (Tag Query)
+                ftQuery += ` @name:(${tagQuery})`;
+            }
+        }
+
+        // --- C. THỰC THI QUERY ---
+        // Sắp xếp (RediSearch Sort)
+        let sortBy = 'createdAt';
+        let sortDir = 'DESC';
+        if (query.sort === 'sales') sortBy = 'salesCount';
+        if (query.sort === 'price_asc') { sortBy = 'price'; sortDir = 'ASC'; }
+        if (query.sort === 'price_desc') { sortBy = 'price'; sortDir = 'DESC'; }
+
+        // Gọi lệnh FT.SEARCH
+        const searchRes = await this.redis.call(
+            'FT.SEARCH', INDEX_NAME, 
+            ftQuery, 
+            'SORTBY', sortBy, sortDir,
+            'LIMIT', String(skip), String(limit)
+        ) as any[];
+
+        // --- D. PARSE KẾT QUẢ ---
+        if (Array.isArray(searchRes) && searchRes.length > 1) {
+            const totalDocs = searchRes[0]; // Phần tử đầu tiên là tổng số kết quả
+            
+            // [FIX]: Thêm kiểu : any[] để TypeScript hiểu đây là mảng chứa dữ liệu
+            const docs: any[] = []; 
+            
+            // Loop qua từng kết quả (RediSearch trả về dạng [Total, Key1, Val1, Key2, Val2...])
+            for (let i = 1; i < searchRes.length; i += 2) {
+                const fields = searchRes[i + 1]; // Mảng các field
+                // Convert mảng phẳng [key, val, key, val] thành Object
+                const productObj: any = {};
+                for (let j = 0; j < fields.length; j += 2) {
+                    productObj[fields[j]] = fields[j + 1];
+                }
+
+                // Parse lại JSON từ field 'json' (chứa đầy đủ data frontend cần)
+                if (productObj.json) {
+                    docs.push(JSON.parse(productObj.json));
+                }
+            }
+
+            resultData = {
+                data: docs,
+                meta: { 
+                    total: totalDocs, 
+                    page, 
+                    limit, 
+                    last_page: Math.ceil(totalDocs / limit) 
+                },
+            };
+        }
+    } catch (e) {
+        this.logger.error(`RediSearch Error: ${e.message}`);
+        resultData = null; // Fallback về MySQL nếu Redis lỗi
     }
+  }
 
     // --- BƯỚC 3: DATABASE FALLBACK (PRIORITY) ---
     // Logic này sẽ chạy chính hiện tại
