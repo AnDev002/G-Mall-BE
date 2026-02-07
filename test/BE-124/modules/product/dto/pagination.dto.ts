@@ -1,3 +1,4 @@
+// BE/product/dto/pagination.dto.ts
 import { IsOptional, IsInt, Min, IsString, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -14,7 +15,6 @@ export class PaginationDto {
   @Min(1)
   limit?: number = 10;
 }
-
 export class FindAllPublicDto extends PaginationDto {
     @IsOptional()
     @IsString()
@@ -43,8 +43,7 @@ export class FindAllPublicDto extends PaginationDto {
     @IsNumber()
     rating?: number;
 
-    // [UPDATED] Trường tag dùng cho Menu Auto-Tag
     @IsOptional()
     @IsString()
-    tag?: string;
+    tag?: string; // [QUAN TRỌNG] Thêm trường này
 }
