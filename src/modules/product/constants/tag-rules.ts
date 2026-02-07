@@ -77,7 +77,7 @@ export const AUTO_TAG_RULES: TagRule[] = [
     group: 'recipient', 
     label: 'Quà tặng Bố', 
     // Đây là các từ khóa sẽ được đem đi so sánh với Product Name
-    keywords: ['bàn chải điện', 'máy cạo râu', 'thực phẩm chức năng', 'bố', 'nam trung niên'] 
+    keywords: ['váy', 'bàn chải điện', 'máy cạo râu', 'thực phẩm chức năng', 'bố', 'nam trung niên'] 
   },
   { 
     code: 'recipient_qua_tang_chong',
