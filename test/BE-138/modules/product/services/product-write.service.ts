@@ -1,7 +1,7 @@
 // type: uploaded file
 // fileName: Back-end/modules/product/services/product-write.service.ts
 
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
@@ -10,7 +10,6 @@ import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-produc
 import { ProductReadService } from './product-read.service';
 @Injectable()
 export class ProductWriteService {
-  private readonly logger = new Logger(ProductWriteService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly productCache: ProductCacheService,
@@ -309,47 +308,7 @@ export class ProductWriteService {
 
       return { count: ids.length };
   }
-  async deleteAll() {
-    // 1. Lấy tất cả sản phẩm để xoá Cache & Redis Search Index trước
-    // (Phải lấy trước khi xoá DB thì mới còn info để xoá index search)
-    const allProducts = await this.prisma.product.findMany({
-      select: { id: true, name: true, slug: true }
-    });
 
-    if (allProducts.length === 0) {
-      return { count: 0, message: 'Không có sản phẩm nào để xoá' };
-    }
-
-    this.logger.warn(`Bắt đầu xoá toàn bộ ${allProducts.length} sản phẩm...`);
-
-    // 2. Xoá trong DB (Sử dụng transaction để đảm bảo sạch sẽ)
-    await this.prisma.$transaction(async (tx) => {
-      // Xoá các bảng phụ thuộc trước (nếu DB không set Cascade Delete)
-      await tx.productVariant.deleteMany({});
-      await tx.productOption.deleteMany({});
-      await tx.productCrossSell.deleteMany({});
-      // Xoá sản phẩm
-      await tx.product.deleteMany({});
-    });
-
-    // 3. Xoá Cache & Redis Search (Chạy song song)
-    // Lưu ý: Với số lượng lớn (>10k), nên dùng Queue/Job, nhưng với admin tool thì Promise.all tạm ổn
-    await Promise.all(allProducts.map(async (p) => {
-      try {
-        // Xoá khỏi RediSearch & Suggestion
-        await this.productReadService.removeProductFromRedis(p.id, p.name);
-        // Xoá Cache chi tiết
-        await this.productCache.invalidateProduct(p.id, p.slug);
-      } catch (e) {
-        console.error(`Lỗi clear cache product ${p.id}`, e);
-      }
-    }));
-    
-    // [OPTIONAL] Gọi hàm xoá toàn bộ key pattern nếu cần sạch tuyệt đối
-    // await this.productCache.flushAllProductCache(); 
-
-    return { count: allProducts.length, message: 'Đã xoá tất cả sản phẩm thành công' };
-  }
   // --- 3. Update (Updated for Shop Module) ---
   async update(id: string, userId: string, dto: UpdateProductDto) {
     // [MỚI] Tìm Shop trước

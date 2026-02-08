@@ -123,12 +123,6 @@ export class AdminProductController {
   async search(@Query() query: any) {
     return this.productReadService.searchPublic(query);
   }
-
-  @Delete('delete-all/cleanup')
-  @Roles(Role.ADMIN)
-  async deleteAllProducts() {
-      return this.productWriteService.deleteAll();
-  }
   
   @Get('search-for-blog')
   async searchForBlog(@Query('q') query: string) {
