@@ -251,56 +251,29 @@ export class ProductWriteService {
   }
 
   async delete(id: string) {
+    // 1. Lấy thông tin sản phẩm TRƯỚC khi xóa (để lấy tên xóa cache suggestion)
     const product = await this.prisma.product.findUnique({ 
         where: { id },
-        select: { id: true, name: true, slug: true } 
+        select: { id: true, name: true, slug: true } // Lấy slug để xóa cache detail
     });
 
     if (!product) {
       throw new NotFoundException('Sản phẩm không tồn tại');
     }
 
-    // Thực hiện xóa trong DB
+    // 2. Thực hiện xóa trong DB
     await this.prisma.$transaction(async (tx) => {
-        // 1. Xóa các quan hệ phụ thuộc trước (Thứ tự rất quan trọng)
-        
-        // A. Xóa khỏi giỏ hàng của người dùng (Rất hay dính lỗi này)
-        // Kiểm tra tên model trong schema.prisma của bạn, thường là CartItem
-        try {
-            await tx.cartItem.deleteMany({ where: { productId: id } });
-        } catch (e) { /* Bỏ qua nếu bảng không tồn tại hoặc tên khác */ }
-
-        // B. Xóa đánh giá sản phẩm
-        try {
-            await tx.review.deleteMany({ where: { productId: id } }); 
-        } catch (e) {}
-
-        // C. Xóa khỏi chương trình Flash Sale (nếu có)
-        try {
-            // Kiểm tra model FlashSaleProduct
-            await tx.flashSaleProduct.deleteMany({ where: { productId: id } });
-        } catch (e) {}
-
-        // D. Xóa khỏi danh sách yêu thích (Wishlist/Favorite)
-        try {
-            await tx.favorite.deleteMany({ where: { productId: id } });
-        } catch (e) {}
-        
-        // Lưu ý: Nếu sản phẩm đã có trong Đơn hàng (OrderItem), việc xóa cứng (Hard Delete) 
-        // thường bị chặn. Nếu bạn muốn xóa bất chấp, phải xóa OrderItem trước (KHÔNG KHUYẾN KHÍCH).
-        // Nếu dính lỗi ở OrderItem, hãy cân nhắc chuyển sang Soft Delete (status = DELETED).
-
-        // 2. Xóa các quan hệ trực tiếp (Code cũ của bạn)
         await tx.productVariant.deleteMany({ where: { productId: id } });
         await tx.productOption.deleteMany({ where: { productId: id } });
         await tx.productCrossSell.deleteMany({ where: { productId: id } });
-
-        // 3. Xóa sản phẩm
         await tx.product.delete({ where: { id } });
     });
 
-    // Xóa Cache & Redis Index
+    // 3. [FIX] Xóa Cache & Redis Index SAU KHI xóa DB thành công
+    // A. Xóa khỏi RediSearch & Suggestion (để hết hiện ở trang chủ/admin)
     await this.productReadService.removeProductFromRedis(product.id, product.name);
+    
+    // B. Xóa Cache chi tiết (để link cũ vào sẽ 404 thay vì hiện data cũ)
     await this.productCache.invalidateProduct(product.id, product.slug);
 
     return { success: true, message: 'Deleted successfully' };
@@ -310,30 +283,26 @@ export class ProductWriteService {
   async bulkDelete(ids: string[]) {
       if (!ids || ids.length === 0) return { count: 0 };
 
+      // 1. Lấy danh sách sản phẩm để xóa cache
       const productsToDelete = await this.prisma.product.findMany({
           where: { id: { in: ids } },
           select: { id: true, name: true, slug: true }
       });
 
+      // 2. Xóa trong DB
       await this.prisma.$transaction(async (tx) => {
-          // 1. Xóa quan hệ phụ thuộc cho danh sách ID
-          try { await tx.cartItem.deleteMany({ where: { productId: { in: ids } } }); } catch (e) {}
-          try { await tx.review.deleteMany({ where: { productId: { in: ids } } }); } catch (e) {}
-          try { await tx.flashSaleProduct.deleteMany({ where: { productId: { in: ids } } }); } catch (e) {}
-          try { await tx.favorite.deleteMany({ where: { productId: { in: ids } } }); } catch (e) {}
-
-          // 2. Xóa quan hệ trực tiếp
           await tx.productVariant.deleteMany({ where: { productId: { in: ids } } });
           await tx.productOption.deleteMany({ where: { productId: { in: ids } } });
           await tx.productCrossSell.deleteMany({ where: { productId: { in: ids } } });
-          
-          // 3. Xóa sản phẩm
           await tx.product.deleteMany({ where: { id: { in: ids } } });
       });
 
-      // Xóa Cache Loop
+      // 3. [FIX] Xóa Cache Loop
+      // Dùng Promise.all để xóa song song cho nhanh
       await Promise.all(productsToDelete.map(async (p) => {
+          // Xóa Index & Suggestion
           await this.productReadService.removeProductFromRedis(p.id, p.name);
+          // Xóa Detail Cache
           await this.productCache.invalidateProduct(p.id, p.slug);
       }));
 
@@ -500,37 +469,42 @@ export class ProductWriteService {
   }
 
   async deleteBySeller(userId: string, productId: string) {
+    // 1. Tìm Shop của User
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
     if (!shop) {
       throw new ForbiddenException('Bạn không có quyền thực hiện hành động này.');
     }
 
+    // 2. Tìm sản phẩm và đảm bảo nó thuộc về Shop này
     const product = await this.prisma.product.findFirst({
-      where: { id: productId, shopId: shop.id },
-      select: { id: true, name: true, slug: true }
+      where: { 
+        id: productId,
+        shopId: shop.id // [QUAN TRỌNG] Ràng buộc shopId
+      },
+      select: { id: true, name: true, slug: true } // Lấy slug để xóa cache
     });
 
     if (!product) {
       throw new NotFoundException('Sản phẩm không tồn tại hoặc không thuộc quyền quản lý của bạn.');
     }
 
+    // 3. Thực hiện xóa trong DB (Transaction)
     await this.prisma.$transaction(async (tx) => {
-        // 1. Xóa quan hệ phụ thuộc
-        try { await tx.cartItem.deleteMany({ where: { productId } }); } catch (e) {}
-        try { await tx.review.deleteMany({ where: { productId } }); } catch (e) {}
-        try { await tx.flashSaleProduct.deleteMany({ where: { productId } }); } catch (e) {}
-        try { await tx.favorite.deleteMany({ where: { productId } }); } catch (e) {}
-
-        // 2. Xóa quan hệ trực tiếp
+        // Xóa các bảng quan hệ trước
         await tx.productVariant.deleteMany({ where: { productId: productId } });
         await tx.productOption.deleteMany({ where: { productId: productId } });
         await tx.productCrossSell.deleteMany({ where: { productId: productId } });
         
-        // 3. Xóa sản phẩm
+        // Xóa sản phẩm chính
         await tx.product.delete({ where: { id: productId } });
     });
 
+    // 4. [XỬ LÝ CACHE REDIS]
+    // A. Xóa khỏi RediSearch & Suggestion (để Search Bar không gợi ý sp đã xóa nữa)
+    // Lưu ý: Hàm removeProductFromRedis cần được public bên ProductReadService
     await this.productReadService.removeProductFromRedis(product.id, product.name);
+    
+    // B. Xóa Cache chi tiết (để user truy cập link cũ sẽ thấy 404 thay vì cache cũ)
     await this.productCache.invalidateProduct(product.id, product.slug);
 
     return { success: true, message: 'Đã xóa sản phẩm thành công' };
