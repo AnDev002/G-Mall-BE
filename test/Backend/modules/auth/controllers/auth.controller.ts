@@ -20,7 +20,7 @@ export class AuthController {
       httpOnly: true,
       secure: true, // BẮT BUỘC true khi dùng sameSite: 'none'
       sameSite: 'none', // QUAN TRỌNG: Cho phép gửi cookie cross-site (FE -> BE)
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 10000,
       path: '/',
     });
   }
@@ -45,15 +45,13 @@ export class AuthController {
   @Post('login')
   async login(
     @Body() dto: LoginDto,
-    @Res({ passthrough: true }) res: Response // Inject Response
+    @Res({ passthrough: true }) res: Response
   ) {
-    // Cho phép BUYER, SELLER, ADMIN đều login được ở trang khách (tùy nghiệp vụ)
-    const data = await this.authService.login(dto, [Role.BUYER, Role.SELLER, Role.ADMIN]);
+    // [FIX] Chỉ cho phép BUYER đăng nhập ở trang này.
+    // Loại bỏ Role.SELLER và Role.ADMIN để chặn Seller/Admin đăng nhập vào trang mua hàng.
+    const data = await this.authService.login(dto, [Role.BUYER]);
     
-    // Set Cookie
     this.setAuthCookie(res, data.access_token);
-
-    // Chỉ trả về user, KHÔNG trả token trong body
     return { user: data.user };
   }
 
@@ -64,15 +62,11 @@ export class AuthController {
     @Body() dto: LoginDto, 
     @Res({ passthrough: true }) res: Response
   ) {
-      const data = await this.authService.login(dto, [Role.SELLER, Role.ADMIN]);
+      // [FIX] Chỉ cho phép SELLER. 
+      // Admin không được phép đăng nhập vào giao diện Seller (trừ khi có tính năng "Login as Seller" riêng biệt).
+      const data = await this.authService.login(dto, [Role.SELLER]);
 
-      res.cookie('accessToken', data.access_token, {
-        httpOnly: true,
-        secure: true, // BẮT BUỘC true
-        sameSite: 'none', // QUAN TRỌNG: Sửa từ 'strict' thành 'none'
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        path: '/',
-      });
+      this.setAuthCookie(res, data.access_token);
 
       return { user: data.user };
   }

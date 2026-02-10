@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
 import { HomeSettingsService } from './home-settings.service';
-import { Roles } from '../../common/decorators/roles.decorator'; // Decorator phân quyền của bạn
+import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -10,14 +10,15 @@ import { Public } from '../../common/decorators/public.decorator';
 export class HomeSettingsController {
   constructor(private readonly homeSettingsService: HomeSettingsService) {}
 
-  // 1. API Public cho Homepage (Ai cũng gọi được)
+  // 1. API Public cho Homepage (FE gọi cái này)
+  // Logic populate sản phẩm (30 items) nằm trong service getHomeLayout
   @Public()
   @Get('layout')
   getPublicLayout() {
     return this.homeSettingsService.getHomeLayout();
   }
 
-  // 2. API Admin: Lấy danh sách quản lý
+  // 2. API Admin: Lấy danh sách quản lý (giản lược, không load heavy data)
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)

@@ -1,11 +1,19 @@
-import { IsNotEmpty, IsString, IsEnum } from 'class-validator';
+import { IsNotEmpty, IsString, IsEnum, IsEmail } from 'class-validator';
 
 export class FriendRequestDto {
   @IsString()
   @IsNotEmpty()
   receiverId: string; // ID người muốn kết bạn
 }
+export class InviteByEmailDto {
+  @IsEmail({}, { message: 'Email không hợp lệ' })
+  @IsNotEmpty({ message: 'Vui lòng nhập email' })
+  email: string;
 
+  @IsString()
+  @IsNotEmpty({ message: 'Vui lòng nhập lời nhắn' })
+  message: string;
+}
 export class HandleRequestDto {
   @IsString()
   @IsNotEmpty()

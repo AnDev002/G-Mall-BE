@@ -133,4 +133,9 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   crossSellIds?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  systemTags?: string[];
 }

@@ -5,6 +5,8 @@ import { PointType, Prisma } from '@prisma/client';
 import { MailerService } from '@nestjs-modules/mailer'; // [FIX 3] Import MailerService
 import moment from 'moment';
 
+const DEFAULT_RATE = 10000;
+
 @Injectable()
 export class PointService {
   constructor(
@@ -30,6 +32,44 @@ export class PointService {
       isCheckedInToday,
       dayOfWeek,
     };
+  }
+
+  async getConversionRate(): Promise<number> {
+    // 1. Thử lấy từ Redis cho nhanh (nếu có cache)
+    const cached = await this.redis.get('POINT_RATE');
+    if (cached) return Number(cached);
+
+    // 2. Nếu không có cache, lấy từ DB
+    const setting = await this.prisma.systemSetting.findUnique({
+      where: { key: 'POINT_CONVERSION_RATE' }
+    });
+
+    const rate = setting ? Number(setting.value) : DEFAULT_RATE;
+
+    // 3. Cache lại 1 ngày (hoặc đến khi có update)
+    await this.redis.set('POINT_RATE', String(rate), 86400); 
+    
+    return rate;
+  }
+
+  // [NEW] Cập nhật tỷ lệ (Dành cho Admin)
+  async updateConversionRate(amount: number) {
+    if (amount < 1000) throw new BadRequestException('Tỷ lệ quá thấp (tối thiểu 1000đ/xu)');
+    
+    await this.prisma.systemSetting.upsert({
+      where: { key: 'POINT_CONVERSION_RATE' },
+      update: { value: String(amount) },
+      create: { 
+        key: 'POINT_CONVERSION_RATE', 
+        value: String(amount), 
+        description: 'Số tiền VND tương ứng với 1 Xu' 
+      }
+    });
+
+    // Xóa cache để lần sau lấy giá trị mới
+    await this.redis.del('POINT_RATE');
+    
+    return { success: true, rate: amount };
   }
 
   // 2. Hàm cộng/trừ điểm an toàn

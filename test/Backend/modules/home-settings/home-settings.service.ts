@@ -28,6 +28,28 @@ export class HomeSettingsService {
       take: limit // Giới hạn số lượng (với 2 cột thì chỉ cần hiển thị ít hơn)
     });
   }
+
+  private async getDataForColumn(columnConfig: any, limit: number = 30) {
+    if (!columnConfig) return [];
+
+    // CASE 1: Lấy thủ công (Manual)
+    if (columnConfig.sourceType === 'MANUAL' && Array.isArray(columnConfig.productIds) && columnConfig.productIds.length > 0) {
+      return this.prisma.product.findMany({
+        where: { 
+          id: { in: columnConfig.productIds }, 
+          status: 'ACTIVE' 
+        },
+        include: { 
+          variants: true, 
+          category: true 
+        },
+        take: limit // Lấy tối đa theo limit (30) để frontend random
+      });
+    }
+
+    // CASE 2: Lấy theo danh mục (Category) - Mặc định
+    return this.getProductsByCategory(columnConfig.categoryId, limit);
+  }
   
   // 1. Client: Lấy layout hiển thị
   async getHomeLayout() {
@@ -43,21 +65,23 @@ export class HomeSettingsService {
       
       // === FIX: XỬ LÝ RIÊNG CHO KHỐI 2 CỘT (SPLIT) ===
       if (section.type === 'CATEGORY_TWO_ROW') {
-        // Lấy dữ liệu song song cho cả trái và phải
+        // [QUAN TRỌNG] Tăng limit lên 30 để Frontend có dữ liệu mà shuffle (random)
+        const fetchLimit = 30; 
+
+        // Lấy dữ liệu song song cho cả trái và phải dựa trên config từng bên
         const [leftProducts, rightProducts] = await Promise.all([
-          this.getProductsByCategory(config.left?.categoryId, 3), // Lấy 3 sp cho mỗi bên
-          this.getProductsByCategory(config.right?.categoryId, 3)
+          this.getDataForColumn(config.left, fetchLimit),
+          this.getDataForColumn(config.right, fetchLimit)
         ]);
 
-        // Gán ngược lại vào config để frontend dùng
-        // Frontend component CategoryTwoRowSection cần prop 'products' bên trong config object
+        // Gán ngược lại vào config
         if (config.left) config.left.products = leftProducts;
         if (config.right) config.right.products = rightProducts;
 
         return { ...section, config }; 
       }
       
-      // === LOGIC CŨ CHO KHỐI DANH MỤC ĐƠN (GIỮ NGUYÊN) ===
+      // === LOGIC CŨ CHO KHỐI DANH MỤC ĐƠN ===
       const sourceType = config.sourceType || 'CATEGORY';
 
       if (sourceType === 'MANUAL' && config.productIds?.length > 0) {
@@ -67,7 +91,6 @@ export class HomeSettingsService {
           take: 12
         });
       } else if (section.categoryId) {
-        // Tái sử dụng helper function ở trên nhưng lấy nhiều hơn (12 sp)
         products = await this.getProductsByCategory(section.categoryId, 12);
       }
 
@@ -93,11 +116,12 @@ export class HomeSettingsService {
       isActive: data.isActive !== undefined ? data.isActive : true,
       categoryId: (data.categoryId && data.categoryId.length > 0) ? data.categoryId : null,
       
-      // Lưu config bao gồm cả productIds nếu chọn thủ công
+      // Lưu config: Giữ nguyên cấu trúc nested (left/right) từ frontend gửi lên
       config: {
         ...(data.config || {}),
-        productIds: data.productIds || [], // Mảng ID sản phẩm chọn tay
-        sourceType: data.sourceType || 'CATEGORY' // 'CATEGORY' | 'MANUAL'
+        // Các trường top-level (dành cho khối đơn)
+        productIds: data.productIds || [], 
+        sourceType: data.sourceType || 'CATEGORY'
       }
     };
   }

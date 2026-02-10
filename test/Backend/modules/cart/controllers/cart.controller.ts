@@ -7,8 +7,8 @@ import { AddToCartDto } from '../dto/add-to-cart.dto';
 import { UpdateCartDto } from '../dto/update-cart.dto';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 
-@UseGuards(JwtAuthGuard)
 @Controller('store/cart') 
+@UseGuards(JwtAuthGuard)
 export class CartController {
   constructor(private readonly cartService: CartService) {}
 

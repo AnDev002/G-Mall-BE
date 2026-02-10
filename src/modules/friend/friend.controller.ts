@@ -1,8 +1,9 @@
 import { Body, Controller, Get, Post, Delete, Param, UseGuards, Request, Query } from '@nestjs/common';
 import { FriendService } from './friend.service';
 import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
-import { FriendRequestDto, HandleRequestDto } from './dto/friend.dto';
-
+import { FriendRequestDto, HandleRequestDto, InviteByEmailDto } from './dto/friend.dto';
+import { User } from 'src/common/decorators/user.decorator';
+import type { User as UserEntity } from '@prisma/client';
 @Controller('friends')
 @UseGuards(JwtAuthGuard)
 export class FriendController {
@@ -34,6 +35,14 @@ export class FriendController {
   async getPendingRequests(@Request() req) {
     console.log("Current User ID getting pending requests:", req.user.id); // <--- Log ra để kiểm tra
     return this.friendService.getPendingRequests(req.user.id);
+  }
+  @Post('invite-by-email')
+  @UseGuards(JwtAuthGuard)
+  async inviteByEmail(
+    @User() user: UserEntity,
+    @Body() dto: InviteByEmailDto,
+  ) {
+    return this.friendService.inviteByEmail(user.id, dto.email, dto.message);
   }
 
   // 5. Tìm kiếm bạn bè

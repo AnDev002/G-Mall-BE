@@ -20,5 +20,5 @@ export class CreateUserDto {
 
   @IsEnum(Role)
   @IsOptional()
-  role?: Role = Role.BUYER; // Mặc định là người mua
+  role?: Role = Role.BUYER;
 }

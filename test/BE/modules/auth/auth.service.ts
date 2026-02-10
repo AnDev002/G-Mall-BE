@@ -4,12 +4,12 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { MailerService } from '@nestjs-modules/mailer';
 import * as bcrypt from 'bcrypt'; // Cần cài: pnpm add bcrypt && pnpm add -D @types/bcrypt
-import { RegisterDto, LoginDto, VerifyOtpDto, RegisterSellerDto } from './dto/auth.dto';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Role, ShopStatus } from '@prisma/client';
 import { UpdateShopProfileDto } from './dto/update-shop.dto';
-
+import { RegisterDto, LoginDto, VerifyOtpDto } from './dto/auth.dto';
+import { RegisterSellerDto } from './dto/register-seller.dto';
 function generateSlug(text: string): string {
   return text
     .toString()
@@ -66,63 +66,76 @@ export class AuthService {
     return { message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.' };
   }
 
-  async registerSeller(dto: RegisterSellerDto, file: Express.Multer.File) {
-    const { email, password, name, shopName, pickupAddress, phoneNumber } = dto;
+  async registerSeller(
+    dto: RegisterSellerDto, 
+  ) {
+    // Bây giờ TypeScript sẽ hiểu dto có provinceId, districtId... nhờ import đúng file
+    const { 
+      email, password, name, shopName, pickupAddress, phoneNumber,
+      provinceId, districtId, wardCode, lat, lng,
+      businessLicenseFront, 
+      businessLicenseBack,
+      categoryId
+    } = dto;
 
-    // 1. Kiểm tra Email tồn tại
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      throw new BadRequestException('Email đã tồn tại');
+    const existingPhone = await this.prisma.user.findFirst({ where: { phone: phoneNumber } });
+    if (existingPhone) {
+        throw new BadRequestException('Số điện thoại đã được sử dụng');
     }
 
-    // 2. Mã hóa mật khẩu
+    // 1. Kiểm tra Email
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) throw new BadRequestException('Email đã tồn tại');
+
+    // 2. Hash Password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 3. Xử lý File
-    const fileUrl = file ? `uploads/${file.filename}` : null; // Logic upload đơn giản
-
-    // 4. Generate Slug cho Shop
     const slug = generateSlug(shopName);
-    
-    // Check slug trùng (Optional)
     const existingSlug = await this.prisma.shop.findUnique({ where: { slug } });
-    if (existingSlug) {
-        throw new BadRequestException('Tên Shop đã tồn tại, vui lòng chọn tên khác');
-    }
+    if (existingSlug) throw new BadRequestException('Tên Shop đã tồn tại, vui lòng chọn tên khác');
 
-    // 5. Tạo User và Shop trong Transaction để đảm bảo tính toàn vẹn
-    // [FIX 3] Sử dụng Role.BUYER và ShopStatus.PENDING như trong lỗi của bạn
+    // 5. Transaction tạo User & Shop
     await this.prisma.$transaction(async (tx) => {
-        // Tạo User (Mặc định là BUYER, sẽ lên SELLER khi Shop được duyệt)
         const user = await tx.user.create({
             data: {
                 email,
                 password: hashedPassword,
                 name: name,
-                role: Role.BUYER, // User ban đầu là Buyer
+                role: Role.BUYER,
                 isVerified: false,
-                phone: phoneNumber, // Đảm bảo schema User có field này
+                phone: phoneNumber,
             },
         });
 
-        // Tạo Shop (Trạng thái PENDING)
         await tx.shop.create({
             data: {
                 ownerId: user.id,
                 name: shopName,
+                categoryId: categoryId,
                 slug: slug,
                 address: pickupAddress,
-                licenseImage: fileUrl,
-                status: ShopStatus.PENDING, // Chờ duyệt
+                
+                provinceId: Number(provinceId) || 201,
+                districtId: Number(districtId) || 1484,
+                wardCode: wardCode || "1A0104",
+                lat: lat ? Number(lat) : undefined,
+                lng: lng ? Number(lng) : undefined,
+
+                businessLicenseFront: businessLicenseFront,
+                businessLicenseBack: businessLicenseBack,
+                
+                status: ShopStatus.PENDING,
             }
         });
-
-        // Gửi OTP
-        if(email != undefined && email != null && email != "")
-        {
-          await this.sendOtp(user.email ?? undefined);
-        }
     });
+
+    // [MỚI] Gửi OTP sau khi Transaction đã commit thành công
+    // Nếu gửi mail lỗi, user vẫn được tạo và có thể bấm "Gửi lại OTP" sau
+    if(email) {
+        // Không dùng await để block response, cho chạy nền (tuỳ nhu cầu)
+        // Hoặc dùng await nếu muốn chắc chắn mail đi rồi mới báo success
+        await this.sendOtp(email); 
+    }
 
     return { message: 'Đăng ký người bán thành công. Vui lòng xác thực OTP.' };
   }

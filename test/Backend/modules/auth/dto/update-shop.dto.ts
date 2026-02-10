@@ -5,9 +5,12 @@ export class UpdateShopProfileDto {
   @IsString()
   @MinLength(3, { message: 'Tên Shop phải có ít nhất 3 ký tự' })
   @MaxLength(30, { message: 'Tên Shop tối đa 30 ký tự' })
-  @Matches(/^[a-zA-Z0-9\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ_\-]+$/, {
-    message: 'Tên Shop không được chứa ký tự đặc biệt (chấp nhận dấu gạch dưới và gạch ngang)',
-  })
+  @Matches(
+    /^[a-zA-Z0-9\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ_\-]+$/, 
+    {
+      message: 'Tên Shop không hợp lệ (cho phép chữ cái, số, khoảng trắng, gạch ngang, gạch dưới)',
+    }
+  )
   shopName?: string;
 
   @IsOptional()

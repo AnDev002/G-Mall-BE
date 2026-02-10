@@ -62,7 +62,6 @@ export class CartService {
   async getCart(userId: string) {
     const key = this.getCartKey(userId);
     
-    // Lấy toàn bộ item trong hash: { "productId1": "2", "productId2": "5" }
     const cartItemsRaw = await this.redis.hgetall(key);
     const productIds = Object.keys(cartItemsRaw);
 
@@ -70,10 +69,24 @@ export class CartService {
       return { items: [], total: 0 };
     }
 
-    // Lấy thông tin chi tiết sản phẩm từ DB (chỉ lấy 1 lần)
+    // [FIX 1] Thêm shop vào select để lấy thông tin cửa hàng
     const products = await this.prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, name: true, price: true, images: true, stock: true, slug: true }
+      select: { 
+        id: true, 
+        name: true, 
+        price: true, 
+        images: true, 
+        stock: true, 
+        slug: true,
+        // Thêm phần này:
+        shop: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      }
     });
 
     // Map lại dữ liệu để trả về FE
@@ -81,14 +94,17 @@ export class CartService {
       const quantity = parseInt(cartItemsRaw[p.id]);
       const images = p.images as any[]; 
       return {
-        id: p.id, // Ở đây tạm dùng ID sản phẩm làm ID row
+        id: p.id,
         productId: p.id,
         title: p.name,
         imageUrl: Array.isArray(images) ? (images[0]?.url || images[0]) : '',
         price: Number(p.price),
         quantity: quantity,
         stock: p.stock,
-        totalPrice: Number(p.price) * quantity
+        totalPrice: Number(p.price) * quantity,
+        // [FIX 2] Map thông tin shop ra ngoài object
+        shopId: p.shop?.id || 'unknown-shop',
+        shopName: p.shop?.name || 'Cửa hàng'
       };
     });
 

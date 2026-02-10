@@ -2,7 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { RedisService } from '../../database/redis/redis.service';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
-import { Prisma, VoucherScope } from '@prisma/client';
+import { Prisma, VoucherScope, VoucherType } from '@prisma/client';
 
 @Injectable()
 export class PromotionService {
@@ -11,7 +11,139 @@ export class PromotionService {
     private redisService: RedisService
   ) {}
 
-  // --- 1. CORE LOGIC: TÍNH TOÁN GIẢM GIÁ ---
+  // =================================================================
+  // 🆕 PHẦN MỚI: LOGIC TÍNH TOÁN MULTI-SHOP (Dùng cho OrderService mới)
+  // =================================================================
+  
+  /**
+   * Tính toán voucher cho đơn hàng gồm nhiều Shop.
+   * Logic:
+   * 1. Tách voucher Shop và voucher Hệ thống.
+   * 2. Áp dụng voucher Shop trước (trừ vào subtotal của từng shop).
+   * 3. Tính lại tổng tiền sau khi trừ voucher Shop.
+   * 4. Áp dụng voucher Hệ thống trên tổng tiền mới.
+   */
+  async calculateMultiShopVouchers(
+    voucherIds: string[],
+    shopGroups: Record<string, any> // Map: { shopId: { subtotal: number, items: [] } }
+  ) {
+    if (!voucherIds || voucherIds.length === 0) {
+      return { 
+        shopDiscounts: {}, // Map<shopId, number>
+        systemDiscount: 0,
+        appliedVouchers: [] 
+      };
+    }
+
+    // 1. Fetch Vouchers (Kèm shopId để phân loại)
+    const vouchers = await this.prisma.voucher.findMany({
+      where: {
+        code: { in: voucherIds },
+        isActive: true,
+        startDate: { lte: new Date() },
+        endDate: { gte: new Date() },
+      },
+      include: { 
+        products: { select: { id: true } }, 
+        shop: { select: { id: true } }      
+      }
+    });
+
+    const appliedVouchers: any[] = [];
+    const shopDiscounts: Record<string, number> = {}; 
+    let systemDiscount = 0;
+
+    // 2. Phân loại
+    const shopVouchers = vouchers.filter(v => v.scope === VoucherScope.SHOP || v.scope === VoucherScope.PRODUCT);
+    const systemVouchers = vouchers.filter(v => v.scope === VoucherScope.GLOBAL);
+
+    // 3. Xử lý Voucher Shop
+    for (const voucher of shopVouchers) {
+      const targetShopId = voucher.shopId;
+      // Nếu voucher không thuộc shop nào trong giỏ hàng -> Bỏ qua
+      if (!targetShopId || !shopGroups[targetShopId]) continue; 
+
+      const group = shopGroups[targetShopId];
+      let eligibleAmount = 0;
+
+      if (voucher.scope === VoucherScope.PRODUCT) {
+        // Chỉ tính tổng tiền các sản phẩm được chọn trong voucher
+        const validProductIds = voucher.products.map(p => p.id);
+        eligibleAmount = group.items
+          .filter((i: any) => validProductIds.includes(i.productId))
+          .reduce((sum: number, i: any) => sum + i.subtotal, 0);
+      } else {
+        // Scope SHOP: Tính trên toàn bộ đơn của shop đó
+        eligibleAmount = group.subtotal;
+      }
+
+      if (eligibleAmount < Number(voucher.minOrderValue)) continue;
+
+      // Tính tiền giảm
+      let discount = 0;
+      if (voucher.type === VoucherType.FIXED_AMOUNT) {
+        discount = Number(voucher.amount);
+      } else {
+        discount = (eligibleAmount * Number(voucher.amount)) / 100;
+        if (voucher.maxDiscount) discount = Math.min(discount, Number(voucher.maxDiscount));
+      }
+
+      // Cộng dồn giảm giá cho shop đó (đề phòng shop cho dùng nhiều voucher - tùy logic business)
+      // Ở đây giả định mỗi loại voucher áp dụng 1 lần, nhưng code hỗ trợ cộng dồn
+      shopDiscounts[targetShopId] = (shopDiscounts[targetShopId] || 0) + discount;
+      
+      appliedVouchers.push({ 
+          ...voucher, 
+          appliedAmount: discount, 
+          shopId: targetShopId,
+          isSystem: false
+      });
+    }
+
+    // 4. Tính tổng tiền còn lại sau khi trừ Voucher Shop để áp dụng Voucher Sàn
+    let totalAfterShopDiscount = 0;
+    Object.keys(shopGroups).forEach(shopId => {
+      const originalSub = shopGroups[shopId].subtotal;
+      const shopDisc = shopDiscounts[shopId] || 0;
+      totalAfterShopDiscount += Math.max(0, originalSub - shopDisc); 
+    });
+
+    // 5. Xử lý Voucher Sàn (System)
+    for (const voucher of systemVouchers) {
+      // Voucher sàn tính trên tổng tiền (đã trừ Shop Voucher)
+      if (totalAfterShopDiscount < Number(voucher.minOrderValue)) continue;
+
+      let discount = 0;
+      if (voucher.type === VoucherType.FIXED_AMOUNT) {
+        discount = Number(voucher.amount);
+      } else {
+        discount = (totalAfterShopDiscount * Number(voucher.amount)) / 100;
+        if (voucher.maxDiscount) discount = Math.min(discount, Number(voucher.maxDiscount));
+      }
+
+      systemDiscount += discount;
+      appliedVouchers.push({ 
+          ...voucher, 
+          appliedAmount: discount, 
+          isSystem: true 
+      });
+    }
+
+    // Chốt chặn: Tổng giảm giá không vượt quá tổng tiền
+    if (systemDiscount > totalAfterShopDiscount) systemDiscount = totalAfterShopDiscount;
+
+    return {
+      shopDiscounts,
+      systemDiscount,
+      appliedVouchers
+    };
+  }
+
+  // =================================================================
+  // 🔽 LOGIC CŨ (GIỮ NGUYÊN ĐỂ KHÔNG LỖI FE/CONTROLLER CŨ)
+  // =================================================================
+
+  // --- 1. CORE LOGIC: TÍNH TOÁN GIẢM GIÁ (CŨ) ---
   async validateAndCalculateVouchers(
     voucherIds: string[], 
     orderTotal: number,   

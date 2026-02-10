@@ -1,15 +1,20 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+// type: uploaded file
+// fileName: Back-end/modules/product/services/product-write.service.ts
+
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
-import { Prisma, ProductStatus } from '@prisma/client';
-import { UpdateProductDto } from '../dto/update-product.dto';
-
+import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
+import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
+import { ProductReadService } from './product-read.service';
 @Injectable()
 export class ProductWriteService {
+  private readonly logger = new Logger(ProductWriteService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly productCache: ProductCacheService,
+    private readonly productReadService: ProductReadService,
   ) {}
 
   // --- 1. Tạo sản phẩm (Updated for Shop Module) ---
@@ -45,7 +50,6 @@ export class ProductWriteService {
     if (tiers && tiers.length > 0 && (!variations || variations.length === 0)) {
        throw new BadRequestException('Phải thiết lập biến thể SKU khi có nhóm phân loại');
     }
-
     // 3. Gộp attributes
     let finalAttributes = attributes;
     try {
@@ -156,17 +160,61 @@ export class ProductWriteService {
     });
   }
 
+  async updateProductTags(id: string, systemTags: string[]) {
+    // 1. Kiểm tra sản phẩm có tồn tại không
+    const product = await this.prisma.product.findUnique({ where: { id } });
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // 2. Cập nhật DB
+    const updatedProduct = await this.prisma.product.update({
+      where: { id },
+      data: { systemTags },
+      // Include các quan hệ cần thiết để hàm syncRedis không bị lỗi thiếu data
+      include: {
+        shop: { select: { id: true, name: true, avatar: true } }, 
+        category: true
+      }
+    });
+
+    // 3. Sync lại dữ liệu sang Redis (để Search tìm thấy tag mới ngay lập tức)
+    // Lưu ý: Hàm syncProductToRedis bên ReadService cần object product đầy đủ thông tin
+    await this.productReadService.syncProductToRedis(updatedProduct);
+
+    return updatedProduct;
+  }
+
   // --- 2. Approve (Giữ nguyên) ---
   async approveProduct(productId: string, status: 'ACTIVE' | 'REJECTED', reason?: string) {
+    // 1. Cập nhật DB
     const updatedProduct = await this.prisma.product.update({
       where: { id: productId },
       data: {
         status: status,
         rejectReason: status === 'REJECTED' ? reason : null
+      },
+      // [QUAN TRỌNG] Include đủ thông tin để Sync sang Redis không bị lỗi (ảnh, shop, v.v.)
+      include: {
+        shop: { select: { id: true, name: true, avatar: true } },
+        variants: true,
       }
     });
 
+    // 2. Xóa Cache chi tiết (để khi click vào xem chi tiết sẽ load lại data mới)
     await this.productCache.invalidateProduct(productId);
+
+    // [QUAN TRỌNG] 3. Nếu là ACTIVE, phải đồng bộ ngay sang Redis Search Index
+    if (status === 'ACTIVE') {
+        // Gọi hàm sync có sẵn bên ReadService
+        await this.productReadService.syncProductToRedis(updatedProduct);
+    } else if (status === 'REJECTED') {
+        // Nếu từ chối, có thể xóa khỏi Index (nếu trước đó lỡ có) hoặc update status
+        // Hàm syncProductToRedis cũng sẽ update status thành REJECTED trong Redis,
+        // giúp bộ lọc @status:{ACTIVE} của FT.SEARCH tự động loại bỏ nó.
+        await this.productReadService.syncProductToRedis(updatedProduct);
+    }
+
     return updatedProduct;
   }
 
@@ -174,7 +222,8 @@ export class ProductWriteService {
     if (!ids || ids.length === 0) return { count: 0 };
 
     // 1. Cập nhật DB
-    const result = await this.prisma.product.updateMany({
+    // Lưu ý: updateMany không trả về record, nên ta phải update xong rồi query lại
+    await this.prisma.product.updateMany({
       where: { id: { in: ids } },
       data: {
         status: status,
@@ -182,13 +231,94 @@ export class ProductWriteService {
       }
     });
 
-    // 2. Invalidate Cache cho từng sản phẩm (Để đảm bảo data mới nhất khi xem chi tiết)
-    // Lưu ý: Nếu số lượng quá lớn (ví dụ > 1000), cân nhắc cách xử lý cache khác
-    ids.forEach(id => this.productCache.invalidateProduct(id));
+    // 2. Lấy danh sách các sản phẩm vừa update để sync Redis
+    const products = await this.prisma.product.findMany({
+        where: { id: { in: ids } },
+        include: {
+            shop: { select: { id: true, name: true, avatar: true } }
+        }
+    });
 
-    return result;
+    // 3. Thực hiện Sync và Invalidate Cache song song
+    await Promise.all(products.map(async (product) => {
+        // Invalidate cache chi tiết
+        await this.productCache.invalidateProduct(product.id);
+        
+        // Sync sang Redis Search
+        await this.productReadService.syncProductToRedis(product);
+    }));
+
+    return { count: ids.length };
   }
 
+  async delete(id: string) { return this.bulkDelete([id]); }
+
+  // --- 7. Bulk Delete (CẬP NHẬT) ---
+  async bulkDelete(ids: string[]) {
+      if (!ids || ids.length === 0) return { count: 0 };
+      const productsToDelete = await this.prisma.product.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, slug: true } });
+
+      await this.prisma.$transaction(async (tx) => {
+          // 1. [QUAN TRỌNG] Xoá các bảng KHÔNG CÓ CASCADE
+          // Bảng FlashSaleProduct (khoá ngoại variantId không cascade)
+          await this.safeDelete(tx, 'flashSaleProduct', { productId: { in: ids } });
+          
+          // Bảng ProductReview (khoá ngoại productId không cascade)
+          await this.safeDelete(tx, 'productReview', { productId: { in: ids } });
+
+          // 2. [TỐI ƯU] Xoá thủ công CartItem để giảm tải cho DB (dù có cascade)
+          await this.safeDelete(tx, 'cartItem', { productId: { in: ids } });
+
+          // Lưu ý: OrderItem có onDelete: SetNull nên không cần xoá, nó sẽ tự update thành null.
+
+          // 3. Xoá Product (Sẽ tự động cascade xoá ProductVariant, ProductOption, CrossSell)
+          await tx.product.deleteMany({ where: { id: { in: ids } } });
+
+      }, { maxWait: 10000, timeout: 20000 });
+
+      this.clearCacheBackground(productsToDelete);
+      return { count: ids.length, message: `Đã xoá ${ids.length} sản phẩm` };
+  }
+  private async clearCacheBackground(products: { id: string, name: string, slug: string }[]) {
+      Promise.all(products.map(async (p) => {
+          try {
+             await this.productReadService.removeProductFromRedis(p.id, p.name);
+             await this.productCache.invalidateProduct(p.id, p.slug);
+          } catch(e) {}
+      })).then(() => this.logger.log(`Cleaned cache for ${products.length} items`));
+  }
+  async deleteAll() {
+    const allProducts = await this.prisma.product.findMany({ select: { id: true, name: true, slug: true } });
+    if (allProducts.length === 0) return { count: 0, message: 'Hệ thống trống.' };
+    
+    this.logger.warn(`Đang xoá toàn bộ ${allProducts.length} sản phẩm...`);
+
+    await this.prisma.$transaction(async (tx) => {
+        // 1. Dọn dẹp bảng phụ (Blocking Tables)
+        await this.safeDelete(tx, 'flashSaleProduct', {}); // Xoá hết flash sale items
+        await this.safeDelete(tx, 'productReview', {});    // Xoá hết review
+        
+        // 2. Dọn dẹp giỏ hàng
+        await this.safeDelete(tx, 'cartItem', {});
+
+        // 3. Xoá Product (Cascade lo phần còn lại: Variants, Options...)
+        await tx.product.deleteMany({});
+        
+    }, { timeout: 60000 }); // Tăng timeout cho tác vụ nặng
+
+    this.clearCacheBackground(allProducts);
+    return { count: allProducts.length, message: 'Đã xoá sạch toàn bộ hệ thống!' };
+  }
+  private async safeDelete(tx: any, modelName: string, where: any) {
+    try {
+        if (tx[modelName]) {
+            await tx[modelName].deleteMany({ where });
+        }
+    } catch (e) {
+        // Bỏ qua lỗi nếu model không tồn tại hoặc sai tên
+        // this.logger.debug(`Skipped delete for ${modelName}: ${e.message}`);
+    }
+  }
   // --- 3. Update (Updated for Shop Module) ---
   async update(id: string, userId: string, dto: UpdateProductDto) {
     // [MỚI] Tìm Shop trước
@@ -248,6 +378,113 @@ export class ProductWriteService {
     });
   }
 
+  async updateDiscount(sellerId: string, productId: string, dto: UpdateProductDiscountDto) {
+    // 1. Lấy sản phẩm và variants
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { variants: true } 
+    });
+
+    if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
+    
+    // Check quyền
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+    if (!shop || product.shopId !== shop.id) {
+        throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
+    }
+
+    // --- LOGIC XỬ LÝ BIẾN THỂ (VARIANTS) ---
+    // Chỉ chạy khi user gửi danh sách variations (Cài đặt riêng)
+    if (dto.isDiscountActive && dto.variants && dto.variants.length > 0) {
+        
+        const updates = dto.variants.map(async (vDto) => {
+            const currentVariant = product.variants.find(v => v.id === vDto.id);
+            if (!currentVariant) return;
+
+            // [CHUẨN] Logic y hệt Product cha:
+            // Nếu chưa có originalPrice thì lấy price hiện tại làm gốc.
+            // Nếu đã có originalPrice thì GIỮ NGUYÊN nó làm gốc.
+            const vOriginalPrice = Number(currentVariant.originalPrice ?? currentVariant.price);
+            
+            // Tính giá bán mới (price)
+            const discountPercent = vDto.discountValue;
+            if (discountPercent > 100) throw new BadRequestException('Giảm giá không quá 100%');
+            
+            const vNewPrice = Math.round(vOriginalPrice * (1 - discountPercent / 100));
+
+            return this.prisma.productVariant.update({
+                where: { id: vDto.id },
+                data: {
+                    price: vNewPrice,           // Cập nhật giá bán
+                    originalPrice: vOriginalPrice, // Neo giá gốc
+                    discountValue: discountPercent // Lưu % giảm
+                }
+            });
+        });
+
+        await Promise.all(updates);
+    } 
+    
+    // --- LOGIC XỬ LÝ PRODUCT CHA (Giữ nguyên của bạn) ---
+    // ... (Code xử lý finalPrice cho product cha như cũ) ...
+    // Lưu ý: Nếu có variants, giá Product cha nên là giá Min của variants
+    
+    let originalPrice = Number(product.originalPrice ?? product.price);
+    let finalPrice = originalPrice;
+    
+    if (dto.isDiscountActive) {
+         finalPrice = Math.round(originalPrice * (1 - dto.discountValue / 100));
+    } else {
+         finalPrice = originalPrice;
+         // Nếu tắt discount -> Reset cả variants về giá gốc
+         if (product.variants.length > 0) {
+             await this.prisma.productVariant.updateMany({
+                 where: { productId },
+                 data: { 
+                    discountValue: 0 
+                    // Lưu ý: Prisma updateMany không set được price = originalPrice
+                    // Nếu muốn reset giá variant chính xác, cần loop update
+                 }
+             });
+             // Loop reset giá variant (Optional nhưng Recommended)
+             await Promise.all(product.variants.map(v => 
+                 this.prisma.productVariant.update({
+                     where: { id: v.id },
+                     data: { price: v.originalPrice ?? v.price }
+                 })
+             ));
+         }
+    }
+
+    // Update Product
+    const updatedProduct = await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        originalPrice, 
+        price: finalPrice,
+        discountValue: dto.discountValue,
+        discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
+        discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
+        isDiscountActive: dto.isDiscountActive,
+        discountType: 'PERCENT' // Ép cứng theo yêu cầu
+      },
+      include: { variants: true, shop: true }
+    });
+
+    // Sync Redis
+    await this.productCache.invalidateProduct(updatedProduct.id, updatedProduct.slug);
+    await this.productReadService.syncProductToRedis(updatedProduct);
+
+    return updatedProduct;
+  }
+
+  async deleteBySeller(userId: string, productId: string) {
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
+    if (!shop) throw new ForbiddenException('Lỗi quyền');
+    const product = await this.prisma.product.findFirst({ where: { id: productId, shopId: shop.id } });
+    if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
+    return this.bulkDelete([productId]);
+  }
   // --- 5. Find All By Seller (Updated) ---
   async findAllBySeller(userId: string, status?: string) {
     // [MỚI] Lấy Shop ID

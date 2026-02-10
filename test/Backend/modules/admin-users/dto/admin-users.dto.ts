@@ -21,8 +21,16 @@ export class CreateUserDto {
   password: string;
 
   @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
   @IsEnum(Role)
   role?: Role;
+
+  @IsString()
+  @IsOptional()
+  shopName?: string; 
 }
 
 export class ToggleBanUserDto {

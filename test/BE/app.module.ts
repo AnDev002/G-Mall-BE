@@ -27,6 +27,8 @@ import { FinanceModule } from './modules/finance/finance.module';
 import { FlashSaleModule } from './modules/flash-sale/flash-sale.module';
 import { BlogModule } from './modules/blog/blog.module';
 import { BrandModule } from './modules/brand/brand.module';
+import { GhnModule } from './modules/ghn/ghn.module';
+import { AddressModule } from './modules/address/address.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -106,6 +108,8 @@ import { BrandModule } from './modules/brand/brand.module';
     FlashSaleModule,
     BlogModule,
     BrandModule,
+    GhnModule,
+    AddressModule,
   ],
   controllers: [AppController],
   providers: [AppService],

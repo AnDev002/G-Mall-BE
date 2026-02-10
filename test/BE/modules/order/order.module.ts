@@ -11,6 +11,9 @@ import { PromotionModule } from '../promotion/promotion.module'; // <--- THÊM I
 import { PointModule } from '../point/point.module';
 import { DatabaseModule } from 'src/database/database.module';
 import { AdminOrderController } from './controllers/admin-order.controller';
+import { GhnModule } from '../ghn/ghn.module';
+import { PaymentModule } from '../payment/payment.module';
+import { ReviewService } from './review.service';
 @Module({
   imports: [
     DatabaseModule,
@@ -18,6 +21,8 @@ import { AdminOrderController } from './controllers/admin-order.controller';
     TrackingModule,
     PromotionModule,
     PointModule,
+    GhnModule,
+    PaymentModule,
     BullModule.registerQueue({
       name: 'order_queue',
     }),
@@ -25,7 +30,8 @@ import { AdminOrderController } from './controllers/admin-order.controller';
   controllers: [OrderController, AdminOrderController],
   providers: [
     OrderService,  
-    OrderProcessor
+    ReviewService,
+    OrderProcessor,
   ],
   exports: [OrderService] 
 })

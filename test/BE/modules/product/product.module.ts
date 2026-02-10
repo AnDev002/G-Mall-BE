@@ -6,6 +6,7 @@ import { SellerProductController } from './controllers/seller-product.controller
 import { StoreProductController } from './controllers/store-product.controller';
 import { AdminProductController } from './controllers/admin-product.controller'; // Import mới
 import { CategoryModule } from '../category/category.module';
+import { ProductAutoTagService } from './services/product-auto-tag.service';
 
 @Module({
   imports: [
@@ -19,7 +20,8 @@ import { CategoryModule } from '../category/category.module';
   providers: [
     ProductReadService,
     ProductWriteService,
-    ProductCacheService
+    ProductCacheService,
+    ProductAutoTagService
   ],
   exports: [
     ProductReadService,

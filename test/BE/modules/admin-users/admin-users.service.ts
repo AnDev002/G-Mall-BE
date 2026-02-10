@@ -6,6 +6,16 @@ import { MailerService } from '@nestjs-modules/mailer';
 import { Prisma, Role, ShopStatus } from '@prisma/client';
 import { CreateUserDto } from './dto/admin-users.dto';
 import * as bcrypt from 'bcrypt';
+
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ /g, '-')
+    .replace(/[^\w-]+/g, '') + '-' + Date.now().toString().slice(-4);
+}
+
 @Injectable()
 export class AdminUsersService {
   constructor(
@@ -153,10 +163,13 @@ export class AdminUsersService {
 
     const [shops, total] = await Promise.all([
       this.prisma.shop.findMany({
-        where: { status: 'PENDING' }, // Tìm Shop PENDING, không phải User PENDING_SELLER
+        where: { status: 'PENDING' },
         include: {
           owner: { select: { email: true, name: true, phone: true } }
         },
+        // [FIX] Prisma mặc định select hết các trường scalar (bao gồm các link ảnh),
+        // nhưng nếu bạn đã từng dùng select cụ thể thì phải thêm các trường license vào.
+        // Ở đây dùng findMany mặc định là OK.
         orderBy: { createdAt: 'asc' }, 
         skip,
         take: limit,
@@ -170,6 +183,31 @@ export class AdminUsersService {
       data: shops,
       meta: { total, page, lastPage: Math.ceil(total / limit) }
     };
+  }
+
+  async approveShopUpdate(adminId: string, shopId: string) {
+    const shop = await this.prisma.shop.findUnique({ where: { id: shopId } });
+    if (!shop || !shop.pendingDetails) throw new BadRequestException("Không có thông tin chờ duyệt");
+
+    const pending: any = shop.pendingDetails;
+    
+    // Merge pending data vào data chính thức
+    const updateData: any = {
+        pendingDetails: Prisma.DbNull, // Xóa pending
+    };
+    
+    if (pending.businessLicenseFront) updateData.businessLicenseFront = pending.businessLicenseFront;
+    if (pending.businessLicenseBack) updateData.businessLicenseBack = pending.businessLicenseBack;
+    if (pending.salesLicense) updateData.salesLicense = pending.salesLicense;
+    if (pending.trademarkCert) updateData.trademarkCert = pending.trademarkCert;
+    if (pending.distributorCert) updateData.distributorCert = pending.distributorCert;
+
+    await this.prisma.shop.update({
+        where: { id: shopId },
+        data: updateData
+    });
+
+    return { message: "Đã duyệt cập nhật thông tin shop" };
   }
   
   // --- [UPDATE] Duyệt Shop ---
@@ -225,6 +263,49 @@ export class AdminUsersService {
     return { message: 'Đã phê duyệt Shop thành công' };
   }
 
+  async getShopUpdateRequests(page: number = 1, limit: number = 10) {
+    const skip = (page - 1) * limit;
+    
+    // [FIX 1] Cách viết chuẩn để tìm trường JSON không phải là NULL trong Prisma
+    const whereCondition: Prisma.ShopWhereInput = {
+        pendingDetails: {
+            not: Prisma.DbNull
+        }
+    };
+
+    const [shops, total] = await Promise.all([
+        this.prisma.shop.findMany({
+            where: whereCondition,
+            select: {
+                id: true,
+                name: true,
+                // [FIX 2] Xóa dòng 'email: true,' ở đây vì Shop không có email
+                owner: {
+                    select: {
+                        email: true, // Lấy email từ bảng Owner (User)
+                        name: true,
+                        phone: true,
+                    }
+                },
+                avatar: true,
+                pendingDetails: true,
+                updatedAt: true,
+            },
+            skip,
+            take: limit,
+            orderBy: { updatedAt: 'desc' }
+        }),
+        this.prisma.shop.count({ where: whereCondition }),
+    ]);
+
+    return {
+        data: shops,
+        total,
+        page,
+        lastPage: Math.ceil(total / limit),
+    };
+  }
+
   // --- [UPDATE] Từ chối Shop ---
   async rejectShop(adminId: string, shopId: string, reason?: string) {
     const shop = await this.prisma.shop.findUnique({ where: { id: shopId } });
@@ -257,16 +338,29 @@ export class AdminUsersService {
     limit?: number;
     search?: string;
     role?: string;
+    minPoints?: number;
+    maxPoints?: number;
+    industryId?: string; // Lọc theo ngành hàng chuyên của Seller
   }) {
-    const { page = 1, limit = 10, search, role } = params;
+    const { 
+        page = 1, 
+        limit = 10, 
+        search, 
+        role, 
+        minPoints, 
+        maxPoints, 
+        industryId 
+    } = params;
+    
     const skip = (page - 1) * limit;
-
     const where: Prisma.UserWhereInput = {};
 
+    // 1. Filter Role
     if (role && role !== 'ALL') {
       where.role = role as Role;
     }
 
+    // 2. Filter Search (Fulltext optimized or simple contains)
     if (search) {
       where.OR = [
         { name: { contains: search } },
@@ -276,6 +370,84 @@ export class AdminUsersService {
       ];
     }
 
+    // 3. Filter Points (Dựa trên quan hệ 1-1 với PointWallet)
+    if (minPoints !== undefined || maxPoints !== undefined) {
+      where.pointWallet = {
+        balance: {
+          gte: minPoints ? Number(minPoints) : undefined,
+          lte: maxPoints ? Number(maxPoints) : undefined,
+        },
+      };
+    }
+
+    // 4. Filter Industry (Ngành hàng chuyên) - LOGIC PHỨC TẠP
+    // Sử dụng "Two-phase query" để đảm bảo hiệu năng cao:
+    // Bước A: Tìm IDs của những User sở hữu Shop có ngành hàng chủ đạo là industryId bằng Raw SQL
+    // Bước B: Đưa danh sách IDs đó vào điều kiện 'where' chính
+    if (industryId) {
+        // A. Lấy thống kê số lượng sản phẩm theo từng Category của tất cả các Shop đang hoạt động
+        // Kết quả trả về dạng: [{ shopId: 'shop1', categoryId: 'catA', _count: { _all: 10 } }, ...]
+        const categoryStats = await this.prisma.product.groupBy({
+            by: ['shopId', 'categoryId'],
+            where: {
+                status: 'ACTIVE',
+                shopId: { not: null }
+            },
+            _count: {
+                _all: true // Đếm số lượng sản phẩm
+            }
+        });
+
+        // B. Tìm Category chủ đạo (nhiều sản phẩm nhất) cho từng Shop
+        const shopDominantMap = new Map<string, string>(); // Lưu: shopId -> dominantCategoryId
+        const shopMaxCountMap = new Map<string, number>(); // Lưu: shopId -> maxCount hiện tại
+
+        for (const stat of categoryStats) {
+            const sId = stat.shopId;
+            const cId = stat.categoryId;
+            const count = stat._count._all;
+
+            if (!sId || !cId) continue;
+
+            // Kiểm tra xem category này có nhiều sản phẩm hơn category đang giữ Top không
+            const currentMax = shopMaxCountMap.get(sId) || 0;
+            if (count > currentMax) {
+                shopMaxCountMap.set(sId, count);
+                shopDominantMap.set(sId, cId);
+            }
+        }
+
+        // C. Lọc ra các ShopID có dominant category trùng với industryId đầu vào
+        const targetShopIds: string[] = [];
+        shopDominantMap.forEach((dominantCatId, shopId) => {
+            if (dominantCatId === industryId) {
+                targetShopIds.push(shopId);
+            }
+        });
+
+        // Nếu không tìm thấy shop nào phù hợp, trả về rỗng ngay
+        if (targetShopIds.length === 0) {
+             return {
+                data: [],
+                meta: { total: 0, page: Number(page), limit: Number(limit), totalPages: 0 },
+            };
+        }
+
+        // D. Tìm OwnerID (User ID) tương ứng với các Shop tìm được
+        const matchingShops = await this.prisma.shop.findMany({
+            where: { id: { in: targetShopIds } },
+            select: { ownerId: true }
+        });
+        
+        const ownerIds = matchingShops.map(s => s.ownerId);
+
+        // E. Áp dụng vào điều kiện lọc chính
+        where.id = { in: ownerIds };
+        where.role = 'SELLER'; 
+    }
+
+    // [MAIN QUERY] Thực hiện query chính với Prisma
+    // Sử dụng Promise.all để chạy count và findMany song song
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
@@ -291,20 +463,68 @@ export class AdminUsersService {
           role: true,
           avatar: true,
           isVerified: true,
-          isBanned: true, // Lấy trạng thái khóa User
+          isBanned: true,
           banReason: true,
           createdAt: true,
-          // Include Shop để biết user này có shop không
+          // Lấy thông tin Ví
+          pointWallet: {
+            select: { balance: true }
+          },
+          // Lấy thông tin Shop cơ bản
           shop: {
-            select: { id: true, name: true, status: true }
+            select: { 
+                id: true, 
+                name: true, 
+                status: true,
+                categoryId: true, // Lấy ID danh mục
+                category: {       // Join sang bảng Category để lấy tên
+                    select: { name: true }
+                }
+            }
           }
         },
       }),
       this.prisma.user.count({ where }),
     ]);
 
+    // [POST-PROCESSING] Tính toán ngành hàng chuyên cho từng user (nếu chưa lọc industry)
+    // Để hiển thị ra Frontend cho đẹp.
+    // Lưu ý: Nếu list dài, việc này có thể làm chậm. Ta chỉ làm nhẹ nhàng.
+    const enrichedUsers = await Promise.all(users.map(async (u) => {
+        let dominantCategoryName: string | null = null;
+        
+        if (u.role === 'SELLER' && u.shop) {
+             // Ưu tiên 1: Lấy từ sản phẩm (Logic cũ)
+             const topCat = await this.prisma.product.groupBy({
+                 by: ['categoryId'],
+                 where: { shopId: u.shop.id, status: 'ACTIVE' },
+                 _count: { categoryId: true },
+                 orderBy: { _count: { categoryId: 'desc' } },
+                 take: 1
+             });
+
+             if (topCat.length > 0 && topCat[0].categoryId) {
+                 const catInfo = await this.prisma.category.findUnique({
+                     where: { id: topCat[0].categoryId },
+                     select: { name: true }
+                 });
+                 dominantCategoryName = catInfo?.name || null;
+             } 
+             // Ưu tiên 2: [SỬA] Nếu chưa có sản phẩm, lấy từ danh mục đăng ký (đã select ở Bước 1)
+             else if ((u.shop as any).category) {
+                 dominantCategoryName = (u.shop as any).category.name;
+             }
+        }
+
+        return {
+            ...u,
+            pointBalance: u.pointWallet?.balance || 0,
+            dominantIndustry: dominantCategoryName 
+        };
+    }));
+
     return {
-      data: users,
+      data: enrichedUsers,
       meta: {
         total,
         page: Number(page),
@@ -315,12 +535,17 @@ export class AdminUsersService {
   }
 
   async createUser(adminId: string, dto: CreateUserDto) {
-    // 1. Validate: Phải có ít nhất Email hoặc Username
+    // 1. Validate cơ bản: Phải có Email hoặc Username
     if (!dto.email && !dto.username) {
-      throw new BadRequestException('Phải cung cấp Email hoặc Username');
+      throw new BadRequestException('Phải cung cấp ít nhất Email hoặc Username');
     }
 
-    // 2. Check trùng lặp
+    // 2. Validate riêng cho Seller
+    if (dto.role === 'SELLER' && !dto.shopName) {
+        throw new BadRequestException('Vui lòng nhập Tên Cửa Hàng cho tài khoản Người bán');
+    }
+
+    // 3. Check trùng lặp User (Email hoặc Username)
     const existingUser = await this.prisma.user.findFirst({
       where: {
         OR: [
@@ -334,31 +559,81 @@ export class AdminUsersService {
       throw new ConflictException('Email hoặc Username đã tồn tại trong hệ thống');
     }
 
-    // 3. Hash Password
+    // 4. Hash Password
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-    // 4. Tạo User
-    const newUser = await this.prisma.user.create({
-      data: {
-        name: dto.name,
-        email: dto.email || null,       // Có thể null
-        username: dto.username || null, // Có thể null
-        password: hashedPassword,
-        role: dto.role || Role.BUYER,
-        isVerified: true, // Admin tạo thì mặc định đã xác thực
-        cart: { create: {} } // Tạo luôn giỏ hàng
+    // 5. Chuẩn bị dữ liệu Slug nếu là Seller
+    let shopSlug = '';
+    if (dto.role === 'SELLER' && dto.shopName) {
+        shopSlug = generateSlug(dto.shopName);
+        // Kiểm tra xem Slug này có bị trùng trong bảng Shop không (dù xác suất thấp do có timestamp)
+        const existingShop = await this.prisma.shop.findUnique({
+            where: { slug: shopSlug }
+        });
+        if (existingShop) {
+            // Regenerate lại nếu xui xẻo trùng
+            shopSlug = generateSlug(dto.shopName) + '-' + Math.floor(Math.random() * 100);
+        }
+    }
+
+    // 6. Transaction: Tạo User -> (Nếu Seller) Tạo Shop
+    const result = await this.prisma.$transaction(async (prisma) => {
+        // A. Tạo User
+        const newUser = await prisma.user.create({
+            data: {
+                name: dto.name,
+                email: dto.email || null, // Xử lý trường hợp không gửi email
+                // Logic tạo username tự động nếu không có
+                username: dto.username || (dto.email ? dto.email.split('@')[0] + Math.floor(Math.random() * 1000) : `user${Date.now()}`),
+                password: hashedPassword,
+                role: dto.role || Role.BUYER, // Dùng Enum Role chuẩn của Prisma
+                isVerified: true,
+                phone: dto.phone || null,
+                
+                // [LƯU Ý] Chỉ thêm dòng này nếu trong schema.prisma bảng User CÓ trường shopName. 
+                // Nếu không thì xóa dòng dưới đi (vì shopName đã lưu ở bảng Shop rồi).
+                shopName: dto.role === 'SELLER' ? dto.shopName : null, 
+
+                cart: { create: {} },
+                pointWallet: { create: { balance: 0 } }
+            }
+        });
+
+        // B. Nếu là Seller -> Tạo Shop
+        if (dto.role === 'SELLER' && dto.shopName) {
+            await prisma.shop.create({
+                data: {
+                    name: dto.shopName,
+                    slug: shopSlug,
+                    description: `Cửa hàng chính thức của ${dto.name}`,
+                    ownerId: newUser.id,
+                    status: ShopStatus.ACTIVE,
+                    rating: 0,
+                    totalSales: 0,
+                    pickupAddress: "Đang cập nhật",
+                    lat: 0, 
+                    lng: 0
+                }
+            });
+        }
+        
+        return newUser;
+    });
+
+    // 7. Tracking
+    await this.trackingService.trackEvent(adminId, 'admin-action', {
+      type: EventType.CREATE_USER, // Đảm bảo EventType.CREATE_USER đã tồn tại trong enum
+      targetId: result.id,
+      metadata: { 
+          role: dto.role, 
+          email: result.email,
+          shopName: dto.shopName 
       }
     });
 
-    // 5. Tracking
-    await this.trackingService.trackEvent(adminId, 'admin-action', {
-      type: EventType.CREATE_USER, // Cần thêm vào Enum EventType nếu chưa có
-      targetId: newUser.id,
-      metadata: { username: newUser.username, email: newUser.email }
-    });
-
-    const { password, ...result } = newUser;
-    return result;
+    // Loại bỏ password trước khi trả về
+    const { password, ...userSafe } = result;
+    return userSafe;
   }
 
   async toggleBanUser(adminId: string, userId: string, isBanned: boolean, reason?: string) {
@@ -401,5 +676,78 @@ export class AdminUsersService {
         : `Đã mở khóa tài khoản ${user.name}`,
       user: { id: updatedUser.id, isBanned: updatedUser.isBanned }
     };
+  }
+  async deleteUser(adminId: string, userId: string) {
+    // 1. Kiểm tra User và các quan hệ 1-1 quan trọng
+    const user = await this.prisma.user.findUnique({ 
+        where: { id: userId },
+        include: { 
+            shop: true,
+            pointWallet: true,
+            dailyCheckIn: true,
+            cart: true
+        } 
+    });
+    
+    if (!user) throw new NotFoundException('Người dùng không tồn tại');
+    if (user.role === 'ADMIN') throw new BadRequestException('Không thể xóa Admin');
+
+    // 2. Thực hiện xóa toàn bộ dữ liệu liên quan trong một Transaction
+    await this.prisma.$transaction(async (tx) => {
+        
+        // --- NHÓM 1: DỮ LIỆU CỬA HÀNG (Nếu là Seller) ---
+        if (user.shop) {
+            const shopId = user.shop.id;
+            // Xóa sản phẩm -> Biến thể -> FlashSale (Cần xóa theo thứ tự nếu không có cascade)
+            await tx.flashSaleProduct.deleteMany({ where: { productId: { in: (await tx.product.findMany({where: {shopId}, select: {id: true}})).map(p => p.id) } } });
+            await tx.productVariant.deleteMany({ where: { productId: { in: (await tx.product.findMany({where: {shopId}, select: {id: true}})).map(p => p.id) } } });
+            await tx.product.deleteMany({ where: { shopId: shopId } });
+            await tx.shopCategory.deleteMany({ where: { shopId: shopId } });
+            await tx.voucher.deleteMany({ where: { shopId: shopId } });
+            await tx.shop.delete({ where: { id: shopId } });
+        }
+
+        // --- NHÓM 2: DỮ LIỆU GIAO DỊCH & TÀI CHÍNH ---
+        await tx.payoutRequest.deleteMany({ where: { userId: userId } });
+        await tx.walletTransaction.deleteMany({ where: { userId: userId } });
+        await tx.pointTransaction.deleteMany({ where: { userId: userId } });
+        await tx.pointHistory.deleteMany({ where: { userId: userId } });
+        if (user.pointWallet) await tx.pointWallet.delete({ where: { userId: userId } });
+        if (user.dailyCheckIn) await tx.dailyCheckIn.delete({ where: { userId: userId } });
+
+        // --- NHÓM 3: TƯƠNG TÁC & CÁ NHÂN HÓA ---
+        await tx.address.deleteMany({ where: { userId: userId } });
+        await tx.userVoucher.deleteMany({ where: { userId: userId } });
+        await tx.orderItem.deleteMany({ where: { order: { userId: userId } } }); // Xóa items trước
+        await tx.order.deleteMany({ where: { userId: userId } });
+        
+        // Xóa giỏ hàng
+        await tx.cartItem.deleteMany({ where: { cartId: user.cart?.id } });
+        if (user.cart) await tx.cart.delete({ where: { userId: userId } });
+
+        // --- NHÓM 4: GIAO TIẾP & MẠNG XÃ HỘI ---
+        // Xóa tin nhắn gửi đi
+        await tx.message.deleteMany({ where: { senderId: userId } });
+        // Xóa quan hệ bạn bè (Friendship đã có onDelete: Cascade ở schema nên có thể bỏ qua hoặc xóa tay cho chắc)
+        await tx.friendship.deleteMany({ 
+            where: { OR: [{ senderId: userId }, { receiverId: userId }] } 
+        });
+
+        // --- NHÓM 5: NỘI DUNG ---
+        await tx.blogPost.deleteMany({ where: { authorId: userId } });
+        await tx.analyticsLog.deleteMany({ where: { userId: userId } });
+
+        // 3. CUỐI CÙNG: XÓA USER
+        await tx.user.delete({ where: { id: userId } });
+    });
+
+    // 4. Tracking
+    await this.trackingService.trackEvent(adminId, 'admin-action', {
+      type: EventType.DELETE_USER,
+      targetId: userId,
+      metadata: { email: user.email, action: 'Hard Delete' }
+    });
+
+    return { success: true, message: `Hệ thống đã dọn dẹp sạch sẽ dữ liệu của ${user.email}` };
   }
 }

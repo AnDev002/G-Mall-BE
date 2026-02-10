@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestj
 import { CategoryService } from '../category.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { UpdateCategoryOrderDto } from '../dto/update-category-order.dto';
+import { generateSlug } from 'src/common/utils/slug.util';
 
 @Controller('categories')
 export class CategoryController {
@@ -49,5 +50,17 @@ export class CategoryController {
   @Post('batch-update')
   async updateBatch(@Body() items: any[]) {
       return this.categoryService.updateBatch(items);
+  }
+
+  @Get(':id/breadcrumbs')
+  async getBreadcrumbs(@Param('id') id: string) {
+    return this.categoryService.getBreadcrumbs(id);
+  }
+
+  @Public() // Để gọi không cần token (tiện test)
+  @Get('fix-all-slugs')
+  async fixAllSlugs() {
+    // Gọi hàm logic từ Service (đúng chuẩn NestJS)
+    return this.categoryService.fixAllSlugs();
   }
 }

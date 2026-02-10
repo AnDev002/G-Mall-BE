@@ -2,6 +2,8 @@ import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { PointService } from './point.service';
 import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 
 @Controller('points')
 @UseGuards(JwtAuthGuard)
@@ -35,6 +37,21 @@ export class PointController {
     @Body() body: { receiverId: string; amount: number }
   ) {
     return this.pointService.initiateTransfer(user.id, body.receiverId, body.amount);
+  }
+
+  // [NEW] Lấy tỷ lệ hiện tại (Admin xem)
+  @Get('rate')
+  @Roles(Role.ADMIN) // Chỉ Admin được xem cấu hình hệ thống
+  async getRate() {
+    const rate = await this.pointService.getConversionRate();
+    return { rate };
+  }
+
+  @Post('rate')
+  @UseGuards(JwtAuthGuard)
+  @Roles(Role.ADMIN)
+  async updateConversionRate(@Body() body: { amount: number }) {
+    return this.pointService.updateConversionRate(body.amount);
   }
 
   @Post('transfer/confirm')

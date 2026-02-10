@@ -74,8 +74,14 @@ export class AuthService {
       email, password, name, shopName, pickupAddress, phoneNumber,
       provinceId, districtId, wardCode, lat, lng,
       businessLicenseFront, 
-      businessLicenseBack
+      businessLicenseBack,
+      categoryId
     } = dto;
+
+    const existingPhone = await this.prisma.user.findFirst({ where: { phone: phoneNumber } });
+    if (existingPhone) {
+        throw new BadRequestException('Số điện thoại đã được sử dụng');
+    }
 
     // 1. Kiểm tra Email
     const existing = await this.prisma.user.findUnique({ where: { email } });
@@ -105,6 +111,7 @@ export class AuthService {
             data: {
                 ownerId: user.id,
                 name: shopName,
+                categoryId: categoryId,
                 slug: slug,
                 address: pickupAddress,
                 

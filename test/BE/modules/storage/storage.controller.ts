@@ -1,11 +1,13 @@
 import { Controller, Post, Body, UseGuards, Delete, Query } from '@nestjs/common';
 import { R2Service } from './r2.service';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
+import { Public } from 'src/common/decorators/public.decorator';
 
 @Controller('storage')
 export class StorageController {
   constructor(private readonly r2Service: R2Service) {}
 
+  @Public()
   @Post('presigned')
   @UseGuards(JwtAuthGuard) 
   async getPresignedUrl(@Body() body: { fileName: string; fileType: string }) {

@@ -55,7 +55,6 @@ export class RedisIoAdapter extends IoAdapter {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-
   app.use(cookieParser());
   // 1. Cấu hình CORS
   app.enableCors({
@@ -69,7 +68,9 @@ async function bootstrap() {
 
   // 2. Tối ưu & Validate
   app.use(compression());
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, transformOptions: {
+      enableImplicitConversion: true // 👈 Dòng quan trọng: Tự động chuyển đổi kiểu dữ liệu
+    } }));
 
   // 3. Cấu hình Redis Adapter cho Socket.io (Cluster Support)
   const redisIoAdapter = new RedisIoAdapter(app);

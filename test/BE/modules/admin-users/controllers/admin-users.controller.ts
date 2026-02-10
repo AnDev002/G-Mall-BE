@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Param, Query, UseGuards, Request, Body, Post } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Query, UseGuards, Request, Body, Post, Delete } from '@nestjs/common';
 import { AdminUsersService } from '../admin-users.service';
 import { JwtAuthGuard } from '../../auth/guards/jwt.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -43,12 +43,18 @@ export class AdminUsersController {
     @Query('limit') limit: number,
     @Query('search') search: string,
     @Query('role') role: string,
+    @Query('minPoints') minPoints: string,
+    @Query('maxPoints') maxPoints: string,
+    @Query('industryId') industryId: string,
   ) {
     return this.adminUsersService.getAllUsers({ 
       page: Number(page) || 1, 
       limit: Number(limit) || 10,
       search,
-      role
+      role,
+      minPoints: minPoints ? Number(minPoints) : undefined,
+      maxPoints: maxPoints ? Number(maxPoints) : undefined,
+      industryId
     });
   }
 
@@ -88,4 +94,23 @@ export class AdminUsersController {
     // SỬA: Gọi rejectShop
     return this.adminUsersService.rejectShop(req.user.userId, shopId, body.reason);
   }
+
+  @Get('shop-updates')
+    async getShopUpdateRequests(
+        @Query('page') page: number = 1, 
+        @Query('limit') limit: number = 10
+    ) {
+        return this.adminUsersService.getShopUpdateRequests(Number(page), Number(limit));
+    }
+    
+  // [ĐẢM BẢO ĐÃ CÓ API DUYỆT CẬP NHẬT MÌNH ĐƯA Ở BƯỚC TRƯỚC]
+  @Post('approve-update/:shopId')
+  async approveShopUpdate(@Request() req, @Param('shopId') shopId: string) {
+      return this.adminUsersService.approveShopUpdate(req.user.id, shopId);
+  }
+  
+  @Delete(':id')
+  async deleteUser(@User('userId') adminId: string, @Param('id') userId: string) {
+  return this.adminUsersService.deleteUser(adminId, userId);
+}
 }

@@ -1,13 +1,18 @@
 // BE--1/modules/product/controllers/seller-product.controller.ts
-import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete } from '@nestjs/common';
 import { ProductWriteService } from '../services/product-write.service';
 import { CreateProductDto } from '../dto/create-product.dto';
-import { UpdateProductDto } from '../dto/update-product.dto';
+import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
-
+import { User } from 'src/common/decorators/user.decorator';
+interface UserEntity {
+  id: string;
+  email: string;
+  role: Role;
+}
 @Controller('seller/products')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SELLER)
@@ -34,6 +39,20 @@ export class SellerProductController {
   ) {
     const limitNum = limit ? parseInt(limit) : 10;
     return this.productWriteService.searchMyProducts(req.user.id, search, limitNum);
+  }
+  @Patch(':id/discount')
+  async updateDiscount(
+    @User() user: UserEntity,
+    @Param('id') id: string,
+    @Body() dto: UpdateProductDiscountDto,
+  ) {
+    return this.productWriteService.updateDiscount(user.id, id, dto);
+  }
+
+  @Delete(':id')
+  async delete(@Request() req, @Param('id') id: string) {
+    // Truyền userId vào service để check quyền sở hữu trước khi xóa
+    return this.productWriteService.deleteBySeller(req.user.id, id);
   }
 
   @Get()

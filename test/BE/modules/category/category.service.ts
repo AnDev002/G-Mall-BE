@@ -1,6 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service'; // Đường dẫn tuỳ project bạn
 import slugify from 'slugify'; // Cần cài: npm i slugify
+import { UpdateCategoryOrderDto } from './dto/update-category-order.dto';
+import { generateSlug } from 'src/common/utils/slug.util';
 
 @Injectable()
 export class CategoryService {
@@ -94,25 +96,53 @@ export class CategoryService {
         }
      });
   }
+  async updateOrder(dto: UpdateCategoryOrderDto) {
+    const { parentId, orderedIds } = dto;
 
+    try {
+      // Sử dụng Transaction để tối ưu hiệu năng và đảm bảo tính toàn vẹn
+      // Thay vì await từng lệnh update, ta gom lại thành 1 mảng Promise
+      const updateOperations = orderedIds.map((id, index) => {
+        return this.prisma.category.update({
+          where: { id },
+          data: {
+            order: index, // Vị trí trong mảng chính là thứ tự mới (0, 1, 2...)
+            parentId: parentId || null, // Cập nhật luôn parentId để hỗ trợ kéo thả giữa các cấp cha con
+          },
+        });
+      });
+
+      // Thực thi đồng loạt
+      await this.prisma.$transaction(updateOperations);
+
+      return {
+        success: true,
+        message: 'Cập nhật thứ tự danh mục thành công',
+        count: orderedIds.length
+      };
+
+    } catch (error) {
+      // this.logger.error(`Lỗi khi cập nhật order category: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('Không thể cập nhật thứ tự danh mục');
+    }
+  }
   async getCategoryTree() {
-    // Kỹ thuật: Lấy root (parentId = null) và include đệ quy 5 tầng
-    // Prisma chưa hỗ trợ include recursive vô hạn, ta hardcode 5 tầng
+    // SỬA: Đổi tất cả 'name' thành 'order' trong orderBy
     return this.prisma.category.findMany({
-      where: { parentId: null }, // Chỉ lấy cấp 1 làm gốc
-      orderBy: { name: 'asc' }, // Hoặc field 'order' nếu bạn có thêm
+      where: { parentId: null },
+      orderBy: { order: 'asc' }, // <--- Sửa ở đây (Cấp 1)
       include: {
-        children: { // Cấp 2
-          orderBy: { name: 'asc' },
+        children: {
+          orderBy: { order: 'asc' }, // <--- Sửa ở đây (Cấp 2)
           include: {
-            children: { // Cấp 3
-              orderBy: { name: 'asc' },
+            children: {
+              orderBy: { order: 'asc' }, // <--- Sửa ở đây (Cấp 3)
               include: {
-                children: { // Cấp 4
-                  orderBy: { name: 'asc' },
+                children: {
+                  orderBy: { order: 'asc' }, // <--- Sửa ở đây (Cấp 4)
                   include: {
-                    children: { // Cấp 5
-                       orderBy: { name: 'asc' }
+                    children: {
+                      orderBy: { order: 'asc' } // <--- Sửa ở đây (Cấp 5)
                     } 
                   }
                 }
@@ -190,24 +220,27 @@ export class CategoryService {
 
   // 4. [FIX] Xóa an toàn
   async remove(id: string) {
-    // Kiểm tra xem có con không
-    const countChildren = await this.prisma.category.count({
-        where: { parentId: id }
-    });
+    // Sử dụng lại hàm helper có sẵn trong class để lấy ID của nó và toàn bộ con cháu
+    const idsToDelete = await this.getAllDescendantIds(id);
 
-    if (countChildren > 0) {
-        throw new BadRequestException('Không thể xóa danh mục này vì đang chứa danh mục con. Hãy xóa con trước.');
-    }
-
-    // Kiểm tra xem có sản phẩm không (Optional - tuỳ logic business của bạn)
+    // [Optional] Kiểm tra an toàn: Có sản phẩm nào thuộc cây danh mục này không?
+    // Nếu bạn muốn xoá bất chấp sản phẩm (sản phẩm sẽ mất categoryId hoặc lỗi) thì bỏ đoạn check này đi.
     const countProduct = await this.prisma.product.count({
-        where: { categoryId: id }
+        where: { 
+          categoryId: { in: idsToDelete } 
+        }
     });
+    
     if (countProduct > 0) {
-         throw new BadRequestException('Đang có sản phẩm thuộc danh mục này. Không thể xóa.');
+         throw new BadRequestException(`Đang có ${countProduct} sản phẩm thuộc danh mục này hoặc các danh mục con. Không thể xóa.`);
     }
 
-    return this.prisma.category.delete({ where: { id } });
+    // Thực hiện xoá tất cả danh mục tìm được (bao gồm cả cha và con)
+    return this.prisma.category.deleteMany({ 
+      where: { 
+        id: { in: idsToDelete } 
+      } 
+    });
   }
 
   // 5. [MỚI] Update Bulk from JSON (Nguy hiểm - Chỉ dành cho Admin hiểu rõ)
@@ -239,5 +272,71 @@ export class CategoryService {
 
   private generateSlug(text: string) {
     return text.toLowerCase().replace(/ /g, '-').replace(/[^\w-]+/g, '');
+  }
+
+  async getBreadcrumbs(categoryId: string) {
+    // 1. Query đệ quy ngược lên cha (Giả sử tối đa 4 cấp)
+    const category = await this.prisma.category.findUnique({
+      where: { id: categoryId },
+      include: {
+        parent: {
+          select: {
+            id: true, name: true, slug: true,
+            parent: {
+              select: {
+                id: true, name: true, slug: true,
+                parent: {
+                   select: { id: true, name: true, slug: true }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!category) return [];
+
+    // 2. Làm phẳng cây phả hệ thành mảng tuyến tính
+    // Định nghĩa kiểu dữ liệu rõ ràng để tránh lỗi TypeScript
+    const breadcrumbs: { id: string; name: string; slug: string }[] = []; 
+    
+    let current: any = category;
+    
+    // Duyệt ngược từ node con lên cha và đẩy vào đầu mảng
+    while (current) {
+      breadcrumbs.unshift({
+        id: current.id,
+        name: current.name,
+        slug: current.slug
+      });
+      current = current.parent;
+    }
+
+    return breadcrumbs;
+  }
+
+  async fixAllSlugs() {
+    const categories = await this.prisma.category.findMany();
+    let count = 0;
+
+    for (const cat of categories) {
+      // Tạo slug mới bằng hàm chuẩn (xử lý tiếng Việt)
+      const newSlug = generateSlug(cat.name);
+      
+      // Chỉ update nếu slug thực sự thay đổi
+      if (newSlug !== cat.slug) {
+        try {
+            await this.prisma.category.update({
+              where: { id: cat.id },
+              data: { slug: newSlug }
+            });
+            count++;
+        } catch (e) {
+            console.error(`Lỗi update slug cho danh mục ${cat.name}:`, e);
+        }
+      }
+    }
+    return { message: `Đã sửa lỗi slug thành công cho ${count} danh mục.` };
   }
 }

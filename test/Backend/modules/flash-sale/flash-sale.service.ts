@@ -58,32 +58,37 @@ export class FlashSaleService {
 
   async getCurrentFlashSaleForBuyer() {
     const now = new Date();
+    console.log("🕒 [FlashSale] Server Time (ISO):", now.toISOString());
+    console.log("🕒 [FlashSale] Server Time (Local):", now.toLocaleString());
 
-    // 1. Thay vì findFirst, ta dùng findMany để lấy TẤT CẢ session đang diễn ra
+    // 1. Tìm Session đang diễn ra (Lấy rộng hơn một chút để debug)
     const activeSessions = await this.prisma.flashSaleSession.findMany({
       where: {
         status: 'ENABLED',
-        startTime: { lte: now },
+        // Bỏ bớt điều kiện thời gian chặt chẽ nếu cần test, nhưng logic đúng là phải có
+        startTime: { lte: now }, 
         endTime: { gt: now },
       },
-      orderBy: { endTime: 'asc' }, // Ưu tiên hiển thị session sắp kết thúc trước
+      orderBy: { endTime: 'asc' },
       include: {
         products: {
           where: {
-            status: FlashSaleProductStatus.APPROVED, // [QUAN TRỌNG]: Chỉ lấy hàng đã được Admin DUYỆT
-            stock: { gt: 0 } // Còn hàng flash sale
+            status: FlashSaleProductStatus.APPROVED,
+            // ⚠️ MỞ COMMENT DÒNG DƯỚI NẾU MUỐN HIỆN CẢ HÀNG HẾT KHO ĐỂ TEST
+            // stock: { gt: 0 }, 
           },
           take: 12,
-          orderBy: { sold: 'desc' }, // Sắp xếp theo lượng bán trong đợt sale
+          orderBy: { sold: 'desc' },
           include: {
             product: {
               select: {
                 id: true,
                 name: true,
-                images: true, // Lấy mảng ảnh
+                images: true,
                 slug: true,
                 rating: true,
-                salesCount: true, // Lấy tổng đã bán của sản phẩm gốc
+                salesCount: true,
+                status: true, // Lấy thêm status để debug
               }
             },
             variant: { 
@@ -94,23 +99,45 @@ export class FlashSaleService {
       }
     });
 
-    // 2. Tìm Session đầu tiên có chứa sản phẩm (products > 0)
-    // TypeScript: ép kiểu activeSessions thành any[] hoặc dùng type chính xác nếu có
-    const validSession = (activeSessions as any[]).find(s => s.products && s.products.length > 0);
+    console.log(`🔎 [FlashSale] Found ${activeSessions.length} active sessions via time query.`);
+
+    // 2. Lọc thủ công để biết tại sao sản phẩm bị loại (Debug Logic)
+    const validSession = activeSessions.find(s => {
+        if (!s.products || s.products.length === 0) {
+            console.log(`   ⚠️ Session ${s.id}: No products registered or approved.`);
+            return false;
+        }
+
+        // Lọc lại các điều kiện kinh doanh ở tầng JS để log ra được lỗi
+        const validProducts = s.products.filter(p => {
+            const isProductActive = p.product.status === 'ACTIVE';
+            const hasStock = p.stock > 0;
+            
+            if (!isProductActive) console.log(`   ❌ Product ${p.productId} ignored: Parent Status is ${p.product.status}`);
+            if (!hasStock) console.log(`   ❌ Product ${p.productId} ignored: Out of Flash Sale Stock (stock=${p.stock})`);
+
+            return isProductActive && hasStock;
+        });
+
+        // Gán lại products đã lọc sạch
+        s.products = validProducts;
+        return validProducts.length > 0;
+    });
 
     if (!validSession) {
-      console.log(`[FlashSale] Tìm thấy ${activeSessions.length} session nhưng không có sản phẩm nào hợp lệ.`);
+      console.log(`❌ [FlashSale] No valid session with active products found for Buyer.`);
       return null;
     }
 
-    // 3. Map dữ liệu (Logic Thumbnail)
+    console.log(`✅ [FlashSale] Returning Session ${validSession.id} with ${validSession.products.length} products.`);
+
+    // 3. Map dữ liệu
     const mappedSession = {
       ...this.mapSessionStatus(validSession),
       products: validSession.products.map((item: any) => ({
         ...item,
         product: {
           ...item.product,
-          // Tạo thumbnail ảo từ ảnh đầu tiên
           thumbnail: item.product.images && item.product.images.length > 0 
             ? item.product.images[0] 
             : null

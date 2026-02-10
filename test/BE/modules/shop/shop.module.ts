@@ -11,5 +11,6 @@ import { DatabaseModule } from '../../database/database.module';
     ShopCategoryController // [2] Đăng ký vào mảng controllers
   ],
   providers: [ShopService],
+  exports: [ShopService]
 })
 export class ShopModule {}
