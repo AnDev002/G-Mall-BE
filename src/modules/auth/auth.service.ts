@@ -345,7 +345,7 @@ export class AuthService {
    * thêm `tokenVersion` vào User schema — xem wiki 0005.
    */
   async changePassword(userId: string, dto: ChangePasswordDto) {
-    if (dto.oldPassword === dto.newPassword) {
+    if (dto.currentPassword === dto.newPassword) {
       throw new BadRequestException('Mật khẩu mới không được trùng mật khẩu cũ');
     }
 
@@ -354,7 +354,7 @@ export class AuthService {
       throw new NotFoundException('Tài khoản không tồn tại hoặc chưa đặt mật khẩu');
     }
 
-    const ok = await bcrypt.compare(dto.oldPassword, user.password);
+    const ok = await bcrypt.compare(dto.currentPassword, user.password);
     if (!ok) {
       throw new UnauthorizedException('Mật khẩu hiện tại không đúng');
     }
@@ -388,13 +388,20 @@ export class AuthService {
 
       console.log(`>>> [DEBUG] Reset OTP cho ${normalizedEmail}: ${otp}`);
 
+      // Link chứa cả email + OTP để FE auto-fill form — user chỉ cần click và nhập pass mới.
+      // FE_URL đọc từ env; fallback localhost cho dev.
+      const feUrl = (process.env.FE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+      const resetLink = `${feUrl}/reset-password?email=${encodeURIComponent(normalizedEmail)}&token=${otp}`;
+
       try {
         await this.mailerService.sendMail({
           to: normalizedEmail,
           subject: 'Đặt lại mật khẩu GMall',
           html: `
             <p>Bạn (hoặc ai đó) vừa yêu cầu đặt lại mật khẩu cho tài khoản này.</p>
-            <p>Mã xác nhận của bạn là: <b>${otp}</b>. Hiệu lực trong 15 phút.</p>
+            <p>Nhấn vào link sau để đặt lại mật khẩu (hết hạn sau 15 phút):</p>
+            <p><a href="${resetLink}">${resetLink}</a></p>
+            <p>Hoặc nhập mã này vào form đặt lại mật khẩu: <b>${otp}</b></p>
             <p>Nếu không phải bạn, hãy bỏ qua email này.</p>
           `,
         });

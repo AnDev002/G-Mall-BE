@@ -64,6 +64,13 @@ export class EnvVars {
   @IsString()
   CORS_ORIGINS?: string;
 
+  // URL base của Frontend — dùng để build link email (ví dụ link reset password).
+  // Không bắt buộc ở boot (dev có fallback localhost), nhưng prod phải set đúng
+  // để email trả link trỏ về domain đúng.
+  @IsOptional()
+  @IsString()
+  FE_URL?: string;
+
   @IsOptional()
   @IsString()
   MAIL_HOST?: string;
