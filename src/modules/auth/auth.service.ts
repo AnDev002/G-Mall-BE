@@ -1,11 +1,10 @@
 // src/auth/auth.service.ts
-import { Injectable, UnauthorizedException, BadRequestException, Inject, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { MailerService } from '@nestjs-modules/mailer';
 import * as bcrypt from 'bcrypt'; // Cần cài: pnpm add bcrypt && pnpm add -D @types/bcrypt
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import type { Cache } from 'cache-manager';
+import { RedisService } from '../../database/redis/redis.service';
 import { Role, ShopStatus } from '@prisma/client';
 import { UpdateShopProfileDto } from './dto/update-shop.dto';
 import { RegisterDto, LoginDto, VerifyOtpDto } from './dto/auth.dto';
@@ -24,15 +23,22 @@ function generateSlug(text: string): string {
 
 @Injectable()
 export class AuthService {
-  // Lưu OTP tạm trong RAM
-  private otpStore = new Map<string, { otp: string; expires: number }>();
+  // OTP sống trong Redis với TTL. Key: `otp:<email>`, value: mã 6 số.
+  // Why: Map<> cũ mất hết khi restart, và không share giữa các instance PM2 cluster —
+  // user nhập OTP ở instance khác instance gửi sẽ fail ngẫu nhiên.
+  private static readonly OTP_TTL_SECONDS = 5 * 60;
+  private static readonly OTP_KEY_PREFIX = 'otp:';
 
   constructor(
     private prisma: PrismaService,
-    @Inject(CACHE_MANAGER) private cacheManager: Cache,
+    private redisService: RedisService,
     private jwtService: JwtService,
     private mailerService: MailerService,
   ) {}
+
+  private otpKey(email: string) {
+    return `${AuthService.OTP_KEY_PREFIX}${email.toLowerCase()}`;
+  }
 
   // --- 1. ĐĂNG KÝ (Tạo user + Gửi OTP) ---
   async register(dto: RegisterDto) {
@@ -175,23 +181,19 @@ export class AuthService {
   // --- 3. XÁC THỰC OTP (Kích hoạt tài khoản) ---
   async verifyOtp(dto: VerifyOtpDto) {
     const normalizedEmail = dto.email.toLowerCase();
-    const storedData = this.otpStore.get(normalizedEmail);
+    const storedOtp = await this.redisService.get(this.otpKey(normalizedEmail));
 
-    if (!storedData) {
+    // TTL của Redis đã xử lý hết hạn — nếu get() trả null thì là "không tồn tại hoặc đã hết hạn"
+    if (!storedOtp) {
       throw new UnauthorizedException('Mã OTP không tồn tại hoặc đã hết hạn.');
     }
 
-    if (storedData.otp !== dto.otp) {
+    if (storedOtp !== dto.otp) {
       throw new UnauthorizedException('Mã OTP không đúng');
     }
 
-    if (Date.now() > storedData.expires) {
-      this.otpStore.delete(normalizedEmail);
-      throw new UnauthorizedException('Mã OTP đã hết hạn');
-    }
-
-    // Xóa OTP
-    this.otpStore.delete(normalizedEmail);
+    // Xóa OTP sau khi dùng (prevent replay)
+    await this.redisService.del(this.otpKey(normalizedEmail));
 
     // Cập nhật User thành đã verify
     const user = await this.prisma.user.update({
@@ -205,27 +207,27 @@ export class AuthService {
 
   // --- HELPER: Gửi OTP (Dùng chung cho Register & Forgot Password) ---
   async sendOtp(email?: string) {
-    if(email != "" && email != null && email != undefined)
-    {
-      const normalizedEmail = email.toLowerCase();
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      
-      this.otpStore.set(normalizedEmail, { 
-        otp, 
-        expires: Date.now() + 5 * 60 * 1000 
+    if (!email) return;
+
+    const normalizedEmail = email.toLowerCase();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    await this.redisService.set(
+      this.otpKey(normalizedEmail),
+      otp,
+      AuthService.OTP_TTL_SECONDS,
+    );
+
+    console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
+
+    try {
+      await this.mailerService.sendMail({
+        to: normalizedEmail,
+        subject: 'Mã xác thực LoveGifts',
+        html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
       });
-  
-      console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
-  
-      try {
-        await this.mailerService.sendMail({
-          to: normalizedEmail,
-          subject: 'Mã xác thực LoveGifts',
-          html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
-        });
-      } catch (error) {
-        console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
-      }
+    } catch (error) {
+      console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
     }
   }
 
@@ -290,10 +292,6 @@ export class AuthService {
         distributorCert: data.distributorCert,
       },
     });
-
-    // 4. Update Redis Cache (Nếu bạn đang cache thông tin shop/user)
-    // const redisKey = `shop_profile:${userId}`;
-    // await this.cacheManager.del(redisKey); // Xóa cache cũ để load lại
 
     return {
       message: 'Cập nhật hồ sơ Shop thành công',
