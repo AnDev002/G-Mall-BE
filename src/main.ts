@@ -56,15 +56,30 @@ export class RedisIoAdapter extends IoAdapter {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(cookieParser());
+
   // 1. Cấu hình CORS
+  // Whitelist domain qua env CORS_ORIGINS (comma-separated). Kết hợp với credentials:true
+  // thì origin:true (reflect) là lỗ hổng CSRF — BẮT BUỘC chỉ định danh sách cụ thể.
+  // Format env: CORS_ORIGINS=http://localhost:3000,https://gmall.onrender.com
+  const corsOriginsEnv = process.env.CORS_ORIGINS?.trim();
+  const corsOrigins = corsOriginsEnv
+    ? corsOriginsEnv.split(',').map((s) => s.trim()).filter(Boolean)
+    : ['http://localhost:3000'];
+
   app.enableCors({
-    origin: true, // Hoặc ['http://localhost:3000', 'https://your-frontend-domain.com'] để bảo mật hơn
+    origin: (origin, callback) => {
+      // Cho phép request không có origin (Postman, server-to-server, mobile app)
+      if (!origin) return callback(null, true);
+      if (corsOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`), false);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     allowedHeaders: 'Content-Type, Accept, Authorization, x-device-id, user-agent, Cache-Control, Pragma, Expires',
     preflightContinue: false,
     optionsSuccessStatus: 204,
   });
+  console.log(`✅ CORS whitelist: ${corsOrigins.join(', ')}`);
 
   // 2. Tối ưu & Validate
   app.use(compression());
