@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config'; // Import ConfigService
+import { validateEnv } from './common/config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ProductModule } from './modules/product/product.module';
@@ -32,7 +33,8 @@ import { AddressModule } from './modules/address/address.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // Đảm bảo dòng này có
+      isGlobal: true,
+      validate: validateEnv, // Fail-fast nếu thiếu env bắt buộc (xem common/config/env.validation.ts)
     }),
 
     MailerModule.forRootAsync({
