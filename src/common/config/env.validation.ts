@@ -82,6 +82,31 @@ export class EnvVars {
   @IsOptional()
   @IsString()
   MAIL_PASS?: string;
+
+  // OAuth — tùy chọn. Thiếu thì endpoint /auth/google và /auth/facebook trả 503.
+  @IsOptional()
+  @IsString()
+  GOOGLE_CLIENT_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  GOOGLE_CLIENT_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  GOOGLE_CALLBACK_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  FACEBOOK_APP_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  FACEBOOK_APP_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  FACEBOOK_CALLBACK_URL?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {

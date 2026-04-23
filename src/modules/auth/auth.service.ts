@@ -445,4 +445,65 @@ export class AuthService {
 
     return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập.' };
   }
+
+  // ===========================================================================
+  // OAUTH (Google / Facebook) — fix B1.1
+  // ===========================================================================
+
+  /**
+   * Xử lý profile OAuth từ Google/Facebook.
+   *
+   * Policy:
+   * - Nếu user với email đó đã tồn tại (đăng ký bằng email/password hoặc OAuth
+   *   provider khác) -> link account: cho login luôn. KHÔNG tạo account trùng.
+   *   (Đánh đổi: đồng nghĩa attacker claim email Google của nạn nhân có thể
+   *   chiếm account nếu email verification yếu; GMall không verify email khi
+   *   register thường, nên đây là thực tế. Mitigation thực sự cần email
+   *   verification mạnh hơn ở flow register, out-of-scope.)
+   * - Nếu chưa có user -> tạo mới, auto-verify (email đã được provider xác
+   *   thực), role BUYER, không set password (login chỉ qua OAuth hoặc phải
+   *   forgot-password để set pass).
+   */
+  async handleOAuthLogin(profile: {
+    provider: 'google' | 'facebook';
+    providerId: string;
+    email: string;
+    name: string;
+    avatar?: string;
+  }) {
+    const normalizedEmail = profile.email.toLowerCase();
+    let user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (user) {
+      if (user.isBanned) {
+        throw new UnauthorizedException(
+          `Tài khoản đã bị khóa. Lý do: ${user.banReason}`,
+        );
+      }
+      // User đã verify vì provider đã xác minh email; nếu trước đó chưa
+      // verify (đăng ký email/pass rồi chưa nhập OTP) thì promote lên verified.
+      if (!user.isVerified) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { isVerified: true },
+        });
+      }
+    } else {
+      user = await this.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: profile.name,
+          avatar: profile.avatar,
+          role: Role.BUYER,
+          isVerified: true, // OAuth provider đã verify email
+          password: null,
+        },
+      });
+      await this.prisma.cart.create({ data: { userId: user.id } });
+    }
+
+    return this.generateTokens(user);
+  }
 }

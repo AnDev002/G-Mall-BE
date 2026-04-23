@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Get, UseGuards, Request, UseInterceptors, UploadedFile, BadRequestException, Put, UploadedFiles, Res } from '@nestjs/common';
+import { Body, Controller, Post, Get, UseGuards, Request, UseInterceptors, UploadedFile, BadRequestException, Put, UploadedFiles, Res, Req } from '@nestjs/common';
 import { AuthService } from '../auth.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { JwtAuthGuard } from '../guards/jwt.guard';
@@ -8,6 +8,8 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { User } from '../../../common/decorators/user.decorator';
 import { RateLimit, RateLimitGuard } from '../../../common/guards/rate-limit.guard';
+import { GoogleOAuthGuard, FacebookOAuthGuard } from '../guards/oauth.guard';
+import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { UpdateShopProfileDto } from '../dto/update-shop.dto';
 import { LoginDto, RegisterDto, SendOtpDto, VerifyOtpDto } from '../dto/auth.dto';
@@ -19,7 +21,10 @@ import {
 } from '../dto/password.dto';
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   private setAuthCookie(res: Response, token: string) {
     res.cookie('accessToken', token, {
@@ -158,5 +163,60 @@ export class AuthController {
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  // ===========================================================================
+  // OAUTH endpoints (fix B1.1)
+  //
+  // Flow chuẩn "backend-initiated OAuth":
+  //   FE <a href="{BE}/auth/google">Login</a>
+  //     -> GET /auth/google   : guard redirect user tới Google.
+  //     -> Google login page -> user grant -> Google redirect callback URL.
+  //     -> GET /auth/google/callback : guard exchange code -> gọi
+  //        GoogleStrategy.validate() -> gắn user vào req.user.
+  //     -> controller tạo JWT cookie + redirect về FE.
+  //
+  // FE không trực tiếp POST login; chỉ link đến BE endpoint.
+  // ===========================================================================
+
+  @Public()
+  @UseGuards(GoogleOAuthGuard)
+  @Get('google')
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  async googleAuth() {
+    // Guard đã redirect user sang Google login. Hàm này không bao giờ chạy body.
+  }
+
+  @Public()
+  @UseGuards(GoogleOAuthGuard)
+  @Get('google/callback')
+  async googleCallback(
+    @Req() req: Request & { user: any },
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // req.user do GoogleStrategy.validate() trả; có { provider, providerId, email, name, avatar }
+    const data = await this.authService.handleOAuthLogin(req.user);
+    this.setAuthCookie(res, data.access_token);
+    const feUrl = (this.configService.get<string>('FE_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
+    res.redirect(`${feUrl}/`);
+  }
+
+  @Public()
+  @UseGuards(FacebookOAuthGuard)
+  @Get('facebook')
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  async facebookAuth() {}
+
+  @Public()
+  @UseGuards(FacebookOAuthGuard)
+  @Get('facebook/callback')
+  async facebookCallback(
+    @Req() req: Request & { user: any },
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const data = await this.authService.handleOAuthLogin(req.user);
+    this.setAuthCookie(res, data.access_token);
+    const feUrl = (this.configService.get<string>('FE_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
+    res.redirect(`${feUrl}/`);
   }
 }
