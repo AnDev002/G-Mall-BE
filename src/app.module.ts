@@ -30,6 +30,7 @@ import { BlogModule } from './modules/blog/blog.module';
 import { BrandModule } from './modules/brand/brand.module';
 import { GhnModule } from './modules/ghn/ghn.module';
 import { AddressModule } from './modules/address/address.module';
+import { CharityModule } from './modules/charity/charity.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -112,6 +113,7 @@ import { AddressModule } from './modules/address/address.module';
     BrandModule,
     GhnModule,
     AddressModule,
+    CharityModule,
   ],
   controllers: [AppController],
   providers: [AppService],

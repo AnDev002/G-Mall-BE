@@ -108,12 +108,15 @@ model User {
   pickupAddress String? // Địa chỉ lấy hàng
   description   String? // Mô tả shop
   coverImage    String? // Ảnh bìa shop
-  
-  
+
+  // Charity / Donation (xem model CharityFund, Donation ở cuối file)
+  donations     Donation[]
+
+
   @@index([email])
   @@index([role])
   @@index([createdAt])
-  
+
 }
 
 model SystemSetting {
@@ -935,5 +938,62 @@ model BlogPost {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   @@index([sortOrder])
+}
+
+// --------------------------------------
+// CHARITY / DONATION
+// Feature từ brief: "tạo quỹ từ thiện (trích % doanh thu)".
+// Flow cơ bản:
+//   1. Admin tạo CharityFund (quỹ).
+//   2. User donate trực tiếp -> Donation với userId + fundId.
+//   3. (Tương lai) Auto-trigger: khi Order DELIVERED, trích X% vào fund mặc định.
+// --------------------------------------
+
+enum CharityFundStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+model CharityFund {
+  id            String             @id @default(uuid())
+  name          String             // "Quỹ hỗ trợ trẻ em vùng cao"
+  slug          String             @unique
+  description   String?            @db.Text
+  image         String?            // Cover image
+  goalAmount    Decimal            @default(0) @db.Decimal(15, 2)
+  // Snapshot tổng donation để query nhanh mà không scan table Donation.
+  // Cập nhật bằng transaction mỗi lần donation mới.
+  currentAmount Decimal            @default(0) @db.Decimal(15, 2)
+  status        CharityFundStatus  @default(ACTIVE)
+  donations     Donation[]
+
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([status])
+  @@index([slug])
+}
+
+model Donation {
+  id         String       @id @default(uuid())
+  fundId     String
+  fund       CharityFund  @relation(fields: [fundId], references: [id])
+
+  // userId nullable để hỗ trợ donation ẩn danh (guest).
+  // Nếu sau này add auto-trigger từ Order, dùng orderId để idempotent
+  // (unique constraint tránh double-count khi order DELIVERED lặp event).
+  userId     String?
+  user       User?        @relation(fields: [userId], references: [id])
+  orderId    String?      @unique
+
+  amount     Decimal      @db.Decimal(15, 2)
+  note       String?      @db.Text
+  isAnonymous Boolean     @default(false) // user chọn hiển thị "Anonymous" trong leaderboard
+
+  createdAt  DateTime     @default(now())
+
+  @@index([fundId, createdAt])
+  @@index([userId])
 }
 
