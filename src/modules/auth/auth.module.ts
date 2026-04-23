@@ -15,12 +15,18 @@ import { DatabaseModule } from '../../database/database.module';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET') || 'secret_mac_dinh_123',
-        signOptions: {
-          expiresIn: (configService.get<string>('JWT_EXPIRATION_TIME') || '1d') as any,
-        },
-      }),
+      useFactory: async (configService: ConfigService) => {
+        // getOrThrow: boot fail ngay nếu thiếu env, thay vì silent fallback
+        // sang default value (trước: 'secret_mac_dinh_123' — bất kỳ ai đọc
+        // source cũng ký được JWT hợp lệ cho bất kỳ user nào).
+        const secret = configService.getOrThrow<string>('JWT_SECRET');
+        return {
+          secret,
+          signOptions: {
+            expiresIn: (configService.get<string>('JWT_EXPIRATION_TIME') || '1d') as any,
+          },
+        };
+      },
     }),
   ],
   controllers: [AuthController],

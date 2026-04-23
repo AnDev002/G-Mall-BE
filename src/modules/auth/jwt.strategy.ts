@@ -1,6 +1,7 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { PrismaService } from '../../database/prisma/prisma.service';
 
@@ -13,14 +14,21 @@ const extractJwtFromCookie = (req: Request) => {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    configService: ConfigService,
+  ) {
+    // Dùng getOrThrow để đồng bộ với AuthModule.JwtModule — nếu thiếu env thì
+    // boot fail sớm. Trước đây strategy default 'super_secret_key' còn module
+    // default 'secret_mac_dinh_123' → sign/verify dùng hai khóa khác nhau,
+    // token mới tạo sẽ luôn 401 khi verify, khó debug.
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         ExtractJwt.fromAuthHeaderAsBearerToken(),
         extractJwtFromCookie,
       ]),
       ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET || 'super_secret_key',
+      secretOrKey: configService.getOrThrow<string>('JWT_SECRET'),
     });
   }
 
