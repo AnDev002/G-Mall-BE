@@ -9,6 +9,11 @@ import { Role, ShopStatus } from '@prisma/client';
 import { UpdateShopProfileDto } from './dto/update-shop.dto';
 import { RegisterDto, LoginDto, VerifyOtpDto } from './dto/auth.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './dto/password.dto';
 function generateSlug(text: string): string {
   return text
     .toString()
@@ -29,6 +34,11 @@ export class AuthService {
   private static readonly OTP_TTL_SECONDS = 5 * 60;
   private static readonly OTP_KEY_PREFIX = 'otp:';
 
+  // OTP reset password tách prefix khỏi OTP register để không ghi đè lẫn nhau
+  // (nếu user đang dở register rồi lại forgot-password, 2 key khác nhau).
+  private static readonly PWD_RESET_TTL_SECONDS = 15 * 60;
+  private static readonly PWD_RESET_KEY_PREFIX = 'pwd_reset:';
+
   constructor(
     private prisma: PrismaService,
     private redisService: RedisService,
@@ -38,6 +48,10 @@ export class AuthService {
 
   private otpKey(email: string) {
     return `${AuthService.OTP_KEY_PREFIX}${email.toLowerCase()}`;
+  }
+
+  private pwdResetKey(email: string) {
+    return `${AuthService.PWD_RESET_KEY_PREFIX}${email.toLowerCase()}`;
   }
 
   // --- 1. ĐĂNG KÝ (Tạo user + Gửi OTP) ---
@@ -315,5 +329,113 @@ export class AuthService {
     // Sau khi check null, TypeScript sẽ hiểu user là object hợp lệ
     const { password, ...result } = user;
     return result;
+  }
+
+  // ===========================================================================
+  // PASSWORD FLOWS — đổi / quên / đặt lại mật khẩu
+  // ===========================================================================
+
+  /**
+   * Đổi mật khẩu khi đã đăng nhập (biết MK cũ).
+   * Fix bug B2.3: trước đây không có endpoint này -> FE gọi đâu cũng không
+   * update được hash trong DB, nên MK cũ vẫn login được.
+   *
+   * Lưu ý: JWT đang cấp trước thời điểm đổi MK vẫn hợp lệ cho đến khi hết
+   * hạn. Muốn invalidate ngay (ví dụ kick user khỏi mọi thiết bị khác) cần
+   * thêm `tokenVersion` vào User schema — xem wiki 0005.
+   */
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    if (dto.oldPassword === dto.newPassword) {
+      throw new BadRequestException('Mật khẩu mới không được trùng mật khẩu cũ');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.password) {
+      throw new NotFoundException('Tài khoản không tồn tại hoặc chưa đặt mật khẩu');
+    }
+
+    const ok = await bcrypt.compare(dto.oldPassword, user.password);
+    if (!ok) {
+      throw new UnauthorizedException('Mật khẩu hiện tại không đúng');
+    }
+
+    const hashed = await bcrypt.hash(dto.newPassword, 10);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password: hashed },
+    });
+
+    return { message: 'Đổi mật khẩu thành công' };
+  }
+
+  /**
+   * Bước 1 của flow quên MK: nhận email, nếu tồn tại thì sinh OTP reset
+   * (tách key với OTP register) và gửi mail. Luôn trả success message
+   * giống nhau dù email có tồn tại hay không — tránh user enumeration
+   * (attacker dò email nào đã đăng ký qua response khác nhau).
+   */
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const normalizedEmail = dto.email.toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+    if (user) {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      await this.redisService.set(
+        this.pwdResetKey(normalizedEmail),
+        otp,
+        AuthService.PWD_RESET_TTL_SECONDS,
+      );
+
+      console.log(`>>> [DEBUG] Reset OTP cho ${normalizedEmail}: ${otp}`);
+
+      try {
+        await this.mailerService.sendMail({
+          to: normalizedEmail,
+          subject: 'Đặt lại mật khẩu GMall',
+          html: `
+            <p>Bạn (hoặc ai đó) vừa yêu cầu đặt lại mật khẩu cho tài khoản này.</p>
+            <p>Mã xác nhận của bạn là: <b>${otp}</b>. Hiệu lực trong 15 phút.</p>
+            <p>Nếu không phải bạn, hãy bỏ qua email này.</p>
+          `,
+        });
+      } catch (error) {
+        console.log('>>> [WARNING] Lỗi gửi mail reset:', error.message);
+      }
+    }
+
+    return { message: 'Nếu email tồn tại, mã đặt lại mật khẩu đã được gửi.' };
+  }
+
+  /**
+   * Bước 2 của flow quên MK: verify OTP reset + đổi mật khẩu.
+   * Xóa key sau khi dùng (prevent replay).
+   */
+  async resetPassword(dto: ResetPasswordDto) {
+    const normalizedEmail = dto.email.toLowerCase();
+    const storedOtp = await this.redisService.get(this.pwdResetKey(normalizedEmail));
+
+    if (!storedOtp) {
+      throw new UnauthorizedException('Mã đặt lại mật khẩu không tồn tại hoặc đã hết hạn');
+    }
+    if (storedOtp !== dto.token) {
+      throw new UnauthorizedException('Mã đặt lại mật khẩu không đúng');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (!user) {
+      // Ít khi xảy ra (phải có user mới sinh được OTP), nhưng vẫn phòng DB đã xóa user.
+      await this.redisService.del(this.pwdResetKey(normalizedEmail));
+      throw new NotFoundException('Tài khoản không còn tồn tại');
+    }
+
+    const hashed = await bcrypt.hash(dto.newPassword, 10);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashed },
+    });
+
+    await this.redisService.del(this.pwdResetKey(normalizedEmail));
+
+    return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập.' };
   }
 }

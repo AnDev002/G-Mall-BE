@@ -11,6 +11,11 @@ import type { Response } from 'express';
 import { UpdateShopProfileDto } from '../dto/update-shop.dto';
 import { LoginDto, RegisterDto, SendOtpDto, VerifyOtpDto } from '../dto/auth.dto';
 import { RegisterSellerDto } from '../dto/register-seller.dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from '../dto/password.dto';
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -119,5 +124,30 @@ export class AuthController {
     // Gọi xuống service để findUnique lấy full thông tin mới nhất từ DB
     // Vì thông tin trong token (request.user) có thể bị cũ
     return this.authService.getUserProfile(user.id);
+  }
+
+  // ===========================================================================
+  // PASSWORD FLOWS (fix B1.2 / B1.3 / B2.3)
+  // ===========================================================================
+
+  /** Đổi MK khi đã login (biết MK cũ) — fix B2.3. */
+  @UseGuards(JwtAuthGuard)
+  @Post('change-password')
+  async changePassword(@User() user: any, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(user.id, dto);
+  }
+
+  /** Bước 1: gửi mã reset tới email — fix B1.2 (email không gửi khi quên MK). */
+  @Public()
+  @Post('forgot-password')
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  /** Bước 2: nhập mã + MK mới — fix B1.3 (đặt lại MK không thực sự cập nhật DB). */
+  @Public()
+  @Post('reset-password')
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 }
