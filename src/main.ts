@@ -57,6 +57,12 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(cookieParser());
 
+  // Trust proxy: khi chạy sau Nginx/Render/PM2-cluster với HTTP proxy, IP client
+  // thật nằm ở header X-Forwarded-For. Bật để req.ip = IP client (không phải IP
+  // proxy) — quan trọng cho rate limit (RateLimitGuard) không bị tất cả traffic
+  // đổ vào 1 bucket IP proxy.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   // 1. Cấu hình CORS
   // Whitelist domain qua env CORS_ORIGINS (comma-separated). Kết hợp với credentials:true
   // thì origin:true (reflect) là lỗ hổng CSRF — BẮT BUỘC chỉ định danh sách cụ thể.

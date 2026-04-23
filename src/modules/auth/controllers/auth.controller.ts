@@ -7,6 +7,7 @@ import { FileFieldsInterceptor, FileInterceptor } from '@nestjs/platform-express
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { User } from '../../../common/decorators/user.decorator';
+import { RateLimit, RateLimitGuard } from '../../../common/guards/rate-limit.guard';
 import type { Response } from 'express';
 import { UpdateShopProfileDto } from '../dto/update-shop.dto';
 import { LoginDto, RegisterDto, SendOtpDto, VerifyOtpDto } from '../dto/auth.dto';
@@ -47,6 +48,8 @@ export class AuthController {
 
   // 2. Đăng nhập (Email + Pass)@Public()
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('login')
   async login(
     @Body() dto: LoginDto,
@@ -95,6 +98,8 @@ export class AuthController {
   }
 
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 3, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('send-otp')
   async sendOtp(@Body() dto: SendOtpDto) {
     await this.authService.sendOtp(dto.email);
@@ -139,6 +144,8 @@ export class AuthController {
 
   /** Bước 1: gửi mã reset tới email — fix B1.2 (email không gửi khi quên MK). */
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 3, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('forgot-password')
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto);
@@ -146,6 +153,8 @@ export class AuthController {
 
   /** Bước 2: nhập mã + MK mới — fix B1.3 (đặt lại MK không thực sự cập nhật DB). */
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
