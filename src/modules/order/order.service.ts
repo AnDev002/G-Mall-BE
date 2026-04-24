@@ -60,11 +60,12 @@ export class OrderService {
     
     const products = await this.prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { 
-          id: true, name: true, price: true, originalPrice: true, 
+      select: {
+          id: true, name: true, price: true, originalPrice: true,
           stock: true, weight: true, images: true, variants: true,
+          categoryId: true, // B7.9: cần cho voucher scope CATEGORY match theo danh mục
           shopId: true, shop: { select: { id: true, name: true, districtId: true, wardCode: true } }
-      } 
+      }
     });
 
     const shopGroups: Record<string, any> = {};
@@ -104,14 +105,15 @@ export class OrderService {
       
       shopGroups[product.shopId].items.push({
         productId: product.id,
-        variantId: selectedVariant?.id || null, 
+        variantId: selectedVariant?.id || null,
         name: product.name,
         imageUrl: finalImageUrl,
         price: finalPrice,
         quantity: item.quantity,
         subtotal: lineTotal,
         weight: (product.weight || 200) * item.quantity,
-        shopId: product.shopId 
+        shopId: product.shopId,
+        categoryId: product.categoryId, // B7.9: cần cho voucher scope CATEGORY
       });
 
       shopGroups[product.shopId].subtotal += lineTotal;
