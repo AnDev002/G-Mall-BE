@@ -35,7 +35,9 @@ export class PromotionService {
       };
     }
 
-    // 1. Fetch Vouchers (Kèm shopId để phân loại)
+    // 1. Fetch Vouchers (Kèm shopId để phân loại).
+    // B7.11: trước đây thiếu include `categories` → voucher scope CATEGORY load
+    // thiếu data → chạy vào nhánh else và bị bỏ qua. Thêm include để chuẩn.
     const vouchers = await this.prisma.voucher.findMany({
       where: {
         code: { in: voucherIds },
@@ -43,18 +45,27 @@ export class PromotionService {
         startDate: { lte: new Date() },
         endDate: { gte: new Date() },
       },
-      include: { 
-        products: { select: { id: true } }, 
-        shop: { select: { id: true } }      
+      include: {
+        products: { select: { id: true } },
+        categories: { select: { id: true } },
+        shop: { select: { id: true } }
       }
     });
 
     const appliedVouchers: any[] = [];
-    const shopDiscounts: Record<string, number> = {}; 
+    const shopDiscounts: Record<string, number> = {};
     let systemDiscount = 0;
 
-    // 2. Phân loại
-    const shopVouchers = vouchers.filter(v => v.scope === VoucherScope.SHOP || v.scope === VoucherScope.PRODUCT);
+    // 2. Phân loại.
+    // B7.9: voucher scope CATEGORY có `shopId` (voucher shop giới hạn theo danh mục)
+    // trước đây bị exclude khỏi shopVouchers loop nên không được tính → bỏ qua hoặc
+    // bị xử lý sai shop. Thêm CATEGORY vào nhóm shopVouchers để loop xử lý.
+    const shopVouchers = vouchers.filter(
+      (v) =>
+        v.scope === VoucherScope.SHOP ||
+        v.scope === VoucherScope.PRODUCT ||
+        v.scope === VoucherScope.CATEGORY,
+    );
     const systemVouchers = vouchers.filter(v => v.scope === VoucherScope.GLOBAL);
 
     // 3. Xử lý Voucher Shop
@@ -71,6 +82,13 @@ export class PromotionService {
         const validProductIds = voucher.products.map(p => p.id);
         eligibleAmount = group.items
           .filter((i: any) => validProductIds.includes(i.productId))
+          .reduce((sum: number, i: any) => sum + i.subtotal, 0);
+      } else if (voucher.scope === VoucherScope.CATEGORY) {
+        // B7.9: scope CATEGORY chỉ tính item thuộc danh mục voucher CẤM shop khác.
+        // voucher.categories đã include ở query; check item.categoryId.
+        const validCatIds = (voucher as any).categories?.map((c: any) => c.id) ?? [];
+        eligibleAmount = group.items
+          .filter((i: any) => i.categoryId && validCatIds.includes(i.categoryId))
           .reduce((sum: number, i: any) => sum + i.subtotal, 0);
       } else {
         // Scope SHOP: Tính trên toàn bộ đơn của shop đó
