@@ -14,6 +14,7 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
 } from './dto/password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 function generateSlug(text: string): string {
   return text
     .toString()
@@ -311,6 +312,38 @@ export class AuthService {
       message: 'Cập nhật hồ sơ Shop thành công',
       shop: updatedShop
     };
+  }
+
+  /**
+   * Update các field buyer profile. Email + password KHÔNG đổi ở đây —
+   * dùng change-password / forgot-password flow riêng cho bảo mật.
+   *
+   * Fix B2.1 (update không có thông báo) và B2.4 (avatar regression):
+   * Trước đây FE gọi PUT /users/profile nhưng BE không có endpoint tương
+   * ứng -> 404 -> FE toast.error mơ hồ. Giờ endpoint tồn tại thật, thao
+   * tác success/failure rõ ràng.
+   */
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Không tìm thấy người dùng');
+
+    const dataToUpdate: any = {};
+    if (dto.name !== undefined) dataToUpdate.name = dto.name;
+    if (dto.phone !== undefined) dataToUpdate.phone = dto.phone;
+    if (dto.avatar !== undefined) dataToUpdate.avatar = dto.avatar;
+    if (dto.gender !== undefined) dataToUpdate.gender = dto.gender;
+    if (dto.dob !== undefined) {
+      // FE gửi ISO date string hoặc '' nếu muốn clear. Convert an toàn.
+      dataToUpdate.dob = dto.dob ? new Date(dto.dob) : null;
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: dataToUpdate,
+    });
+
+    const { password, ...result } = updated;
+    return result;
   }
 
   async getUserProfile(userId: string) {

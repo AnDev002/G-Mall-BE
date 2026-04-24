@@ -68,6 +68,8 @@ model User {
   name       String?
   phone      String?
   avatar     String?
+  gender     String?   // 'male' | 'female' | 'other' — free-form string, không enum để dễ mở rộng
+  dob        DateTime? // Ngày sinh (date-only đủ nhưng Prisma MySQL lưu DateTime)
   role       Role    @default(BUYER)
   sentFriendships     Friendship[] @relation("FriendshipSender")
   receivedFriendships Friendship[] @relation("FriendshipReceiver")

@@ -19,6 +19,7 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
 } from '../dto/password.dto';
+import { UpdateProfileDto } from '../dto/update-profile.dto';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -134,6 +135,13 @@ export class AuthController {
     // Gọi xuống service để findUnique lấy full thông tin mới nhất từ DB
     // Vì thông tin trong token (request.user) có thể bị cũ
     return this.authService.getUserProfile(user.id);
+  }
+
+  /** PUT /auth/profile — update buyer profile (name/phone/avatar/gender/dob). */
+  @UseGuards(JwtAuthGuard)
+  @Put('profile')
+  async updateProfile(@User() user: any, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(user.id, dto);
   }
 
   // ===========================================================================
