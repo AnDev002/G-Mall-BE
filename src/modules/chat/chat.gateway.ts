@@ -109,6 +109,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // ... (Giữ code logic cũ)
 
+    // B3.3 fix: optimistic clientTempId — FE gửi kèm clientTempId khi send,
+    // BE echo lại ở payload để FE biết tin nào đã confirmed (thay cho logic
+    // merge theo content-match cũ dễ sai khi user gõ tin trùng nhau).
+    const clientTempId = data.clientTempId;
+
     try {
         const savedMessage = await this.chatService.sendMessage(senderId, {
             content: data.content,
@@ -118,23 +123,30 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         const payload = {
             id: savedMessage.id,
-            conversationId: savedMessage.conversationId, // <--- Bắt buộc có cái này
+            conversationId: savedMessage.conversationId,
             senderId: senderId,
             content: savedMessage.content,
             type: savedMessage.type,
             timestamp: savedMessage.createdAt,
-            sender: savedMessage.sender
+            sender: savedMessage.sender,
+            clientTempId, // echo để FE replace optimistic message chính xác
         };
 
-        // 2. Gửi cho NGƯỜI NHẬN (Seller)
+        // Gửi cho NGƯỜI NHẬN
         this.server.to(`user_${data.receiverId}`).emit('receive_message', payload);
 
-        // 3. [SỬA LẠI] Gửi lại cho NGƯỜI GỬI (User) dùng chung event 'receive_message'
-        // Thay vì 'message_sent_success', hãy dùng 'receive_message'
+        // Gửi lại cho NGƯỜI GỬI (xác nhận lưu thành công)
         client.emit('receive_message', payload);
 
     } catch (e) {
+        // B3.3 fix: trước đây chỉ console.error, client không biết -> tin
+        // optimistic vĩnh viễn "pending" rồi F5 mới mất. Giờ báo rõ cho FE.
         console.error('❌ Error processing message:', e);
+        client.emit('message_error', {
+          clientTempId,
+          message: 'Không gửi được tin nhắn. Vui lòng thử lại.',
+          reason: e?.message,
+        });
     }
   }
 

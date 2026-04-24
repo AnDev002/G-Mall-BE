@@ -162,52 +162,57 @@ export class ChatService {
      return { ...message, content: EncryptionUtil.decrypt(message.content) };
   }
   async sendMessage(senderId: string, dto: CreateMessageDto) {
-    let conversationId = '';
+    // B3.3 fix: bọc find/create conversation + create message trong transaction
+    // để tránh trường hợp conversation được tạo nhưng message fail -> có
+    // conversation rỗng trong DB + client nghĩ tin đã gửi (vì gateway
+    // catch-all).
+    return this.prisma.$transaction(async (tx) => {
+      let conversationId = '';
 
-    const existingConv = await this.prisma.conversation.findFirst({
-      where: {
-        AND: [
-          { participants: { some: { id: senderId } } },
-          { participants: { some: { id: dto.receiverId } } },
-        ],
-      },
-    });
-
-    if (existingConv) {
-      conversationId = existingConv.id;
-      await this.prisma.conversation.update({
-        where: { id: conversationId },
-        data: { lastMessageAt: new Date() },
-      });
-    } else {
-      const newConv = await this.prisma.conversation.create({
-        data: {
-          participants: {
-            connect: [{ id: senderId }, { id: dto.receiverId }],
-          },
+      const existingConv = await tx.conversation.findFirst({
+        where: {
+          AND: [
+            { participants: { some: { id: senderId } } },
+            { participants: { some: { id: dto.receiverId } } },
+          ],
         },
       });
-      conversationId = newConv.id;
-    }
 
-    const message = await this.prisma.message.create({
-      data: {
-        senderId,
-        conversationId,
-        content: EncryptionUtil.encrypt(dto.content),
-        type: dto.type, // Không còn lỗi vì đã thêm type vào DTO
-      },
-      include: {
-        sender: { select: { id: true, name: true, role: true } },
-      },
+      if (existingConv) {
+        conversationId = existingConv.id;
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { lastMessageAt: new Date() },
+        });
+      } else {
+        const newConv = await tx.conversation.create({
+          data: {
+            participants: {
+              connect: [{ id: senderId }, { id: dto.receiverId }],
+            },
+          },
+        });
+        conversationId = newConv.id;
+      }
+
+      const message = await tx.message.create({
+        data: {
+          senderId,
+          conversationId,
+          content: EncryptionUtil.encrypt(dto.content),
+          type: dto.type,
+        },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+        },
+      });
+
+      return {
+        ...message,
+        content: EncryptionUtil.decrypt(message.content),
+        senderId: message.senderId,
+      };
     });
-
-    return { 
-      ...message, 
-      content: EncryptionUtil.decrypt(message.content),
-      // Trả về senderId rõ ràng để Gateway dùng nếu cần
-      senderId: message.senderId 
-    };
   }
 
   // --- API LOGIC ---
@@ -239,7 +244,7 @@ export class ChatService {
       orderBy: { lastMessageAt: 'desc' },
       include: {
         participants: {
-          select: { id: true, name: true, role: true, email: true }, // Avatar nếu có
+          select: { id: true, name: true, role: true, email: true, avatar: true },
         },
         messages: {
           take: 1,
@@ -248,15 +253,28 @@ export class ChatService {
       },
     });
 
-    // Format lại để FE dễ hiển thị (Lọc lấy thông tin người "kia")
+    // B3.3 fix: lastMessage phải decrypt trước khi trả cho FE — trước đây hàm
+    // này trả thẳng content ở dạng encrypted (base64) nên preview bên trái
+    // hiển thị chuỗi rối. getMessages đã decrypt đúng, chỉ hàm này quên.
     return conversations.map((conv) => {
       const partner = conv.participants.find((p) => p.id !== userId);
       const lastMsg = conv.messages[0];
+      let lastMessagePlain = '';
+      if (lastMsg?.content) {
+        try {
+          lastMessagePlain = EncryptionUtil.decrypt(lastMsg.content);
+        } catch {
+          // Data cũ chưa encrypt hoặc key thay đổi — trả nguyên để không crash
+          lastMessagePlain = lastMsg.content;
+        }
+      }
       return {
         id: conv.id,
         partner,
-        lastMessage: lastMsg?.content || '',
+        lastMessage: lastMessagePlain,
         lastMessageAt: conv.lastMessageAt,
+        unreadCount:
+          lastMsg && lastMsg.senderId !== userId && !lastMsg.isRead ? 1 : 0,
         isRead: lastMsg?.senderId === userId ? true : lastMsg?.isRead,
       };
     });
