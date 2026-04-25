@@ -38,14 +38,17 @@ export class BrandController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   async getBrandsAdmin(
-      @Query('search') search: string, 
-      @Query('page') page: string, 
+      @Query('search') search: string,
+      @Query('page') page: string,
       @Query('limit') limit: string
   ) {
+    // Default page=1, limit=10 nếu missing — tránh Number(undefined)=NaN làm Prisma 500.
+    const pageNum = page ? Number(page) : 1;
+    const limitNum = limit ? Number(limit) : 10;
     return this.brandService.findAllAdmin({
         search,
-        page: Number(page),
-        limit: Number(limit)
+        page: Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 1,
+        limit: Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 10,
     });
   }
 
