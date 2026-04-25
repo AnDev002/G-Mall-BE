@@ -38,6 +38,8 @@ export class GachaService {
     if (!acquired) throw new BadRequestException('Đang xử lý...');
 
     try {
+      // Default Prisma timeout 5s — addPoints chạm 3 bảng + Redis write,
+      // dễ vượt 5s ở dev local. Nâng lên 15s để né P2028 "Transaction already closed".
       return await this.prisma.$transaction(async (tx) => {
         const rand = Math.random() * 100;
         let reward = 0;
@@ -67,7 +69,7 @@ export class GachaService {
         await this.redis.set(dailyKey, '1', 86400);
 
         return { won, reward, message };
-      });
+      }, { timeout: 15000, maxWait: 5000 });
     } finally {
       await this.redis.del(lockKey);
     }
