@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -50,6 +51,13 @@ export class CharityController {
   async donate(@User() user: any, @Body() dto: DonateDto) {
     return this.service.donate(user.id, dto);
   }
+
+  // Spec [0018]: Public — list campaign đang active để FE checkout cho user chọn.
+  @Public()
+  @Get('campaigns/active')
+  async listActiveCampaigns() {
+    return this.service.listActiveCampaignsForCheckout();
+  }
 }
 
 /**
@@ -76,5 +84,26 @@ export class AdminCharityController {
   @Patch('funds/:id')
   async updateFund(@Param('id') id: string, @Body() dto: UpdateFundDto) {
     return this.service.updateFund(id, dto);
+  }
+
+  // Spec [0018]: Campaign CRUD
+  @Get('campaigns')
+  async listCampaigns(@Query('includeInactive') includeInactive?: string) {
+    return this.service.listCampaigns(includeInactive === 'true');
+  }
+
+  @Post('campaigns')
+  async createCampaign(@Body() dto: any) {
+    return this.service.createCampaign(dto);
+  }
+
+  @Patch('campaigns/:id')
+  async updateCampaign(@Param('id') id: string, @Body() dto: any) {
+    return this.service.updateCampaign(id, dto);
+  }
+
+  @Delete('campaigns/:id')
+  async deleteCampaign(@Param('id') id: string) {
+    return this.service.deleteCampaign(id);
   }
 }

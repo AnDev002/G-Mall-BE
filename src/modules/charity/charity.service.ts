@@ -207,6 +207,108 @@ export class CharityService {
     return donation;
   }
 
+  // ===========================================================================
+  // CAMPAIGN — Spec [0018]: nhóm nhiều quỹ chạy song song trong khoảng thời gian.
+  // Khi user checkout, được chọn 1 campaign đang ACTIVE để đóng góp; không
+  // chọn -> primary fund (xem processOrderDelivered).
+  // ===========================================================================
+
+  async listCampaigns(includeInactive = false) {
+    return this.prisma.charityCampaign.findMany({
+      where: includeInactive ? undefined : { isActive: true },
+      include: { funds: { include: { fund: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async listActiveCampaignsForCheckout() {
+    const now = new Date();
+    return this.prisma.charityCampaign.findMany({
+      where: {
+        isActive: true,
+        startDate: { lte: now },
+        endDate: { gte: now },
+      },
+      include: { funds: { include: { fund: true } } },
+      orderBy: { endDate: 'asc' },
+    });
+  }
+
+  async createCampaign(dto: {
+    name: string;
+    description?: string;
+    banner?: string;
+    startDate: string;
+    endDate: string;
+    fundIds?: string[];
+  }) {
+    const baseSlug = slugify(dto.name);
+    let slug = baseSlug;
+    let attempt = 1;
+    while (await this.prisma.charityCampaign.findUnique({ where: { slug } })) {
+      attempt += 1;
+      slug = `${baseSlug}-${attempt}`;
+      if (attempt > 50) throw new BadRequestException('Không tạo được slug duy nhất');
+    }
+
+    return this.prisma.charityCampaign.create({
+      data: {
+        name: dto.name,
+        slug,
+        description: dto.description,
+        banner: dto.banner,
+        startDate: new Date(dto.startDate),
+        endDate: new Date(dto.endDate),
+        funds: dto.fundIds && dto.fundIds.length > 0
+          ? { create: dto.fundIds.map(fid => ({ fundId: fid })) }
+          : undefined,
+      },
+      include: { funds: { include: { fund: true } } },
+    });
+  }
+
+  async updateCampaign(id: string, dto: any) {
+    const existing = await this.prisma.charityCampaign.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Không tìm thấy campaign');
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.charityCampaign.update({
+        where: { id },
+        data: {
+          name: dto.name ?? existing.name,
+          description: dto.description ?? existing.description,
+          banner: dto.banner ?? existing.banner,
+          startDate: dto.startDate ? new Date(dto.startDate) : existing.startDate,
+          endDate: dto.endDate ? new Date(dto.endDate) : existing.endDate,
+          isActive: dto.isActive ?? existing.isActive,
+        },
+      });
+
+      // Sync fundIds nếu gửi lên
+      if (Array.isArray(dto.fundIds)) {
+        await tx.charityCampaignFund.deleteMany({ where: { campaignId: id } });
+        if (dto.fundIds.length > 0) {
+          await tx.charityCampaignFund.createMany({
+            data: dto.fundIds.map((fid: string) => ({ campaignId: id, fundId: fid })),
+          });
+        }
+      }
+
+      return tx.charityCampaign.findUnique({
+        where: { id },
+        include: { funds: { include: { fund: true } } },
+      });
+    });
+  }
+
+  async deleteCampaign(id: string) {
+    const existing = await this.prisma.charityCampaign.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Không tìm thấy campaign');
+    // FK CharityCampaignFund onDelete:Cascade — Donation không liên kết Campaign trực tiếp,
+    // nên xóa campaign không ảnh hưởng lịch sử donation.
+    return this.prisma.charityCampaign.delete({ where: { id } });
+  }
+
   /**
    * Rollback donation khi đơn bị cancel/refund sau khi đã trích.
    */
