@@ -28,11 +28,18 @@ export class AuthController {
   ) {}
 
   private setAuthCookie(res: Response, token: string) {
+    // Dev (HTTP): sameSite='lax' + secure=false để Chrome chấp nhận cookie
+    //   trên localhost. SameSite='none' + secure=true bị browser reject ở
+    //   scheme http -> cookie không lưu -> /auth/me luôn 401 -> AuthProvider
+    //   loop logout.
+    // Prod (HTTPS): sameSite='none' + secure=true để cross-site (FE và BE
+    //   khác domain) vẫn gửi cookie kèm credentials.
+    const isProd = process.env.NODE_ENV === 'production';
     res.cookie('accessToken', token, {
       httpOnly: true,
-      secure: true, // BẮT BUỘC true khi dùng sameSite: 'none'
-      sameSite: 'none', // QUAN TRỌNG: Cho phép gửi cookie cross-site (FE -> BE)
-      maxAge: 7 * 24 * 60 * 60 * 10000,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày (đã sửa: trước đây 10000 = sai factor)
       path: '/',
     });
   }
