@@ -247,12 +247,16 @@ export class AuthService {
     }
   }
 
-  // --- HELPER: Tạo Token (Fix lỗi Property 'generateTokens' does not exist) ---
+  // --- HELPER: Tạo Token ---
+  // Spec [0018]: kèm tokenVersion vào payload. JwtStrategy.validate so với
+  // user.tokenVersion hiện tại; mismatch -> reject (force re-login). Sau khi
+  // đổi password, BE bump tokenVersion -> mọi token cũ invalid.
   private generateTokens(user: any) {
-    const payload = { 
-        userId: user.id, // Lưu ý: JwtStrategy đang đọc 'userId', giữ nguyên key này
-        email: user.email, 
-        role: user.role 
+    const payload = {
+        userId: user.id,
+        email: user.email,
+        role: user.role,
+        tokenVersion: user.tokenVersion ?? 0,
     };
 
     const { password, ...userInfo } = user;
@@ -394,12 +398,18 @@ export class AuthService {
     }
 
     const hashed = await bcrypt.hash(dto.newPassword, 10);
-    await this.prisma.user.update({
+    // Spec [0018]: bump tokenVersion -> mọi JWT cũ invalid -> các thiết bị
+    // khác tự logout. Trả về token mới để session hiện tại vẫn hoạt động.
+    const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: { password: hashed },
+      data: { password: hashed, tokenVersion: { increment: 1 } },
     });
 
-    return { message: 'Đổi mật khẩu thành công' };
+    const tokens = this.generateTokens(updated);
+    return {
+      message: 'Đổi mật khẩu thành công. Các thiết bị khác đã được đăng xuất.',
+      access_token: tokens.access_token,
+    };
   }
 
   /**
@@ -470,9 +480,11 @@ export class AuthService {
     }
 
     const hashed = await bcrypt.hash(dto.newPassword, 10);
+    // Spec [0018]: reset password cũng bump tokenVersion để invalidate JWT cũ
+    // (lỡ ai đó còn token sau khi user mất quyền truy cập).
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { password: hashed },
+      data: { password: hashed, tokenVersion: { increment: 1 } },
     });
 
     await this.redisService.del(this.pwdResetKey(normalizedEmail));

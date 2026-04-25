@@ -33,11 +33,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    // [DEBUG] In ra để kiểm tra xem Token có đúng userId không
-    console.log(`[JwtStrategy] Validating userId: ${payload.userId}`);
-
     if (!payload.userId) {
-        console.error('[JwtStrategy] Token invalid: missing userId');
         throw new UnauthorizedException('Token không hợp lệ');
     }
 
@@ -46,9 +42,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
 
     if (!user) {
-      console.error(`[JwtStrategy] User not found in DB (ID: ${payload.userId})`);
-      // User trong token không khớp với DB (do reset DB hoặc user bị xóa)
       throw new UnauthorizedException('Tài khoản không tồn tại hoặc đã bị xóa.');
+    }
+
+    // Spec [0018]: tokenVersion check — sau khi đổi password, BE bump
+    // user.tokenVersion. JWT cũ có version cũ -> reject -> các thiết bị khác
+    // tự logout khi gọi API tiếp theo (token đã invalidate).
+    // Token mới (cấp cùng lúc đổi pass) có version mới nên không bị ảnh hưởng.
+    if (typeof payload.tokenVersion === 'number' && payload.tokenVersion !== user.tokenVersion) {
+        throw new UnauthorizedException('Phiên đăng nhập đã hết hiệu lực, vui lòng đăng nhập lại.');
     }
 
     // Trả về user để gắn vào req.user.
