@@ -179,7 +179,7 @@ export class CategoryService {
     return resultIds;
   }
 
-  async create(data: { name: string; slug?: string; parentId?: string }) {
+  async create(data: { name: string; slug?: string; parentId?: string; filterKeys?: any }) {
     const slug = data.slug || this.generateSlug(data.name);
 
     // Kiểm tra slug trùng
@@ -193,13 +193,15 @@ export class CategoryService {
         name: data.name,
         slug: slug,
         // Nếu parentId là chuỗi rỗng hoặc undefined -> null (Root)
-        parentId: data.parentId && data.parentId.length > 0 ? data.parentId : null, 
+        parentId: data.parentId && data.parentId.length > 0 ? data.parentId : null,
+        // Spec [0018]: filter per category
+        ...(data.filterKeys !== undefined ? { filterKeys: data.filterKeys as any } : {}),
       }
     });
   }
 
   // 3. [FIX] Cập nhật
-  async update(id: string, data: { name?: string; slug?: string; parentId?: string }) {
+  async update(id: string, data: { name?: string; slug?: string; parentId?: string; filterKeys?: any }) {
     const category = await this.prisma.category.findUnique({ where: { id } });
     if (!category) throw new NotFoundException('Danh mục không tồn tại');
 
@@ -214,6 +216,8 @@ export class CategoryService {
         name: data.name,
         slug: data.slug,
         parentId: data.parentId === 'ROOT' ? null : data.parentId, // Logic xử lý nếu muốn đưa về gốc
+        // Spec [0018]: filter per category — null hoặc array đều cho qua, undefined skip update
+        ...(data.filterKeys !== undefined ? { filterKeys: data.filterKeys as any } : {}),
       }
     });
   }
