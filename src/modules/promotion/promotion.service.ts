@@ -150,10 +150,29 @@ export class PromotionService {
     // Chốt chặn: Tổng giảm giá không vượt quá tổng tiền
     if (systemDiscount > totalAfterShopDiscount) systemDiscount = totalAfterShopDiscount;
 
+    // Spec [0018]: voucher FREESHIP không ăn vào subtotal mà giảm vào phí ship.
+    // Trả `freeshipDiscount` riêng để OrderService trừ vào shippingFee thay vì
+    // total. Voucher FREESHIP có thể là sàn (apply toàn đơn) hoặc shop.
+    const freeshipVouchers = vouchers.filter((v) => v.type === VoucherType.FREESHIP);
+    let freeshipDiscount = 0;
+    for (const voucher of freeshipVouchers) {
+      // FREESHIP value = số tiền ship được giảm (FIXED), hoặc % * shippingFee.
+      // Trả raw amount, OrderService cap với phí ship thực tế.
+      const amt = Number(voucher.amount) || 0;
+      freeshipDiscount += amt;
+      appliedVouchers.push({
+        ...voucher,
+        appliedAmount: amt,
+        isSystem: voucher.scope === VoucherScope.GLOBAL,
+        isFreeship: true,
+      });
+    }
+
     return {
       shopDiscounts,
       systemDiscount,
-      appliedVouchers
+      freeshipDiscount,
+      appliedVouchers,
     };
   }
 
