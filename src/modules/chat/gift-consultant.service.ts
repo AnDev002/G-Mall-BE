@@ -41,14 +41,20 @@ export class GiftConsultantService {
   private readonly logger = new Logger(GiftConsultantService.name);
 
   constructor(private configService: ConfigService) {
-    this.openai = new OpenAI({ 
-        apiKey: this.configService.get<string>('OPENAI_API_KEY'),
-        timeout: 25000, maxRetries: 2
-    });
+    // Lazy init OpenAI: app phải boot được dù chưa cấu hình AI
+    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    if (apiKey) {
+      this.openai = new OpenAI({ apiKey, timeout: 25000, maxRetries: 2 });
+    } else {
+      this.logger.warn('OPENAI_API_KEY chưa set — gift consultant sẽ trả lỗi tới khi cấu hình');
+      this.openai = null as any;
+    }
     this.redis = new Redis({
       host: process.env.REDIS_HOST || 'localhost',
       port: Number(process.env.REDIS_PORT) || 6379,
-      connectTimeout: 10000
+      password: process.env.REDIS_PASSWORD || undefined,
+      connectTimeout: 10000,
+      maxRetriesPerRequest: 3,
     });
   }
 

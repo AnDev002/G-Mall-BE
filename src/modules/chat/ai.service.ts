@@ -42,11 +42,16 @@ export class AiService implements OnModuleInit {
     private prisma: PrismaService,
     private configService: ConfigService,
   ) {
+    // Lazy init: OpenAI v6 SDK throw ngay constructor nếu apiKey rỗng -> app
+    // không boot được. Cho phép null khi env thiếu, các route AI sẽ trả lỗi
+    // có ngữ nghĩa thay vì crash whole app.
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
-    if (!apiKey) {
-        this.logger.warn('OPENAI_API_KEY is not defined in .env');
+    if (apiKey) {
+      this.openai = new OpenAI({ apiKey });
+    } else {
+      this.logger.warn('OPENAI_API_KEY chưa set — route AI sẽ báo lỗi tới khi cấu hình');
+      this.openai = null as any;
     }
-    this.openai = new OpenAI({ apiKey: apiKey });
   }
 
   async onModuleInit() { }
