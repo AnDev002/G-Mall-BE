@@ -1,7 +1,8 @@
-import { 
-  Controller, Get, Post, Body, Put, Param, Delete, Query, ParseIntPipe, Patch, UseGuards 
+import {
+  Controller, Get, Post, Body, Put, Param, Delete, Query, ParseIntPipe, Patch, UseGuards
 } from '@nestjs/common';
 import { BrandService } from './brand.service';
+import { BrandCrawlerService } from './brand-crawler.service';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { UpdateBrandDto } from './dto/update-brand.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
@@ -12,7 +13,18 @@ import { Public } from '../../common/decorators/public.decorator';
 
 @Controller()
 export class BrandController {
-  constructor(private readonly brandService: BrandService) {}
+  constructor(
+    private readonly brandService: BrandService,
+    private readonly brandCrawler: BrandCrawlerService,
+  ) {}
+
+  // Spec [0018]: Crawl brand từ URL Shopee/Tiki — seller-only.
+  // Đặt ở /brands/crawl để dễ nhớ; auth check qua JwtAuthGuard chung của app.
+  @UseGuards(JwtAuthGuard)
+  @Post('brands/crawl')
+  async crawlBrand(@Body() dto: { url: string }) {
+    return this.brandCrawler.crawlByUrl(dto?.url);
+  }
 
   // --- Public/Seller Routes (Prefix: /brands) ---
   @Get('brands')
