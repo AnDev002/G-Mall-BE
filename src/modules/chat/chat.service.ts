@@ -143,8 +143,15 @@ export class ChatService {
          conversationId = existingConv.id;
          await this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } });
      } else {
-         const newConv = await this.prisma.conversation.create({
-             data: { participants: { connect: [{ id: senderId }, { id: dto.receiverId }] } }
+         // Prisma 5 implicit M2M không nhận `connect: [...]` ở MySQL — tách 2 step.
+         const newConv = await this.prisma.conversation.create({ data: {} });
+         await this.prisma.conversation.update({
+             where: { id: newConv.id },
+             data: { participants: { connect: { id: senderId } } },
+         });
+         await this.prisma.conversation.update({
+             where: { id: newConv.id },
+             data: { participants: { connect: { id: dto.receiverId } } },
          });
          conversationId = newConv.id;
      }
@@ -185,12 +192,15 @@ export class ChatService {
           data: { lastMessageAt: new Date() },
         });
       } else {
-        const newConv = await tx.conversation.create({
-          data: {
-            participants: {
-              connect: [{ id: senderId }, { id: dto.receiverId }],
-            },
-          },
+        // Prisma 5 implicit M2M trên MySQL bị bug array connect — tách step.
+        const newConv = await tx.conversation.create({ data: {} });
+        await tx.conversation.update({
+          where: { id: newConv.id },
+          data: { participants: { connect: { id: senderId } } },
+        });
+        await tx.conversation.update({
+          where: { id: newConv.id },
+          data: { participants: { connect: { id: dto.receiverId } } },
         });
         conversationId = newConv.id;
       }
@@ -336,12 +346,19 @@ export class ChatService {
       },
     });
 
-    // 2. Nếu chưa có -> Tạo mới
+    // 2. Nếu chưa có -> Tạo mới.
+    // Prisma 5 + many-to-many implicit ở MySQL bị lỗi 'Expected UserWhereUniqueInput'
+    // khi dùng `connect: [{...}, {...}]` trong nested write. Tách thành 2 update
+    // sequential để né bug.
     if (!conversation) {
-      conversation = await this.prisma.conversation.create({
-        data: {
-          participants: { connect: [{ id: userId }, { id: partnerId }] },
-        },
+      const newConv = await this.prisma.conversation.create({ data: {} });
+      await this.prisma.conversation.update({
+        where: { id: newConv.id },
+        data: { participants: { connect: { id: userId } } },
+      });
+      conversation = await this.prisma.conversation.update({
+        where: { id: newConv.id },
+        data: { participants: { connect: { id: partnerId } } },
         include: {
           participants: { select: { id: true, name: true, role: true, email: true } },
           messages: { take: 1, orderBy: { createdAt: 'desc' } },
