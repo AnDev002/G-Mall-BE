@@ -51,12 +51,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Tài khoản không tồn tại hoặc đã bị xóa.');
     }
 
-    // Trả về user để gắn vào req.user
+    // Trả về user để gắn vào req.user.
+    // Cả `id` và `userId` để backward-compat: nhiều controller cũ (admin-users,
+    // cart, chat, shop, ...) đọc `req.user.userId`, file mới đọc `req.user.id`.
+    // Trả 2 alias tránh phải refactor 10+ chỗ và tránh regression khi ai đó
+    // không biết convention.
     return {
         id: user.id,
+        userId: user.id,
         email: user.email,
         role: user.role,
-        shopName: user.shopName // Thêm field này nếu cần dùng ở Controller
+        shopName: user.shopName,
     };
   }
 }
