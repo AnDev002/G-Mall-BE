@@ -33,18 +33,23 @@ export class ProductWriteService {
     }
 
     // 2. Tách các trường xử lý riêng
-    const { 
+    const {
         crossSellIds,
-        tiers, 
-        variations, 
-        images, 
-        price, 
-        videos, sizeChart, brand, origin, weight, length, width, height, attributes, 
+        tiers,
+        variations,
+        images,
+        price,
+        videos, sizeChart, brand, origin, weight, length, width, height, attributes,
         brandId,
-        categoryId, 
+        categoryId,
         systemTags,
-        ...rest 
+        shortDesc, // Spec [0018]: phải tách để convert class -> plain Json
+        ...rest
     } = dto;
+
+    // Spec [0018]: Prisma Json column từ chối class instance (thiếu index signature).
+    // Spread sang plain object để TS hợp lệ và Prisma serialize đúng.
+    const shortDescJson = shortDesc ? { ...shortDesc } : undefined;
 
     // Validate logic cơ bản
     if (tiers && tiers.length > 0 && (!variations || variations.length === 0)) {
@@ -78,7 +83,7 @@ export class ProductWriteService {
           ...rest,
           category: { connect: { id: categoryId } },
           shop: {
-            connect: { id: shop.id } 
+            connect: { id: shop.id }
           },
           brandRel: brandId ? { connect: { id: brandId } } : undefined,
           price: new Prisma.Decimal(price || 0),
@@ -86,6 +91,7 @@ export class ProductWriteService {
           slug: this.generateSlug(dto.name),
           images: imageList as any,
           attributes: finalAttributes,
+          ...(shortDescJson ? { shortDesc: shortDescJson as any } : {}),
           status: 'PENDING',
         },
       });
@@ -332,19 +338,68 @@ export class ProductWriteService {
     
     if (!exists) throw new NotFoundException('Sản phẩm không tồn tại hoặc không thuộc Shop của bạn');
 
-    const { images, price, brandId, ...rest } = dto;
-    
+    // Spec [0018]: PATCH có thể nhận lại đủ payload từ FE (vì chia sẻ AddProductPage).
+    // Phải strip các field không nằm trên Product model: tiers/variations/crossSellIds/
+    // systemTags/categoryId (xử lý connect riêng). attributes/videos/sizeChart vẫn giữ
+    // như create cho consistency.
+    const {
+        images, price, brandId,
+        tiers, variations, crossSellIds, systemTags,
+        categoryId,
+        videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
+        attributes,
+        shortDesc,
+        ...rest
+    } = dto as any;
+
     const updateData: any = { ...rest };
-    if (price) updateData.price = new Prisma.Decimal(price);
-    if (brandId) {
+    if (shortDesc !== undefined) updateData.shortDesc = shortDesc ? { ...shortDesc } : null;
+    if (price !== undefined) updateData.price = new Prisma.Decimal(price);
+    if (brandId !== undefined) {
         updateData.brandRel = { connect: { id: brandId } };
     }
-    if (images) updateData.images = Array.isArray(images) ? images : [];
+    if (brand !== undefined) updateData.brand = brand;
+    if (images !== undefined) updateData.images = Array.isArray(images) ? images : [];
+    if (categoryId !== undefined) updateData.category = { connect: { id: categoryId } };
+
+    // Re-merge attributes giống create() để giữ dimensions/videos/sizeChart đồng nhất.
+    if (attributes !== undefined || videos !== undefined || sizeChart !== undefined ||
+        weight !== undefined || lenDim !== undefined || width !== undefined || height !== undefined ||
+        origin !== undefined || systemTags !== undefined) {
+        try {
+            const attrObj = typeof attributes === 'string' ? JSON.parse(attributes) : (attributes || {});
+            Object.assign(attrObj, {
+                ...(videos !== undefined ? { videos } : {}),
+                ...(sizeChart !== undefined ? { sizeChart } : {}),
+                ...(brand !== undefined ? { brand } : {}),
+                ...(origin !== undefined ? { origin } : {}),
+                ...(weight !== undefined ? { weight } : {}),
+                ...(lenDim !== undefined || width !== undefined || height !== undefined
+                    ? { dimensions: { length: lenDim, width, height } }
+                    : {}),
+                ...(systemTags !== undefined ? { systemTags } : {}),
+            });
+            updateData.attributes = JSON.stringify(attrObj);
+        } catch {
+            // attributes không phải JSON hợp lệ -> bỏ qua, chỉ update field flat khác
+        }
+    }
 
     const updated = await this.prisma.product.update({
       where: { id },
       data: updateData,
     });
+
+    // Spec [0018]: nếu FE gửi crossSellIds -> đồng bộ lại bảng nối ProductCrossSell.
+    if (crossSellIds !== undefined) {
+        await this.prisma.productCrossSell.deleteMany({ where: { productId: id } });
+        const uniqueIds = [...new Set(crossSellIds)].filter((rid: string) => rid && rid !== id);
+        if (uniqueIds.length > 0) {
+            await this.prisma.productCrossSell.createMany({
+                data: uniqueIds.map((relId: string) => ({ productId: id, relatedProductId: relId })),
+            });
+        }
+    }
 
     await this.productCache.invalidateProduct(id);
     return updated;

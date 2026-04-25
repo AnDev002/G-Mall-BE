@@ -1,6 +1,17 @@
 // BE-1.7/modules/product/dto/create-product.dto.ts
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, IsPositive, IsArray, ValidateNested, IsJSON } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, IsPositive, IsArray, ValidateNested, IsJSON, IsObject, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
+
+// Spec [0018]: Mô tả ngắn — block 6 fields hiển thị nhanh trên trang SP.
+// Lưu thành Json trong Product.shortDesc. Tất cả optional, MaxLength tránh spam.
+export class ShortDescDto {
+  @IsOptional() @IsString() @MaxLength(200) brand?: string;
+  @IsOptional() @IsString() @MaxLength(300) features?: string;
+  @IsOptional() @IsString() @MaxLength(300) benefits?: string;
+  @IsOptional() @IsString() @MaxLength(150) recipient?: string;
+  @IsOptional() @IsString() @MaxLength(150) occasion?: string;
+  @IsOptional() @IsString() @MaxLength(200) note?: string;
+}
 
 // DTO cho nhóm phân loại (VD: Màu sắc -> [Đỏ, Xanh])
 export class ProductTierDto {
@@ -138,4 +149,10 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   systemTags?: string[];
+
+  // Spec [0018]: 6-fields mô tả ngắn
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ShortDescDto)
+  shortDesc?: ShortDescDto;
 }
