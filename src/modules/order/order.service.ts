@@ -12,6 +12,8 @@ import { PointService } from '../../modules/point/point.service';
 import { OrderStatus, PointType, Prisma, Order } from '@prisma/client';
 import { GhnService } from '../../modules/ghn/ghn.service';
 import { PaymentService } from '../payment/payment.service';
+import { CharityService } from '../charity/charity.service';
+import { SystemSettingService } from '../../common/services/system-setting.service';
 
 // Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k. Index 0 (30k) là tùy chọn
 // rẻ nhất, không có "không gói".
@@ -31,7 +33,9 @@ export class OrderService {
     private trackingService: TrackingService,
     private pointService: PointService,
     private ghnService: GhnService,
-    private paymentService: PaymentService
+    private paymentService: PaymentService,
+    private charityService: CharityService,
+    private systemSetting: SystemSettingService,
   ) {}
 
   // --- HELPER: Lấy items, Validate tồn kho, Group theo Shop ---
@@ -536,6 +540,27 @@ export class OrderService {
          newBalance = wallet?.balance || 0;
       }
 
+      // D. Spec [0018]: trích 1% phí hoa hồng vào quỹ từ thiện. Idempotent qua
+      // Donation.orderId @unique, an toàn nếu user spam confirm.
+      try {
+        await this.charityService.processOrderDelivered(tx, {
+          orderId: updatedOrder.id,
+          orderTotal: Number(order.totalAmount),
+        });
+      } catch (e: any) {
+        // Không fail order vì lỗi charity — log và tiếp tục
+        this.logger.warn(`[Charity hook fail] order=${updatedOrder.id} err=${e?.message}`);
+      }
+
+      // E. Spec [0018]: thưởng người giới thiệu nếu đơn này là đơn ĐẦU của
+      // người được giới thiệu, giá trị ≥ REFERRAL_MIN_ORDER, và chưa từng được
+      // tính (referralRewardPaid=false).
+      try {
+        await this.processReferralReward(tx, userId, Number(order.totalAmount));
+      } catch (e: any) {
+        this.logger.warn(`[Referral hook fail] order=${updatedOrder.id} err=${e?.message}`);
+      }
+
       return {
         success: true,
         orderId: updatedOrder.id,
@@ -544,9 +569,48 @@ export class OrderService {
       };
 
     }, {
-      timeout: 10000, // Timeout 10s tránh deadlock
+      timeout: 15000, // Spec [0018]: charity + referral hook tăng workload, nâng timeout
       maxWait: 5000
     });
+  }
+
+  /**
+   * Thưởng người giới thiệu — gọi từ trong transaction confirmOrderReceived.
+   *
+   * Spec [0018]:
+   * - Trigger khi user có `referredBy` đặt đơn DELIVERED ≥ REFERRAL_MIN_ORDER (300k).
+   * - Chỉ trả 1 lần — flag `referralRewardPaid` lock.
+   * - IP+Location check: hoãn (cần GeoIP service, để sau).
+   */
+  private async processReferralReward(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    orderTotal: number,
+  ) {
+    const minOrder = await this.systemSetting.getNumber('REFERRAL_MIN_ORDER', 300000);
+    const rewardAmount = await this.systemSetting.getNumber('REFERRAL_REWARD_AMOUNT', 20000);
+    if (orderTotal < minOrder) return;
+
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { id: true, referredById: true, referralRewardPaid: true },
+    });
+    if (!user || !user.referredById || user.referralRewardPaid) return;
+
+    // Bump điểm referrer + flag user đã trả thưởng
+    await this.pointService.addPoints(
+      user.referredById,
+      rewardAmount,
+      PointType.EARN_AFFILIATE,
+      `REFERRAL_${userId}`,
+      `Thưởng giới thiệu user ${userId.slice(0, 8)}`,
+      tx,
+    );
+    await tx.user.update({
+      where: { id: userId },
+      data: { referralRewardPaid: true },
+    });
+    this.logger.log(`[Referral] +${rewardAmount}đ cho ${user.referredById} từ user ${userId} (đơn ${orderTotal}đ)`);
   }
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });

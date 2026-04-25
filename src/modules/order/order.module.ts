@@ -14,19 +14,21 @@ import { AdminOrderController } from './controllers/admin-order.controller';
 import { GhnModule } from '../ghn/ghn.module';
 import { PaymentModule } from '../payment/payment.module';
 import { ReviewService } from './review.service';
+import { CharityModule } from '../charity/charity.module';
 @Module({
   imports: [
     DatabaseModule,
-    CartModule, 
+    CartModule,
     TrackingModule,
     PromotionModule,
     PointModule,
     GhnModule,
     PaymentModule,
+    CharityModule, // Cho OrderService.confirmOrderReceived hook auto-trích quỹ (spec [0018])
     BullModule.registerQueue({
       name: 'order_queue',
     }),
-  ], 
+  ],
   controllers: [OrderController, AdminOrderController],
   providers: [
     OrderService,  

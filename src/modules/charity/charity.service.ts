@@ -1,10 +1,12 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CharityFundStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { SystemSettingService } from '../../common/services/system-setting.service';
 import { CreateFundDto, UpdateFundDto } from './dto/create-fund.dto';
 import { DonateDto } from './dto/donate.dto';
 
@@ -21,7 +23,12 @@ function slugify(s: string): string {
 
 @Injectable()
 export class CharityService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(CharityService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private systemSetting: SystemSettingService,
+  ) {}
 
   // --- Public: đọc quỹ ---
 
@@ -134,5 +141,86 @@ export class CharityService {
 
       return donation;
     });
+  }
+
+  // ===========================================================================
+  // AUTO-TRIGGER: trích 1% phí hoa hồng vào quỹ khi đơn DELIVERED
+  // Spec [0018]:
+  //   - Nguồn: phí hoa hồng sàn (commission), không phải doanh thu shop.
+  //   - Tỷ lệ trích = CHARITY_COMMISSION_RATE (mặc định 1%).
+  //   - Quỹ: campaign user chọn lúc checkout > quỹ primary.
+  //   - Trích NGAY khi DELIVERED. Nếu đơn refund/cancel sau, rollback.
+  //   - Idempotent qua `Donation.orderId @unique` — gọi 2 lần sẽ throw constraint.
+  // ===========================================================================
+  async processOrderDelivered(
+    tx: Prisma.TransactionClient,
+    params: {
+      orderId: string;
+      orderTotal: number;
+      campaignFundId?: string;
+    },
+  ) {
+    // 1. Read config từ SystemSetting
+    const commissionRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
+    const charityRate = await this.systemSetting.getNumber('CHARITY_COMMISSION_RATE', 0.01);
+
+    // 2. Tính số tiền trích
+    const commissionAmount = params.orderTotal * commissionRate;
+    const donationAmount = Math.floor(commissionAmount * (charityRate / commissionRate));
+    // Note: donation = orderTotal * charityRate trực tiếp cũng OK; viết qua commission
+    // để rõ "trích từ phí hoa hồng" — ý nghĩa kinh doanh.
+
+    if (donationAmount <= 0) return null;
+
+    // 3. Chọn quỹ: campaign nếu có, không thì primary
+    let fundId = params.campaignFundId;
+    if (!fundId) {
+      const primary = await tx.charityFund.findFirst({
+        where: { isPrimary: true, status: 'ACTIVE' },
+      });
+      if (!primary) {
+        this.logger.warn(`[Charity] Không có quỹ primary để nhận đóng góp đơn ${params.orderId}`);
+        return null;
+      }
+      fundId = primary.id;
+    }
+
+    // 4. Idempotent check (Donation.orderId @unique handle, nhưng skip sớm tránh constraint error)
+    const existing = await tx.donation.findUnique({ where: { orderId: params.orderId } });
+    if (existing) return existing;
+
+    // 5. Tạo donation + bump fund.currentAmount
+    const donation = await tx.donation.create({
+      data: {
+        fundId,
+        orderId: params.orderId,
+        amount: new Prisma.Decimal(donationAmount),
+        note: 'Đóng góp tự động từ đơn hàng',
+      },
+    });
+    await tx.charityFund.update({
+      where: { id: fundId },
+      data: { currentAmount: { increment: new Prisma.Decimal(donationAmount) } },
+    });
+
+    this.logger.log(`[Charity] Auto-trích ${donationAmount}đ từ đơn ${params.orderId} vào quỹ ${fundId}`);
+    return donation;
+  }
+
+  /**
+   * Rollback donation khi đơn bị cancel/refund sau khi đã trích.
+   */
+  async rollbackOrderDonation(tx: Prisma.TransactionClient, orderId: string) {
+    const donation = await tx.donation.findUnique({ where: { orderId } });
+    if (!donation) return null;
+
+    await tx.charityFund.update({
+      where: { id: donation.fundId },
+      data: { currentAmount: { decrement: donation.amount } },
+    });
+    await tx.donation.delete({ where: { id: donation.id } });
+
+    this.logger.log(`[Charity] Rollback donation ${donation.id} do đơn ${orderId} bị refund/cancel`);
+    return donation;
   }
 }
