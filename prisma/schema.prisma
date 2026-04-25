@@ -65,6 +65,18 @@ model User {
   password   String? // Dành cho local auth
   username      String?   @unique // Thêm trường Username
   isVerified Boolean @default(false)
+
+  // Spec [0018]: đổi password -> bump tokenVersion để invalidate JWT cũ
+  // (logout tất cả thiết bị khác). JWT issued trước có version cũ -> JwtStrategy
+  // reject. Default 0 cho user hiện có.
+  tokenVersion Int @default(0)
+
+  // Referral: ai đã giới thiệu user này (nullable). Khi user đặt đơn đầu ≥ 300k,
+  // BE bump điểm cho referrer. Self-relation tới User.id.
+  referredById String?
+  referredBy   User?   @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals    User[]  @relation("UserReferrals")
+  referralRewardPaid Boolean @default(false) // Đã trả thưởng chưa (1 lần duy nhất khi đơn đầu hợp lệ)
   name       String?
   phone      String?
   avatar     String?
@@ -430,6 +442,11 @@ model Product {
   slug        String  @unique
   description String? @db.Text
 
+  // Spec [0018]: mô tả ngắn structured 6 trường, hiện 6 dòng hoặc 3 dòng 2 cột
+  // dưới tên SP. JSON shape: { brand, features, benefits, recipient, occasion, note }.
+  // Field nullable nên SP cũ không break.
+  shortDesc Json?
+
   // Giá và Tồn kho
   price         Decimal  @db.Decimal(15, 2)
   originalPrice Decimal? @db.Decimal(15, 2) // Giá gốc (để hiện gạch ngang giảm giá)
@@ -662,7 +679,8 @@ model OrderItem {
 
 enum VoucherType {
   FIXED_AMOUNT // Giảm số tiền cố định (ví dụ: 50k)
-  PERCENTAGE // Giảm theo % (ví dụ: 10%)
+  PERCENTAGE   // Giảm theo % (ví dụ: 10%)
+  FREESHIP     // Spec [0018]: voucher freeship/giảm phí ship (loại riêng, áp dụng vào shipping fee không phải subtotal)
 }
 
 enum VoucherScope {
@@ -968,13 +986,48 @@ model CharityFund {
   // Cập nhật bằng transaction mỗi lần donation mới.
   currentAmount Decimal            @default(0) @db.Decimal(15, 2)
   status        CharityFundStatus  @default(ACTIVE)
+  // Spec [0018]: 1 quỹ chính (isPrimary=true) — nơi nhận trích ngầm 1% khi
+  // không có campaign active. Chỉ 1 quỹ trên toàn sàn isPrimary tại 1 thời điểm
+  // (admin enforce).
+  isPrimary     Boolean            @default(false)
   donations     Donation[]
+  campaigns     CharityCampaignFund[]
 
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
   @@index([status])
   @@index([slug])
+  @@index([isPrimary])
+}
+
+// Spec [0018]: nhiều quỹ chạy song song dưới dạng "campaign". Mỗi campaign có
+// thời gian active. Khi user checkout đơn hàng trong khoảng active, được CHỌN
+// quỹ campaign để đóng góp; không có campaign -> mặc định quỹ primary.
+model CharityCampaign {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?  @db.Text
+  banner      String?
+  startDate   DateTime
+  endDate     DateTime
+  isActive    Boolean  @default(true)
+  funds       CharityCampaignFund[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, startDate, endDate])
+}
+
+// Bảng nối M-N giữa Campaign và Fund (1 campaign có thể chứa nhiều fund,
+// 1 fund có thể tham gia nhiều campaign).
+model CharityCampaignFund {
+  campaignId String
+  fundId     String
+  campaign   CharityCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  fund       CharityFund     @relation(fields: [fundId], references: [id], onDelete: Cascade)
+  @@id([campaignId, fundId])
 }
 
 model Donation {

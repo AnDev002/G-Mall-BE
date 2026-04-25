@@ -31,6 +31,7 @@ import { BrandModule } from './modules/brand/brand.module';
 import { GhnModule } from './modules/ghn/ghn.module';
 import { AddressModule } from './modules/address/address.module';
 import { CharityModule } from './modules/charity/charity.module';
+import { SystemSettingModule } from './common/services/system-setting.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -113,6 +114,7 @@ import { CharityModule } from './modules/charity/charity.module';
     BrandModule,
     GhnModule,
     AddressModule,
+    SystemSettingModule,
     CharityModule,
   ],
   controllers: [AppController],
