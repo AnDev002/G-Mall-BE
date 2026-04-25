@@ -80,10 +80,13 @@ export class DashboardService {
       }
     });
 
+    // OrderStatus enum không có 'RETURNED' (chỉ PENDING/CONFIRMED/SHIPPING/
+    // DELIVERED/CANCELLED). Trước đây ép `as any` làm Prisma runtime fail 500
+    // khi seller load dashboard. Tạm dùng CANCELLED — nếu sau cần "đơn trả",
+    // thêm enum value và migration.
     const returnedOrders = await this.prisma.order.count({
-      where: { 
-        // Giả sử có trạng thái RETURNED hoặc CANCELLED
-        status: { in: ['RETURNED', 'CANCELLED'] as any }, 
+      where: {
+        status: 'CANCELLED',
         items: { some: { product: { is: { sellerId } } } }
       }
     });
