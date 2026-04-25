@@ -37,7 +37,8 @@ export class AuthService {
 
   // OTP reset password tách prefix khỏi OTP register để không ghi đè lẫn nhau
   // (nếu user đang dở register rồi lại forgot-password, 2 key khác nhau).
-  private static readonly PWD_RESET_TTL_SECONDS = 15 * 60;
+  // TTL 5 phút theo spec [0018]: link reset chỉ sống ngắn để giảm rủi ro.
+  private static readonly PWD_RESET_TTL_SECONDS = 5 * 60;
   private static readonly PWD_RESET_KEY_PREFIX = 'pwd_reset:';
 
   constructor(
@@ -432,7 +433,7 @@ export class AuthService {
           subject: 'Đặt lại mật khẩu GMall',
           html: `
             <p>Bạn (hoặc ai đó) vừa yêu cầu đặt lại mật khẩu cho tài khoản này.</p>
-            <p>Nhấn vào link sau để đặt lại mật khẩu (hết hạn sau 15 phút):</p>
+            <p>Nhấn vào link sau để đặt lại mật khẩu (hết hạn sau 5 phút):</p>
             <p><a href="${resetLink}">${resetLink}</a></p>
             <p>Hoặc nhập mã này vào form đặt lại mật khẩu: <b>${otp}</b></p>
             <p>Nếu không phải bạn, hãy bỏ qua email này.</p>

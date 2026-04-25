@@ -13,8 +13,12 @@ import { OrderStatus, PointType, Prisma, Order } from '@prisma/client';
 import { GhnService } from '../../modules/ghn/ghn.service';
 import { PaymentService } from '../payment/payment.service';
 
-const GIFT_WRAP_PRICES = [0, 20000, 50000]; 
-const CARD_PRICES = [0, 5000, 15000]; 
+// Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k. Index 0 (30k) là tùy chọn
+// rẻ nhất, không có "không gói".
+// Thiệp: 5k mặc định. Nếu khách muốn thiệp cao hơn → chuyển sang mục thiệp
+// riêng để chọn (sẽ thêm sau khi có catalog thiệp).
+const GIFT_WRAP_PRICES = [30000, 50000];
+const CARD_PRICES = [0, 5000, 15000];
 
 @Injectable()
 export class OrderService {
