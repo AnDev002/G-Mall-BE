@@ -720,4 +720,22 @@ export class OrderService {
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
     return order;
   }
+
+  // Admin xem chi tiết bất kỳ order nào (không filter userId).
+  // Khác `findOne()` ở chỗ không yêu cầu order thuộc user — phục vụ Admin
+  // dashboard #55 view order detail.
+  async findOneAsAdmin(id: string) {
+    if (!id || id === 'undefined') throw new NotFoundException('ID không hợp lệ');
+    const order = await this.prisma.order.findFirst({
+      where: { OR: [{ id }, { shippingOrderCode: id }] },
+      include: {
+        items: { include: { product: { select: { id: true, name: true, slug: true, images: true, price: true } } } },
+        voucher: true,
+        shop: { select: { id: true, name: true, slug: true } },
+        user: { select: { id: true, name: true, email: true, phone: true, avatar: true } },
+      },
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    return order;
+  }
 }

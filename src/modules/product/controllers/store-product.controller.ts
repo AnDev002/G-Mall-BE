@@ -1,10 +1,12 @@
-import { Controller, Get, Param, Query, Request, Headers, UseGuards, Post, ParseUUIDPipe, DefaultValuePipe, ParseIntPipe, Header } from '@nestjs/common';
+import { Controller, Get, Param, Query, Request, Headers, UseGuards, UseInterceptors, Post, ParseUUIDPipe, DefaultValuePipe, ParseIntPipe, Header } from '@nestjs/common';
 import { ProductReadService } from '../services/product-read.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { PrismaService } from 'src/database/prisma/prisma.service';
+// Wiki 0032: cache list/detail product (TTL 30s) — read-heavy, ít update so với traffic
+import { RedisCacheInterceptor, CacheKey, CacheTTL } from 'src/common/interceptors/redis-cache.interceptor';
 
-@Controller('store/products') 
+@Controller('store/products')
 export class StoreProductController {
   constructor(private readonly productReadService: ProductReadService, private readonly prisma: PrismaService) {}
 
@@ -14,6 +16,9 @@ export class StoreProductController {
   @Get()
   @Public()
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(RedisCacheInterceptor)
+  @CacheKey('store:products:list')
+  @CacheTTL(30)
   async getProducts(
     @Request() req,
     @Query('page') page: number,
@@ -53,6 +58,9 @@ export class StoreProductController {
 
   @Get(':id')
   @Public()
+  @UseInterceptors(RedisCacheInterceptor)
+  @CacheKey('store:product:detail')
+  @CacheTTL(30)
   getProductDetail(@Param('id') id: string) {
     console.log("Backend received ID/Slug:", id); // <--- Thêm dòng này
     return this.productReadService.findOnePublic(id);

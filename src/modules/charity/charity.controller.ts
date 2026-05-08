@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { CharityService } from './charity.service';
 import { Public } from 'src/common/decorators/public.decorator';
@@ -17,19 +18,28 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { User } from 'src/common/decorators/user.decorator';
 import { CreateFundDto, UpdateFundDto } from './dto/create-fund.dto';
 import { DonateDto } from './dto/donate.dto';
+// Wiki 0032: Redis cache interceptor cho public list endpoint (TTL 30s)
+import { RedisCacheInterceptor, CacheKey, CacheTTL } from 'src/common/interceptors/redis-cache.interceptor';
 
 @Controller('charity')
 export class CharityController {
   constructor(private readonly service: CharityService) {}
 
   // Public: danh sách quỹ đang hoạt động + chi tiết.
+  // Wiki 0032: cache 30s — funds ít update, traffic cao, win throughput 5-10x
   @Public()
+  @UseInterceptors(RedisCacheInterceptor)
+  @CacheKey('charity:funds')
+  @CacheTTL(30)
   @Get('funds')
   async listFunds(@Query('includeClosed') includeClosed?: string) {
     return this.service.listFunds(includeClosed === 'true');
   }
 
   @Public()
+  @UseInterceptors(RedisCacheInterceptor)
+  @CacheKey('charity:fund:slug')
+  @CacheTTL(30)
   @Get('funds/:slug')
   async getFund(@Param('slug') slug: string) {
     return this.service.getFundBySlug(slug);

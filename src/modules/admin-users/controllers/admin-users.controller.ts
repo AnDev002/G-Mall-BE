@@ -27,6 +27,12 @@ export class AdminUsersController {
     });
   }
 
+  // #57 — Admin xem chi tiết người bán (shop).
+  @Get('sellers/:id')
+  async getSellerDetail(@Param('id') id: string) {
+    return this.adminUsersService.getSellerDetail(id);
+  }
+
   @Patch(':id/ban-status')
   async toggleBan(
     @Request() req, 

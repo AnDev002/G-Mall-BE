@@ -1,9 +1,12 @@
-import { IsNotEmpty, IsString, IsEnum, IsEmail } from 'class-validator';
+import { IsNotEmpty, IsString, IsEnum, IsEmail, IsUUID } from 'class-validator';
 
 export class FriendRequestDto {
-  @IsString()
+  // Fix B-NEW-10/11 (wiki 0027): @IsUUID strict format check để tránh số hoặc
+  // string ngắn lọt qua tới Prisma -> 500 crash. @IsString cũ cho phép cả number
+  // (vì global ValidationPipe có enableImplicitConversion).
+  @IsUUID('all', { message: 'receiverId phải là UUID hợp lệ' })
   @IsNotEmpty()
-  receiverId: string; // ID người muốn kết bạn
+  receiverId: string;
 }
 export class InviteByEmailDto {
   @IsEmail({}, { message: 'Email không hợp lệ' })
@@ -15,9 +18,9 @@ export class InviteByEmailDto {
   message: string;
 }
 export class HandleRequestDto {
-  @IsString()
+  @IsUUID('all', { message: 'requestId phải là UUID hợp lệ' })
   @IsNotEmpty()
-  requestId: string; // ID của bản ghi Friendship
+  requestId: string;
 
   @IsEnum(['ACCEPT', 'REJECT'])
   action: 'ACCEPT' | 'REJECT';

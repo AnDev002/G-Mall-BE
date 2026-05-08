@@ -9,6 +9,7 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { SystemSettingService } from '../../common/services/system-setting.service';
 import { CreateFundDto, UpdateFundDto } from './dto/create-fund.dto';
 import { DonateDto } from './dto/donate.dto';
+import { RedisService } from '../../database/redis/redis.service';
 
 function slugify(s: string): string {
   return s
@@ -28,7 +29,19 @@ export class CharityService {
   constructor(
     private prisma: PrismaService,
     private systemSetting: SystemSettingService,
+    private redis: RedisService,
   ) {}
+
+  // Wiki 0039: gọi sau mọi mutation fund để invalidate cache GET /charity/funds
+  // (đặt @CacheTTL(30)). Trước fix: admin tạo fund mới → user thấy list cũ 30s.
+  private async invalidateFundsCache() {
+    try {
+      await this.redis.delByPattern('charity:funds:*');
+      await this.redis.delByPattern('charity:fund:slug:*');
+    } catch (e) {
+      this.logger.warn(`Failed to invalidate funds cache: ${(e as Error).message}`);
+    }
+  }
 
   // --- Public: đọc quỹ ---
 
@@ -76,7 +89,7 @@ export class CharityService {
       }
     }
 
-    return this.prisma.charityFund.create({
+    const created = await this.prisma.charityFund.create({
       data: {
         name: dto.name,
         slug,
@@ -85,13 +98,15 @@ export class CharityService {
         goalAmount: dto.goalAmount ?? 0,
       },
     });
+    await this.invalidateFundsCache();
+    return created;
   }
 
   async updateFund(id: string, dto: UpdateFundDto) {
     const existing = await this.prisma.charityFund.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Không tìm thấy quỹ');
 
-    return this.prisma.charityFund.update({
+    const updated = await this.prisma.charityFund.update({
       where: { id },
       data: {
         name: dto.name ?? existing.name,
@@ -101,6 +116,8 @@ export class CharityService {
         status: dto.status ?? existing.status,
       },
     });
+    await this.invalidateFundsCache();
+    return updated;
   }
 
   // --- User: donate ---
@@ -121,8 +138,8 @@ export class CharityService {
       throw new BadRequestException('Quỹ không nhận donation tại thời điểm này');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const donation = await tx.donation.create({
+    const donation = await this.prisma.$transaction(async (tx) => {
+      const d = await tx.donation.create({
         data: {
           fundId: dto.fundId,
           userId,
@@ -139,8 +156,11 @@ export class CharityService {
         },
       });
 
-      return donation;
+      return d;
     });
+    // currentAmount đã đổi → invalidate cache để list trả số mới ngay
+    await this.invalidateFundsCache();
+    return donation;
   }
 
   // ===========================================================================

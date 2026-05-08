@@ -5,9 +5,10 @@ import {
   CharityController,
 } from './charity.controller';
 import { AuthModule } from '../auth/auth.module';
+import { RedisModule } from '../../database/redis/redis.module';
 
 @Module({
-  imports: [AuthModule], // JwtAuthGuard + RolesGuard dùng từ AuthModule
+  imports: [AuthModule, RedisModule], // JwtAuthGuard + RolesGuard dùng từ AuthModule; RedisService dùng cho cache invalidation
   controllers: [CharityController, AdminCharityController],
   providers: [CharityService],
   exports: [CharityService],

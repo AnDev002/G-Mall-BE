@@ -124,6 +124,78 @@ export class AdminUsersService {
     };
   }
 
+  // #57 — chi tiết shop cho admin. Bao gồm: thông tin shop, owner,
+  // 5 sản phẩm gần nhất, tổng GMV, tổng đơn hàng, rating.
+  async getSellerDetail(shopId: string) {
+    const shop = await this.prisma.shop.findUnique({
+      where: { id: shopId },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            phone: true,
+            avatar: true,
+            createdAt: true,
+            walletBalance: true,
+            isBanned: true,
+            isVerified: true,
+          },
+        },
+        _count: { select: { products: true } },
+        products: {
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            price: true,
+            images: true,
+            status: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!shop) throw new NotFoundException('Cửa hàng không tồn tại');
+
+    // GMV: tổng doanh thu các order DELIVERED của shop
+    const revenueAgg = await this.prisma.orderItem.findMany({
+      where: { product: { shopId }, order: { status: 'DELIVERED' } },
+      select: { price: true, quantity: true },
+    });
+    const totalRevenue = revenueAgg.reduce(
+      (sum, it) => sum + Number(it.price) * (it.quantity || 1),
+      0,
+    );
+
+    const totalOrders = await this.prisma.order.count({
+      where: { status: 'DELIVERED', items: { some: { product: { shopId } } } },
+    });
+
+    return {
+      id: shop.id,
+      name: shop.name,
+      slug: shop.slug,
+      status: shop.status,
+      avatar: shop.avatar,
+      coverImage: shop.coverImage,
+      description: shop.description,
+      pickupAddress: shop.pickupAddress,
+      rating: shop.rating || 0,
+      createdAt: shop.createdAt,
+      owner: shop.owner,
+      productCount: shop._count.products,
+      recentProducts: shop.products,
+      totalRevenue,
+      totalOrders,
+      isBanned: shop.status === 'BANNED' || !!shop.owner.isBanned,
+    };
+  }
+
   // --- [UPDATE] Hàm Khóa/Mở khóa Shop (Thao tác trên Shop Model) ---
   async toggleBanShop(adminId: string, shopId: string, isBanned: boolean, reason?: string) {
     const shop = await this.prisma.shop.findUnique({ where: { id: shopId } });
@@ -241,7 +313,7 @@ export class AdminUsersService {
       try {
           await this.mailerService.sendMail({
               to: shop.owner.email,
-              subject: 'Chúc mừng! Cửa hàng của bạn đã được duyệt trên LoveGifts',
+              subject: 'Chúc mừng! Cửa hàng của bạn đã được duyệt trên GMall',
               html: `
                   <h3>Xin chào ${shop.owner.name},</h3>
                   <p>Cửa hàng <b>${shop.name}</b> của bạn đã được phê duyệt.</p>
