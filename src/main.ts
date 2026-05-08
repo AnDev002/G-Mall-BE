@@ -1,4 +1,4 @@
-// Backend-Lovegifts/main.ts
+// Backend-GMall/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { INestApplicationContext, ValidationPipe } from '@nestjs/common';
@@ -8,6 +8,7 @@ import { ServerOptions } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import cookieParser from 'cookie-parser';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 
 // Tạo Class Adapter Redis tùy chỉnh
 export class RedisIoAdapter extends IoAdapter {
@@ -92,6 +93,12 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, transformOptions: {
       enableImplicitConversion: true // 👈 Dòng quan trọng: Tự động chuyển đổi kiểu dữ liệu
     } }));
+
+  // 2b. Global Prisma exception filter — map Prisma errors → HTTP 4xx
+  // (xem docs/wiki/decisions/0029-fix-13-bugs-from-test-suite.md). Trước đây
+  // Prisma throw từ service không catch → leak 500 + stack. Filter này map
+  // unique/FK/not-found → 409/400/404 đúng semantics.
+  app.useGlobalFilters(new PrismaExceptionFilter());
 
   // 3. Cấu hình Redis Adapter cho Socket.io (Cluster Support)
   const redisIoAdapter = new RedisIoAdapter(app);

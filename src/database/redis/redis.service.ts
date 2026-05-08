@@ -26,6 +26,15 @@ export class RedisService {
     return this.client.del(key);
   }
 
+  // Wiki 0039: invalidate cache theo prefix khi mutation. Dùng KEYS — chấp nhận
+  // O(N) vì pattern hẹp ('charity:funds:*' cỡ <100 key) và mutation ít.
+  // Production lớn nên đổi sang SCAN + cursor.
+  async delByPattern(pattern: string): Promise<number> {
+    const keys = await this.client.keys(pattern);
+    if (!keys.length) return 0;
+    return this.client.del(...keys);
+  }
+
   async setNX(key: string, value: string, ttl: number): Promise<boolean> {
     // 'EX': Set thời gian hết hạn (giây)
     // 'NX': Chỉ set nếu key chưa tồn tại
