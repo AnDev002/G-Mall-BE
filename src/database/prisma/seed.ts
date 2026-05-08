@@ -172,7 +172,7 @@ const FOOTER_LINKS = {
   about: {
     title: "Về chúng tôi",
     links: [
-      { label: "Giới thiệu LoveGifts", href: "/about" },
+      { label: "Giới thiệu GMall", href: "/about" },
       { label: "Tuyển dụng", href: "/careers" },
     ],
   },

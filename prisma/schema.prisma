@@ -31,22 +31,22 @@ enum OrderStatus {
 // --------------------------------------
 
 enum FriendshipStatus {
-  PENDING   // Đang chờ chấp nhận
-  ACCEPTED  // Đã là bạn bè
-  BLOCKED   // Đã chặn
+  PENDING // Đang chờ chấp nhận
+  ACCEPTED // Đã là bạn bè
+  BLOCKED // Đã chặn
 }
 
 model Friendship {
-  id          String           @id @default(uuid())
-  senderId    String
-  receiverId  String
-  status      FriendshipStatus @default(PENDING)
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id         String           @id @default(uuid())
+  senderId   String
+  receiverId String
+  status     FriendshipStatus @default(PENDING)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
 
   // Quan hệ tới User
-  sender     User   @relation("FriendshipSender", fields: [senderId], references: [id], onDelete: Cascade)
-  receiver   User   @relation("FriendshipReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  sender   User @relation("FriendshipSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("FriendshipReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
 
   @@unique([senderId, receiverId])
 }
@@ -61,9 +61,9 @@ enum ShopStatus {
 
 model User {
   id         String  @id @default(uuid())
-  email         String?   @unique // Đổi thành Optional (có thể null nếu dùng username)
+  email      String? @unique // Đổi thành Optional (có thể null nếu dùng username)
   password   String? // Dành cho local auth
-  username      String?   @unique // Thêm trường Username
+  username   String? @unique // Thêm trường Username
   isVerified Boolean @default(false)
 
   // Spec [0018]: đổi password -> bump tokenVersion để invalidate JWT cũ
@@ -73,38 +73,38 @@ model User {
 
   // Referral: ai đã giới thiệu user này (nullable). Khi user đặt đơn đầu ≥ 300k,
   // BE bump điểm cho referrer. Self-relation tới User.id.
-  referredById String?
-  referredBy   User?   @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
-  referrals    User[]  @relation("UserReferrals")
-  referralRewardPaid Boolean @default(false) // Đã trả thưởng chưa (1 lần duy nhất khi đơn đầu hợp lệ)
-  name       String?
-  phone      String?
-  avatar     String?
-  gender     String?   // 'male' | 'female' | 'other' — free-form string, không enum để dễ mở rộng
-  dob        DateTime? // Ngày sinh (date-only đủ nhưng Prisma MySQL lưu DateTime)
-  role       Role    @default(BUYER)
-  sentFriendships     Friendship[] @relation("FriendshipSender")
-  receivedFriendships Friendship[] @relation("FriendshipReceiver")
-  isBanned    Boolean   @default(false) 
-  banReason   String?   // Lý do bị khóa
-  walletBalance Decimal @default(0) @db.Decimal(15, 2)
-  payoutRequests    PayoutRequest[]
-  walletTransactions WalletTransaction[]
-  blogPosts BlogPost[]
-  shopId         String?
-  shop           Shop?        
-  reviews     ProductReview[]
-  shopReviews ShopReview[]
-  createdVouchers Voucher[]     @relation("SellerVouchers") // Voucher do Seller này tạo
-  savedVouchers   UserVoucher[]
+  referredById        String?
+  referredBy          User?               @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals           User[]              @relation("UserReferrals")
+  referralRewardPaid  Boolean             @default(false) // Đã trả thưởng chưa (1 lần duy nhất khi đơn đầu hợp lệ)
+  name                String?
+  phone               String?
+  avatar              String?
+  gender              String? // 'male' | 'female' | 'other' — free-form string, không enum để dễ mở rộng
+  dob                 DateTime? // Ngày sinh (date-only đủ nhưng Prisma MySQL lưu DateTime)
+  role                Role                @default(BUYER)
+  sentFriendships     Friendship[]        @relation("FriendshipSender")
+  receivedFriendships Friendship[]        @relation("FriendshipReceiver")
+  isBanned            Boolean             @default(false)
+  banReason           String? // Lý do bị khóa
+  walletBalance       Decimal             @default(0) @db.Decimal(15, 2)
+  payoutRequests      PayoutRequest[]
+  walletTransactions  WalletTransaction[]
+  blogPosts           BlogPost[]
+  shopId              String?
+  shop                Shop?
+  reviews             ProductReview[]
+  shopReviews         ShopReview[]
+  createdVouchers     Voucher[]           @relation("SellerVouchers") // Voucher do Seller này tạo
+  savedVouchers       UserVoucher[]
 
-  points      Int     @default(0) // Số dư hiện tại (snapshot để query nhanh)
+  points            Int                @default(0) // Số dư hiện tại (snapshot để query nhanh)
   pointTransactions PointTransaction[] // Quan hệ 1-n
-  lastCheckIn    DateTime? // Thời gian lần cuối điểm danh
-  checkInStreak  Int       @default(0) // Chuỗi ngày điểm danh liên tiếp
-  pointWallet PointWallet?
-  pointHistory PointHistory[]
-  dailyCheckIn DailyCheckIn?
+  lastCheckIn       DateTime? // Thời gian lần cuối điểm danh
+  checkInStreak     Int                @default(0) // Chuỗi ngày điểm danh liên tiếp
+  pointWallet       PointWallet?
+  pointHistory      PointHistory[]
+  dailyCheckIn      DailyCheckIn?
 
   // Quan hệ
   cart      Cart?
@@ -124,100 +124,102 @@ model User {
   coverImage    String? // Ảnh bìa shop
 
   // Charity / Donation (xem model CharityFund, Donation ở cuối file)
-  donations     Donation[]
+  donations Donation[]
 
+  // #65 — khiếu nại do user/seller gửi (xem model Complaint cuối file).
+  complaints Complaint[]
 
   @@index([email])
   @@index([role])
   @@index([createdAt])
-
 }
 
 model SystemSetting {
   key         String   @id // Ví dụ: "POINT_CONVERSION_RATE"
-  value       String   // Ví dụ: "10000"
+  value       String // Ví dụ: "10000"
   description String?
   updatedAt   DateTime @updatedAt
 }
 
 model ProductReview {
-  id        String   @id @default(uuid())
-  content   String?  @db.Text
-  rating    Int      @default(5) // 1-5 sao
-  images    Json?    // Mảng URL ảnh đánh giá
-  
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  
+  id      String  @id @default(uuid())
+  content String? @db.Text
+  rating  Int     @default(5) // 1-5 sao
+  images  Json? // Mảng URL ảnh đánh giá
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
   productId String
-  product   Product  @relation(fields: [productId], references: [id])
-  
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
+
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([productId])
   @@index([rating])
 }
 
 model ShopReview {
-  id        String   @id @default(uuid())
-  content   String?  @db.Text
-  rating    Int      @default(5)
-  
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  
-  shopId    String
-  shop      Shop     @relation(fields: [shopId], references: [id])
-  
-  orderId   String   @unique // <--- QUAN TRỌNG: Thêm @unique để sửa lỗi
-  order     Order    @relation(fields: [orderId], references: [id])
+  id      String  @id @default(uuid())
+  content String? @db.Text
+  rating  Int     @default(5)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id])
+
+  orderId String @unique // <--- QUAN TRỌNG: Thêm @unique để sửa lỗi
+  order   Order  @relation(fields: [orderId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([shopId])
 }
+
 model Shop {
-  id            String     @id @default(uuid())
-  name          String     // Tên hiển thị của Shop
-  slug          String     @unique // Đường dẫn định danh (vd: shopee.vn/ten-shop)
-  description   String?    @db.Text
-  avatar        String?    // Logo Shop
-  coverImage    String?    // Ảnh bìa Shop
-  pickupAddress String?    // Địa chỉ kho lấy hàng
+  id            String       @id @default(uuid())
+  name          String // Tên hiển thị của Shop
+  slug          String       @unique // Đường dẫn định danh (vd: shopee.vn/ten-shop)
+  description   String?      @db.Text
+  avatar        String? // Logo Shop
+  coverImage    String? // Ảnh bìa Shop
+  pickupAddress String? // Địa chỉ kho lấy hàng
   provinceId    Int?
   districtId    Int?
   wardCode      String?
-  lat           Float?    @default(0)
-  lng           Float?    @default(0)
-  categoryId    String?      // ID Ngành hàng chủ lực (để Optional vì shop cũ có thể chưa có)
+  lat           Float?       @default(0)
+  lng           Float?       @default(0)
+  categoryId    String? // ID Ngành hàng chủ lực (để Optional vì shop cũ có thể chưa có)
   category      Category?    @relation("ShopMainCategory", fields: [categoryId], references: [id])
-  status        ShopStatus @default(PENDING)
-  orders      Order[]
+  status        ShopStatus   @default(PENDING)
+  orders        Order[]
   banReason     String?
-  reviews ShopReview[]
-  reviewCount Int @default(0)
+  reviews       ShopReview[]
+  reviewCount   Int          @default(0)
 
   // --- Cấu hình giao diện (Shop Decoration) ---
   // Lưu JSON cấu trúc trang trí (Banner slider, Featured Products, Video...)
-  decoration    Json?      @default("{}") 
+  decoration     Json?          @default("{}")
   shopCategories ShopCategory[]
   pendingDetails Json?
-  
+
   // --- Đánh giá ---
-  rating        Float      @default(0)
-  totalSales    Int        @default(0) // Tổng sản phẩm đã bán
+  rating     Float @default(0)
+  totalSales Int   @default(0) // Tổng sản phẩm đã bán
 
   // Quan hệ Owner
-  ownerId       String     @unique // Hiện tại 1 User - 1 Shop
-  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  address      String?    // Nơi lưu pickupAddress
-  licenseImage String?    // Nơi lưu ảnh giấy phép
-  taxCode       String?    // Mã số thuế
+  ownerId      String  @unique // Hiện tại 1 User - 1 Shop
+  owner        User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  address      String? // Nơi lưu pickupAddress
+  licenseImage String? // Nơi lưu ảnh giấy phép
+  taxCode      String? // Mã số thuế
 
   businessLicenseFront String? // ĐKKD mặt trước
   businessLicenseBack  String? // ĐKKD mặt sau
@@ -226,11 +228,11 @@ model Shop {
   distributorCert      String? // Chứng nhận đại lý/phân phối
 
   // Quan hệ tài nguyên
-  products      Product[]
-  vouchers      Voucher[]  @relation("ShopVouchers")
+  products Product[]
+  vouchers Voucher[] @relation("ShopVouchers")
 
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([name])
   @@index([status])
@@ -243,21 +245,21 @@ model PointWallet {
   userId    String   @unique
   balance   Int      @default(0) // Số dư hiện tại
   updatedAt DateTime @updatedAt
-  
-  user      User     @relation(fields: [userId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 // Lịch sử biến động (Ledger)
 model PointHistory {
   id          String   @id @default(uuid())
   userId      String
-  amount      Int      // Số dương là nhận, âm là tiêu
-  type        String   // EARN, SPEND
-  source      String   // CHECKIN, GACHA, ORDER, ADMIN_ADJUST
+  amount      Int // Số dương là nhận, âm là tiêu
+  type        String // EARN, SPEND
+  source      String // CHECKIN, GACHA, ORDER, ADMIN_ADJUST
   description String?
   createdAt   DateTime @default(now())
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 }
 
 // Trạng thái điểm danh
@@ -266,34 +268,34 @@ model DailyCheckIn {
   userId          String   @unique
   lastCheckInDate DateTime // Ngày điểm danh gần nhất
   currentStreak   Int      @default(0) // Chuỗi hiện tại
-  
-  user            User     @relation(fields: [userId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
 }
 
 enum PointType {
   EARN_ORDER
-  EARN_DAILY      // <--- Đã có (Dùng cho điểm danh)
+  EARN_DAILY // <--- Đã có (Dùng cho điểm danh)
   EARN_GAME
   EARN_AFFILIATE
   SPEND_ORDER
   SPEND_GAME
   REFUND
-  EARN_TASK       // Nhận từ làm nhiệm vụ
-  TRANSFER_SENT   // Chuyển xu đi
+  EARN_TASK // Nhận từ làm nhiệm vụ
+  TRANSFER_SENT // Chuyển xu đi
   TRANSFER_RECEIVED // Nhận xu từ người khác
 }
 
 model PointTransaction {
-  id            String    @id @default(uuid())
-  userId        String
-  user          User      @relation(fields: [userId], references: [id])
-  
-  amount        Int       // Số dương (+) hoặc âm (-)
-  type          PointType
-  balanceAfter  Int       // Số dư sau khi thực hiện (Snapshot)
-  referenceId   String?   // ID tham chiếu (ví dụ: ngày điểm danh "DAILY_2024-01-01")
-  description   String?
-  createdAt     DateTime  @default(now())
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  amount       Int // Số dương (+) hoặc âm (-)
+  type         PointType
+  balanceAfter Int // Số dư sau khi thực hiện (Snapshot)
+  referenceId  String? // ID tham chiếu (ví dụ: ngày điểm danh "DAILY_2024-01-01")
+  description  String?
+  createdAt    DateTime  @default(now())
 
   @@index([userId])
   @@index([referenceId])
@@ -333,13 +335,13 @@ enum MessageType {
 }
 
 model Address {
-  id         String  @id @default(uuid())
-  userId     String
-  user       User    @relation(fields: [userId], references: [id])
-  
-  name       String? // Tên người nhận
-  phone      String? // SĐT người nhận
-  
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  name  String? // Tên người nhận
+  phone String? // SĐT người nhận
+
   // Địa chỉ chi tiết
   specificAddress String? // Số nhà, tên đường (VD: 123 Nguyễn Trãi)
   fullAddress     String? // Địa chỉ hiển thị đầy đủ (VD: 123 Nguyễn Trãi, Thanh Xuân, Hà Nội)
@@ -348,9 +350,9 @@ model Address {
   provinceId Int?
   districtId Int?
   wardCode   String?
-  
-  isDefault  Boolean @default(false)
-  
+
+  isDefault Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -358,20 +360,20 @@ model Address {
 // --- CORE: DANH MỤC & SẢN PHẨM ---
 
 model Category {
-  id    String  @id @default(uuid())
-  name  String
-  slug  String  @unique
-  image String? // Ảnh thumbnail của danh mục
-  shops       Shop[]    @relation("ShopMainCategory")
+  id           String        @id @default(uuid())
+  name         String
+  slug         String        @unique
+  image        String? // Ảnh thumbnail của danh mục
+  shops        Shop[]        @relation("ShopMainCategory")
   // Quan hệ đệ quy (Danh mục cha - con)
   // Ví dụ: Thời trang (Parent) -> Áo (Child) -> Áo phông (Child)
-  parentId String?
-  parent   Category?  @relation("CategoryParent", fields: [parentId], references: [id])
-  children Category[] @relation("CategoryParent")
-  vouchers Voucher[]
+  parentId     String?
+  parent       Category?     @relation("CategoryParent", fields: [parentId], references: [id])
+  children     Category[]    @relation("CategoryParent")
+  vouchers     Voucher[]
   // Sản phẩm thuộc danh mục này
-  products Product[]
-  order     Int      @default(0)
+  products     Product[]
+  order        Int           @default(0)
   homeSections HomeSection[]
 
   // Cấu hình bộ lọc cho danh mục này
@@ -382,19 +384,19 @@ model Category {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([parentId]) 
-  @@index([name])     
+  @@index([parentId])
+  @@index([name])
 }
 
 model ShopCategory {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   name      String
-  isActive  Boolean  @default(true)
+  isActive  Boolean   @default(true)
   shopId    String
   shop      Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   products  Product[] // Một danh mục shop có nhiều sản phẩm
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([shopId])
 }
@@ -452,21 +454,21 @@ model Product {
   originalPrice Decimal? @db.Decimal(15, 2) // Giá gốc (để hiện gạch ngang giảm giá)
   stock         Int      @default(0)
 
-  reviews ProductReview[]
-  reviewCount Int @default(0)
-  systemTags  Json @default("[]")
+  reviews      ProductReview[]
+  reviewCount  Int             @default(0)
+  systemTags   Json            @default("[]")
   // Hình ảnh (Lưu mảng JSON URL ảnh)
-  images Json
-  status ProductStatus @default(PENDING) // Mặc định tạo xong là chờ duyệt ngay
-  blogPosts BlogPost[]
+  images       Json
+  status       ProductStatus   @default(PENDING) // Mặc định tạo xong là chờ duyệt ngay
+  blogPosts    BlogPost[]
   // (Optional) Lý do từ chối nếu Admin reject
-  rejectReason String? @db.Text
+  rejectReason String?         @db.Text
   // --- TÍNH NĂNG DYNAMIC FILTER (QUAN TRỌNG) ---
   // Lưu các thuộc tính động. 
   attributes   Json?
-  tags String? @db.Text
-  brandId     Int?
-  brandRel    Brand?   @relation(fields: [brandId], references: [id])
+  tags         String?         @db.Text
+  brandId      Int?
+  brandRel     Brand?          @relation(fields: [brandId], references: [id])
 
   vouchers Voucher[]
 
@@ -475,8 +477,8 @@ model Product {
   crossSells  ProductCrossSell[] @relation("MainProduct")
   crossSoldIn ProductCrossSell[] @relation("RelatedProduct")
 
-  shopCategoryId  String?
-  shopCategory    ShopCategory? @relation(fields: [shopCategoryId], references: [id])
+  shopCategoryId String?
+  shopCategory   ShopCategory? @relation(fields: [shopCategoryId], references: [id])
 
   // 1 Product có nhiều nhóm phân loại (VD: Nhóm "Màu sắc", Nhóm "Size")
   options ProductOption[]
@@ -488,9 +490,9 @@ model Product {
   salesCount Int   @default(0)
   rating     Float @default(0)
 
-  shopId        String?
-  shop   Shop?   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  weight Int @default(200)
+  shopId   String?
+  shop     Shop?   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  weight   Int     @default(200)
   // Quan hệ
   sellerId String?
   seller   User?   @relation(fields: [sellerId], references: [id])
@@ -501,7 +503,7 @@ model Product {
   cartItems  CartItem[]
   orderItems OrderItem[]
 
-  discountType      DiscountType? 
+  discountType      DiscountType?
   discountValue     Decimal?      @default(0) // Số % hoặc Số tiền
   discountStartDate DateTime?
   discountEndDate   DateTime?
@@ -521,17 +523,17 @@ model Product {
 }
 
 model Brand {
-  id          Int      @id @default(autoincrement())
+  id          Int     @id @default(autoincrement())
   name        String
-  slug        String   @unique
+  slug        String  @unique
   logoUrl     String?
-  description String?  @db.Text
-  status      String   @default("active") // 'active' | 'inactive'
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  description String? @db.Text
+  status      String  @default("active") // 'active' | 'inactive'
 
-  products    Product[] // Relation to products
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[] // Relation to products
 }
 
 model ProductCrossSell {
@@ -552,7 +554,7 @@ model ProductOption {
   position  Int // Thứ tự hiển thị (0, 1)
 
   values  ProductOptionValue[]
-  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
 }
 
 model ProductOptionValue {
@@ -567,20 +569,20 @@ model ProductOptionValue {
 }
 
 model ProductVariant {
-  id        String  @id @default(uuid())
-  productId String
-  price     Decimal
-  originalPrice Decimal? @db.Decimal(15, 2) 
-  discountValue Decimal? @default(0)        
-  stock     Int
-  sku       String? // Mã SKU riêng cho biến thể
-  image     String? // Ảnh riêng cho biến thể (VD: Ảnh áo màu đỏ)
+  id             String             @id @default(uuid())
+  productId      String
+  price          Decimal
+  originalPrice  Decimal?           @db.Decimal(15, 2)
+  discountValue  Decimal?           @default(0)
+  stock          Int
+  sku            String? // Mã SKU riêng cho biến thể
+  image          String? // Ảnh riêng cho biến thể (VD: Ảnh áo màu đỏ)
   flashSaleItems FlashSaleProduct[]
   // Lưu index kết hợp dưới dạng JSON hoặc String để map nhanh
   // VD: [0, 1] nghĩa là Option 1 (index 0) + Option 2 (index 1)
-  tierIndex String // Format: "0,0", "0,1" (Map với array values của FE gửi lên)
+  tierIndex      String // Format: "0,0", "0,1" (Map với array values của FE gửi lên)
 
-  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 }
 
 // --- SHOPPING CART ---
@@ -635,19 +637,19 @@ model Order {
   totalAmount Decimal
   shippingFee Decimal     @default(0)
 
-  voucherId String? // Có thể null nếu không dùng voucher
-  voucher   Voucher? @relation(fields: [voucherId], references: [id], onDelete: SetNull)
+  voucherId         String? // Có thể null nếu không dùng voucher
+  voucher           Voucher?        @relation(fields: [voucherId], references: [id], onDelete: SetNull)
   shippingOrderCode String? // Mã đơn GHN (ví dụ: L8CC23)
-  shippingProvider  String? @default("GHN")
-  productReviews ProductReview[]
-  shopReview     ShopReview?
-  isReviewed     Boolean @default(false)
-  shopId        String?      
-  shop          Shop?   @relation(fields: [shopId], references: [id])
+  shippingProvider  String?         @default("GHN")
+  productReviews    ProductReview[]
+  shopReview        ShopReview?
+  isReviewed        Boolean         @default(false)
+  shopId            String?
+  shop              Shop?           @relation(fields: [shopId], references: [id])
 
-  districtId        Int?    // ID Quận/Huyện (GHN)
-  wardCode          String? // Mã Phường/Xã (GHN)
-  provinceId        Int?    // ID Tỉnh/Thành
+  districtId Int? // ID Quận/Huyện (GHN)
+  wardCode   String? // Mã Phường/Xã (GHN)
+  provinceId Int? // ID Tỉnh/Thành
 
   // Thông tin người nhận (cho Gift)
   recipientName    String?
@@ -665,10 +667,10 @@ model Order {
 }
 
 model OrderItem {
-  id        String  @id @default(uuid())
+  id        String   @id @default(uuid())
   orderId   String
-  order     Order   @relation(fields: [orderId], references: [id])
-  productId String?  // 1. Đổi thành Optional (Thêm dấu ?)
+  order     Order    @relation(fields: [orderId], references: [id])
+  productId String? // 1. Đổi thành Optional (Thêm dấu ?)
   product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
   quantity Int
@@ -679,8 +681,8 @@ model OrderItem {
 
 enum VoucherType {
   FIXED_AMOUNT // Giảm số tiền cố định (ví dụ: 50k)
-  PERCENTAGE   // Giảm theo % (ví dụ: 10%)
-  FREESHIP     // Spec [0018]: voucher freeship/giảm phí ship (loại riêng, áp dụng vào shipping fee không phải subtotal)
+  PERCENTAGE // Giảm theo % (ví dụ: 10%)
+  FREESHIP // Spec [0018]: voucher freeship/giảm phí ship (loại riêng, áp dụng vào shipping fee không phải subtotal)
 }
 
 enum VoucherScope {
@@ -719,8 +721,8 @@ model Voucher {
   endDate   DateTime
   isActive  Boolean  @default(true)
 
-  shopId         String?
-  shop           Shop?        @relation("ShopVouchers", fields: [shopId], references: [id], onDelete: Cascade)
+  shopId String?
+  shop   Shop?   @relation("ShopVouchers", fields: [shopId], references: [id], onDelete: Cascade)
 
   // Relation với User (Seller tạo voucher)
   sellerId String?
@@ -730,7 +732,7 @@ model Voucher {
   products Product[]
 
   // Relation với Order (Voucher này đã dùng cho đơn nào)
-  orders Order[]
+  orders     Order[]
   categories Category[]
 
   // Tracking (Ai đã lưu voucher)
@@ -762,38 +764,38 @@ model UserVoucher {
 }
 
 model HomeSection {
-  id          String   @id @default(uuid())
-  title       String   
-  type        String   // "CATEGORY", "FLASH_SALE", "BANNER"
-  order       Int      @default(0)
-  isActive    Boolean  @default(true)
+  id       String  @id @default(uuid())
+  title    String
+  type     String // "CATEGORY", "FLASH_SALE", "BANNER"
+  order    Int     @default(0)
+  isActive Boolean @default(true)
 
   // Cấu hình hiển thị (JSON)
-  config      Json?
+  config Json?
 
   // Quan hệ
-  categoryId  String?
-  category    Category? @relation(fields: [categoryId], references: [id])
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
 
-  voucherId   String?
-  voucher     Voucher?  @relation(fields: [voucherId], references: [id], onDelete: SetNull)
+  voucherId String?
+  voucher   Voucher? @relation(fields: [voucherId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([order])
 }
 
 model Banner {
   id          String   @id @default(uuid())
-  location    String   // 'HERO_MAIN', 'HERO_SUB', 'SIDEBAR_PROMO'
-  src         String   // URL ảnh
+  location    String // 'HERO_MAIN', 'HERO_SUB', 'SIDEBAR_PROMO'
+  src         String // URL ảnh
   alt         String?
   title       String?
   description String?
-  ctaLabel    String?  // Nút kêu gọi hành động
-  ctaLink     String?  // Link đích
-  theme       String?  // 'dark' | 'light'
+  ctaLabel    String? // Nút kêu gọi hành động
+  ctaLink     String? // Link đích
+  theme       String? // 'dark' | 'light'
   order       Int      @default(0)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -803,7 +805,7 @@ model Banner {
 // Quản lý các cấu hình menu phức tạp (Header Menu, Footer Link...)
 model SystemConfig {
   key         String   @id // VD: 'HEADER_MEGA_MENU', 'HEADER_RECIPIENT_DATA', 'FOOTER_DATA'
-  value       Json     // Lưu cấu trúc mảng/object phức tạp
+  value       Json // Lưu cấu trúc mảng/object phức tạp
   description String?
   updatedAt   DateTime @updatedAt
 }
@@ -814,9 +816,9 @@ model PayoutRequest {
   user        User         @relation(fields: [userId], references: [id])
   amount      Decimal      @db.Decimal(15, 2)
   status      PayoutStatus @default(PENDING)
-  bankInfo    String       // Format: "BankName - AccountNum - OwnerName"
-  reason      String?      // Lý do từ chối (nếu có)
-  processedAt DateTime?    // Ngày admin duyệt/từ chối
+  bankInfo    String // Format: "BankName - AccountNum - OwnerName"
+  reason      String? // Lý do từ chối (nếu có)
+  processedAt DateTime? // Ngày admin duyệt/từ chối
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -837,7 +839,7 @@ model WalletTransaction {
   amount      Decimal                 @db.Decimal(15, 2) // Số dương (+) là thu nhập, Số âm (-) là rút tiền
   type        WalletTransactionType
   status      WalletTransactionStatus @default(COMPLETED)
-  referenceId String?                 // Order ID hoặc PayoutRequest ID
+  referenceId String? // Order ID hoặc PayoutRequest ID
   description String?
   createdAt   DateTime                @default(now())
 
@@ -847,10 +849,10 @@ model WalletTransaction {
 }
 
 enum WalletTransactionType {
-  ORDER_INCOME   // Tiền bán hàng cộng vào
-  PAYOUT         // Rút tiền về ngân hàng
-  REFUND         // Hoàn tiền cho khách
-  FEE            // Phí sàn (nếu có)
+  ORDER_INCOME // Tiền bán hàng cộng vào
+  PAYOUT // Rút tiền về ngân hàng
+  REFUND // Hoàn tiền cho khách
+  FEE // Phí sàn (nếu có)
 }
 
 enum WalletTransactionStatus {
@@ -871,48 +873,47 @@ enum FlashSaleProductStatus {
 }
 
 model FlashSaleSession {
-  id          String   @id @default(uuid())
-  startTime   DateTime
-  endTime     DateTime
-  status      FlashSaleStatus @default(ENABLED)
-  
-  // Quan hệ 1-n
-  products    FlashSaleProduct[]
+  id        String          @id @default(uuid())
+  startTime DateTime
+  endTime   DateTime
+  status    FlashSaleStatus @default(ENABLED)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // Quan hệ 1-n
+  products FlashSaleProduct[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Index giúp query session theo thời gian nhanh hơn
   @@index([startTime, endTime])
 }
 
 model FlashSaleProduct {
-  id               String @id @default(uuid())
-  
+  id String @id @default(uuid())
+
   // Quan hệ tới Session
-  sessionId        String
-  session          FlashSaleSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   FlashSaleSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Quan hệ tới Product
-  productId        String
+  productId String
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
-  
-  variantId       String
-  variant         ProductVariant   @relation(fields: [variantId], references: [id])
 
-  originalPrice    Decimal @db.Decimal(15, 2)
-  salePrice        Decimal @db.Decimal(15, 2)
-  stock            Int     // Số lượng cam kết chạy Flash Sale
-  sold             Int     @default(0) // Số lượng đã bán
-  status           FlashSaleProductStatus @default(PENDING)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  originalPrice Decimal                @db.Decimal(15, 2)
+  salePrice     Decimal                @db.Decimal(15, 2)
+  stock         Int // Số lượng cam kết chạy Flash Sale
+  sold          Int                    @default(0) // Số lượng đã bán
+  status        FlashSaleProductStatus @default(PENDING)
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, variantId])
   @@index([sessionId])
   @@index([productId])
-  @@unique([sessionId, variantId])
 }
 
 model BlogCategory {
@@ -928,35 +929,36 @@ model BlogCategory {
 }
 
 model BlogPost {
-  id              String   @id @default(uuid())
-  title           String
-  slug            String   @unique
-  excerpt         String?  @db.Text
-  content         String   @db.Text
-  thumbnail       String?
-  status          String   @default("DRAFT")
-  categoryId      String?
-  category        BlogCategory? @relation(fields: [categoryId], references: [id])
+  id         String        @id @default(uuid())
+  title      String
+  slug       String        @unique
+  excerpt    String?       @db.Text
+  content    String        @db.Text
+  thumbnail  String?
+  status     String        @default("DRAFT")
+  categoryId String?
+  category   BlogCategory? @relation(fields: [categoryId], references: [id])
 
   // --- SEO Fields ---
   metaTitle       String?
   metaDescription String?
-  
+
   // FIX 1: Change String[] to String? for MySQL
-  keywords        String?  @db.Text 
-  
-  canonicalUrl    String?
-  ogImage         String?
-  noIndex         Boolean  @default(false)
+  keywords String? @db.Text
+
+  canonicalUrl String?
+  ogImage      String?
+  noIndex      Boolean @default(false)
 
   // --- Relations ---
   authorId        String
-  author          User     @relation(fields: [authorId], references: [id])
+  author          User      @relation(fields: [authorId], references: [id])
   relatedProducts Product[]
-  sortOrder   Int      @default(0)
+  sortOrder       Int       @default(0)
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([sortOrder])
 }
 
@@ -976,25 +978,25 @@ enum CharityFundStatus {
 }
 
 model CharityFund {
-  id            String             @id @default(uuid())
-  name          String             // "Quỹ hỗ trợ trẻ em vùng cao"
-  slug          String             @unique
-  description   String?            @db.Text
-  image         String?            // Cover image
-  goalAmount    Decimal            @default(0) @db.Decimal(15, 2)
+  id            String                @id @default(uuid())
+  name          String // "Quỹ hỗ trợ trẻ em vùng cao"
+  slug          String                @unique
+  description   String?               @db.Text
+  image         String? // Cover image
+  goalAmount    Decimal               @default(0) @db.Decimal(15, 2)
   // Snapshot tổng donation để query nhanh mà không scan table Donation.
   // Cập nhật bằng transaction mỗi lần donation mới.
-  currentAmount Decimal            @default(0) @db.Decimal(15, 2)
-  status        CharityFundStatus  @default(ACTIVE)
+  currentAmount Decimal               @default(0) @db.Decimal(15, 2)
+  status        CharityFundStatus     @default(ACTIVE)
   // Spec [0018]: 1 quỹ chính (isPrimary=true) — nơi nhận trích ngầm 1% khi
   // không có campaign active. Chỉ 1 quỹ trên toàn sàn isPrimary tại 1 thời điểm
   // (admin enforce).
-  isPrimary     Boolean            @default(false)
+  isPrimary     Boolean               @default(false)
   donations     Donation[]
   campaigns     CharityCampaignFund[]
 
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([slug])
@@ -1005,17 +1007,17 @@ model CharityFund {
 // thời gian active. Khi user checkout đơn hàng trong khoảng active, được CHỌN
 // quỹ campaign để đóng góp; không có campaign -> mặc định quỹ primary.
 model CharityCampaign {
-  id          String   @id @default(uuid())
+  id          String                @id @default(uuid())
   name        String
-  slug        String   @unique
-  description String?  @db.Text
+  slug        String                @unique
+  description String?               @db.Text
   banner      String?
   startDate   DateTime
   endDate     DateTime
-  isActive    Boolean  @default(true)
+  isActive    Boolean               @default(true)
   funds       CharityCampaignFund[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
 
   @@index([isActive, startDate, endDate])
 }
@@ -1027,28 +1029,73 @@ model CharityCampaignFund {
   fundId     String
   campaign   CharityCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   fund       CharityFund     @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
   @@id([campaignId, fundId])
 }
 
 model Donation {
-  id         String       @id @default(uuid())
-  fundId     String
-  fund       CharityFund  @relation(fields: [fundId], references: [id])
+  id     String      @id @default(uuid())
+  fundId String
+  fund   CharityFund @relation(fields: [fundId], references: [id])
 
   // userId nullable để hỗ trợ donation ẩn danh (guest).
   // Nếu sau này add auto-trigger từ Order, dùng orderId để idempotent
   // (unique constraint tránh double-count khi order DELIVERED lặp event).
-  userId     String?
-  user       User?        @relation(fields: [userId], references: [id])
-  orderId    String?      @unique
+  userId  String?
+  user    User?   @relation(fields: [userId], references: [id])
+  orderId String? @unique
 
-  amount     Decimal      @db.Decimal(15, 2)
-  note       String?      @db.Text
-  isAnonymous Boolean     @default(false) // user chọn hiển thị "Anonymous" trong leaderboard
+  amount      Decimal @db.Decimal(15, 2)
+  note        String? @db.Text
+  isAnonymous Boolean @default(false) // user chọn hiển thị "Anonymous" trong leaderboard
 
-  createdAt  DateTime     @default(now())
+  createdAt DateTime @default(now())
 
   @@index([fundId, createdAt])
   @@index([userId])
 }
 
+// Newsletter subscribers — landing page footer signup form.
+// Nguồn cài (sourceTag): "footer", "popup-welcome",... — phục vụ marketing
+// theo dõi từng kênh. Email unique: cùng email không tạo bản ghi mới mà chỉ
+// reactivate (set isActive=true). unsubscribedAt cho phép "soft delete" để
+// vẫn giữ history khi user huỷ đăng ký.
+model NewsletterSubscriber {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  sourceTag      String?   @default("footer")
+  isActive       Boolean   @default(true)
+  subscribedAt   DateTime  @default(now())
+  unsubscribedAt DateTime?
+
+  @@index([isActive, subscribedAt])
+}
+
+// Complaint / report — seller hoặc user gửi khiếu nại admin xử lý.
+// Spec #65 trong feedback pass 2.
+//   category:  enum string (shipping/product/finance/system) — string thay vì
+//              Prisma enum để dễ thêm category mới mà không cần migration.
+//   status:    open / processing / resolved / rejected.
+//   relatedOrderId: optional link tới Order khi user đính kèm.
+//   attachments: JSON array các URL ảnh/video bằng chứng (R2).
+model Complaint {
+  id              String    @id @default(uuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+
+  category        String    // shipping | product | finance | system | other
+  relatedOrderId  String?
+  title           String
+  content         String    @db.Text
+  attachments     Json?     // string[]
+
+  status          String    @default("open") // open | processing | resolved | rejected
+  adminNote       String?   @db.Text
+  resolvedAt      DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}

@@ -74,7 +74,7 @@ export class GiftConsultantService {
 
     // 3. System Prompt "CHUYÊN GIA GỢI Ý CHI TIẾT"
     const systemPrompt = `
-      Bạn là Chuyên gia Tư vấn Quà tặng cao cấp của LoveGifts.
+      Bạn là Chuyên gia Tư vấn Quà tặng cao cấp của GMall.
       Phong cách: Tinh tế, sâu sắc, nhiệt tình.
       Dữ liệu khách: ${JSON.stringify(state.data)}
 
@@ -232,7 +232,7 @@ export class GiftConsultantService {
     const newState: ConsultationState = { step: ConsultationStep.ASK_RECIPIENT, data: {}, history: [] };
     await this.saveSession(sessionId, newState);
     return {
-        text: "Chào bạn! Mình là LoveGifts Bot 🎁. Bạn muốn tìm quà tặng cho ai nhỉ?",
+        text: "Chào bạn! Mình là GMall Bot 🎁. Bạn muốn tìm quà tặng cho ai nhỉ?",
         products: [],
         options: CONSULTATION_OPTIONS.RELATIONSHIPS,
         isMultiSelect: false

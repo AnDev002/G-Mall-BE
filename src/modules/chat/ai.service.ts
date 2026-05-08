@@ -163,7 +163,7 @@ export class AiService implements OnModuleInit {
   // --- 3. AI CALLER (JSON MODE) ---
   private async tryCallAi(msg: string, history: any[]): Promise<AiResponse | null> {
       const systemPrompt = `
-        Bạn là "Chuyên gia Tư vấn Quà tặng Cao cấp" của LoveGifts.
+        Bạn là "Chuyên gia Tư vấn Quà tặng Cao cấp" của GMall.
         Trả về JSON: { "reply": "...", "searchParams": {...}, "options": [], "searchSuggestions": [] }
       `;
 
