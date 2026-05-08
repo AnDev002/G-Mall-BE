@@ -16,6 +16,7 @@ import { BlogService } from './blog.service';
 import { CreateBlogDto } from './dto/create-blog.dto';
 import { UpdateBlogDto } from './dto/update-blog.dto';
 import { BlogQueryDto } from './dto/blog-query.dto';
+import { ReorderBlogDto } from './dto/reorder-blog.dto';
 
 // Guards & Decorators
 import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
@@ -69,7 +70,7 @@ export class BlogController {
   @Patch('reorder/items') // Endpoint mới: /admin/blogs/reorder/items
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Update sort order of blogs' })
-  updateOrder(@Body() body: { items: { id: string; sortOrder: number }[] }) {
+  updateOrder(@Body() body: ReorderBlogDto) {
     return this.blogService.updateOrder(body.items);
   }
 }

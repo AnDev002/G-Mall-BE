@@ -12,17 +12,19 @@ import { Prisma } from '@prisma/client';
 export class BlogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async generateUniqueSlug(title: string, currentSlug?: string): Promise<string> {
-    let slug = currentSlug || generateSlug(title);
-    if (currentSlug && slug === currentSlug) return slug;
-    
-    let uniqueSlug = slug;
+  private async generateUniqueSlug(title: string, currentSlug?: string, excludeId?: string): Promise<string> {
+    // Wiki 0039 BUG-BLOG-2: trước đây nếu caller truyền `currentSlug` khớp `slug` thì
+    // return ngay không check duplicate → update() trả slug có thể trùng blog khác →
+    // Prisma unique-constraint 409. Giờ luôn check, optionally exclude id self khi update.
+    const base = currentSlug || generateSlug(title);
+    let candidate = base;
     let counter = 1;
-    while (await this.prisma.blogPost.findUnique({ where: { slug: uniqueSlug } })) {
-      uniqueSlug = `${slug}-${counter}`;
+    while (true) {
+      const conflict = await this.prisma.blogPost.findUnique({ where: { slug: candidate } });
+      if (!conflict || (excludeId && conflict.id === excludeId)) return candidate;
+      candidate = `${base}-${counter}`;
       counter++;
     }
-    return uniqueSlug;
   }
 
   // --- CREATE ---
@@ -177,12 +179,12 @@ export class BlogService {
     const existingBlog = await this.prisma.blogPost.findUnique({ where: { id } });
     if (!existingBlog) throw new NotFoundException('Blog post not found');
 
-    // Handle Slug
+    // Handle Slug — pass excludeId=existingBlog.id để cho phép giữ nguyên slug cũ.
     let finalSlug = existingBlog.slug;
     if (slug || (title && title !== existingBlog.title)) {
         const candidate = slug || generateSlug(title || existingBlog.title);
         if (candidate !== existingBlog.slug) {
-             finalSlug = await this.generateUniqueSlug(title || existingBlog.title, candidate);
+             finalSlug = await this.generateUniqueSlug(title || existingBlog.title, candidate, id);
         }
     }
 
