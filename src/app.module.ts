@@ -31,6 +31,8 @@ import { BrandModule } from './modules/brand/brand.module';
 import { GhnModule } from './modules/ghn/ghn.module';
 import { AddressModule } from './modules/address/address.module';
 import { CharityModule } from './modules/charity/charity.module';
+import { NewsletterModule } from './modules/newsletter/newsletter.module';
+import { ComplaintModule } from './modules/complaint/complaint.module';
 import { SystemSettingModule } from './common/services/system-setting.module';
 @Module({
   imports: [
@@ -63,6 +65,16 @@ import { SystemSettingModule } from './common/services/system-setting.module';
               user: mailUser,
               pass: mailPass, // Nodemailer dùng key là 'pass', không phải 'password'
             },
+            // Fix B-NEW-PERF-2 (wiki 0029): bound nodemailer timeouts.
+            // Why: fire-and-forget sendMail (PERF-1 fix) vẫn có thể accumulate
+            // trong Node event loop nếu SMTP chậm/down. Default nodemailer
+            // timeouts là 2 phút (connect) + 10 phút (socket) — quá dài.
+            // Giảm xuống 3s/8s để fail fast.
+            // KHÔNG dùng pool:true — pool keep persistent connection, nếu SMTP
+            // refused thì pool retry liên tục background → block event loop.
+            connectionTimeout: 3000,
+            greetingTimeout: 3000,
+            socketTimeout: 8000,
           },
           defaults: {
             from: `"No Reply" <${mailUser}>`,
@@ -116,6 +128,8 @@ import { SystemSettingModule } from './common/services/system-setting.module';
     AddressModule,
     SystemSettingModule,
     CharityModule,
+    NewsletterModule,
+    ComplaintModule,
   ],
   controllers: [AppController],
   providers: [AppService],
