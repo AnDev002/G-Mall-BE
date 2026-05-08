@@ -224,26 +224,31 @@ export class CategoryService {
 
   // 4. [FIX] Xóa an toàn
   async remove(id: string) {
+    // Wiki 0039 BUG-CAT-2: trước đây deleteMany trả 200 cho id không tồn tại
+    // (silent success). Check trước, throw 404 đúng REST.
+    const existing = await this.prisma.category.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Danh mục không tồn tại');
+
     // Sử dụng lại hàm helper có sẵn trong class để lấy ID của nó và toàn bộ con cháu
     const idsToDelete = await this.getAllDescendantIds(id);
 
     // [Optional] Kiểm tra an toàn: Có sản phẩm nào thuộc cây danh mục này không?
     // Nếu bạn muốn xoá bất chấp sản phẩm (sản phẩm sẽ mất categoryId hoặc lỗi) thì bỏ đoạn check này đi.
     const countProduct = await this.prisma.product.count({
-        where: { 
-          categoryId: { in: idsToDelete } 
+        where: {
+          categoryId: { in: idsToDelete }
         }
     });
-    
+
     if (countProduct > 0) {
          throw new BadRequestException(`Đang có ${countProduct} sản phẩm thuộc danh mục này hoặc các danh mục con. Không thể xóa.`);
     }
 
     // Thực hiện xoá tất cả danh mục tìm được (bao gồm cả cha và con)
-    return this.prisma.category.deleteMany({ 
-      where: { 
-        id: { in: idsToDelete } 
-      } 
+    return this.prisma.category.deleteMany({
+      where: {
+        id: { in: idsToDelete }
+      }
     });
   }
 
