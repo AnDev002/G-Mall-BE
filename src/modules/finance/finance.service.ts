@@ -26,13 +26,40 @@ export class FinanceService {
       where: { status: PayoutStatus.PENDING },
     });
 
-    // 4. Chart Data (Mock data cho biểu đồ vì query group-by date trong Prisma khá phức tạp tùy DB)
-    // Nếu dùng PostgreSQL, có thể dùng raw query. Ở đây trả về mock structure để FE render.
-    const chartData = [
-      { date: '2024-01', value: totalRevenue * 0.2 },
-      { date: '2024-02', value: totalRevenue * 0.3 },
-      { date: '2024-03', value: totalRevenue * 0.5 },
-    ];
+    // 4. Chart Data — group by tháng cho 12 tháng gần nhất.
+    //    MySQL DATE_FORMAT trả 'YYYY-MM'. Raw SQL vì Prisma group-by không
+    //    hỗ trợ format date trực tiếp.
+    let chartData: { date: string; value: number }[] = [];
+    try {
+      const since = new Date();
+      since.setMonth(since.getMonth() - 11);
+      since.setDate(1);
+      since.setHours(0, 0, 0, 0);
+
+      const rows = await this.prisma.$queryRawUnsafe<
+        { ym: string; total: any }[]
+      >(
+        `SELECT DATE_FORMAT(createdAt, '%Y-%m') AS ym, COALESCE(SUM(totalAmount), 0) AS total
+         FROM \`Order\`
+         WHERE status = 'DELIVERED' AND createdAt >= ?
+         GROUP BY ym
+         ORDER BY ym ASC`,
+        since,
+      );
+
+      // Fill các tháng thiếu = 0 để biểu đồ liên tục, không nhảy gap.
+      const map = new Map<string, number>();
+      for (const r of rows) map.set(r.ym, Number(r.total) || 0);
+      for (let i = 0; i < 12; i++) {
+        const d = new Date(since);
+        d.setMonth(since.getMonth() + i);
+        const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        chartData.push({ date: ym, value: map.get(ym) || 0 });
+      }
+    } catch (e) {
+      // Fallback nhẹ nếu raw SQL fail (DB không hỗ trợ DATE_FORMAT...)
+      chartData = [];
+    }
 
     return {
       totalRevenue,

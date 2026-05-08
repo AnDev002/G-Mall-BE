@@ -3,6 +3,7 @@ import { PointService } from './point.service';
 import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
 import { User } from '../../common/decorators/user.decorator';
 import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Role } from '@prisma/client';
 
 @Controller('points')
@@ -39,16 +40,19 @@ export class PointController {
     return this.pointService.initiateTransfer(user.id, body.receiverId, body.amount);
   }
 
-  // [NEW] Lấy tỷ lệ hiện tại (Admin xem)
+  // Fix B-NEW-8 (wiki 0026): thêm @UseGuards(RolesGuard). Trước đây chỉ có
+  // @Roles decorator nhưng không có guard tương ứng -> mọi authenticated user
+  // đều xem/sửa được tỷ giá điểm (latent security).
   @Get('rate')
-  @Roles(Role.ADMIN) // Chỉ Admin được xem cấu hình hệ thống
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
   async getRate() {
     const rate = await this.pointService.getConversionRate();
     return { rate };
   }
 
   @Post('rate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
   async updateConversionRate(@Body() body: { amount: number }) {
     return this.pointService.updateConversionRate(body.amount);

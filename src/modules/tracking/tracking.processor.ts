@@ -1,5 +1,6 @@
 // src/tracking/tracking.processor.ts
 import { Injectable, OnModuleInit, OnModuleDestroy, Inject, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { REDIS_CLIENT } from 'src/database/redis/redis.constants';
 import { Redis } from 'ioredis';
 import { PrismaService } from 'src/database/prisma/prisma.service';
@@ -15,17 +16,36 @@ export class TrackingProcessor implements OnModuleInit, OnModuleDestroy {
 
   private readonly BATCH_SIZE = 500;
   private readonly FLUSH_INTERVAL = 5000; // 5 giây
-  
+
   // Buffer lưu cả Data và Redis Message ID để ACK sau
   private logBuffer: { data: any, msgId: string }[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private isRunning = true;
 
+  // Fix B-NEW-PERF-2 (wiki 0029): DEDICATED ioredis client cho blocking
+  // XREADGROUP BLOCK. Trước đây share REDIS_CLIENT singleton -> XREADGROUP
+  // BLOCK 5000ms queue mọi command khác trên connection -> rate-limit guard
+  // INCR/EXPIRE phải đợi 5s+5s = 10s. Đây là ioredis anti-pattern documented:
+  // commands on a blocking connection are serialized.
+  private blockingClient: Redis;
+
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly prisma: PrismaService,
-    private readonly trackingService: TrackingService
-  ) {}
+    private readonly trackingService: TrackingService,
+    private readonly configService: ConfigService,
+  ) {
+    const host = configService.get<string>('REDIS_HOST');
+    const port = Number(configService.get<string | number>('REDIS_PORT'));
+    const password = configService.get<string>('REDIS_PASSWORD');
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    this.blockingClient = new Redis({
+      host,
+      port,
+      password: password || undefined,
+      tls: isLocal ? undefined : { rejectUnauthorized: false },
+    });
+  }
 
   async onModuleInit() {
     await this.initConsumerGroup();
@@ -36,7 +56,8 @@ export class TrackingProcessor implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     this.isRunning = false;
     if (this.flushTimer) clearInterval(this.flushTimer);
-    await this.flushLogsToDB(); 
+    await this.flushLogsToDB();
+    await this.blockingClient.quit().catch(() => {});
   }
 
   async initConsumerGroup() {
@@ -56,9 +77,11 @@ export class TrackingProcessor implements OnModuleInit, OnModuleDestroy {
     
     while (this.isRunning) {
       try {
-        const streams = await this.redis.xreadgroup(
+        // Dùng blockingClient riêng (KHÔNG phải this.redis) — nếu dùng singleton,
+        // BLOCK 5000ms sẽ queue mọi rate-limit/cart/cache op khác trên connection.
+        const streams = await this.blockingClient.xreadgroup(
           'GROUP', this.GROUP_NAME, this.CONSUMER_NAME,
-          'COUNT', 100, 
+          'COUNT', 100,
           'BLOCK', 5000,
           'STREAMS', this.STREAM_KEY, '>'
         ) as any;

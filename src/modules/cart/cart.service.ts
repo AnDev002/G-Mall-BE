@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from 'src/database/redis/redis.constants'; // Import từ module vừa tạo
 import { PrismaService } from 'src/database/prisma/prisma.service';
@@ -46,12 +46,22 @@ export class CartService {
   }
   // 1. Thêm vào giỏ (Thao tác Redis - O(1))
   async addToCart(userId: string, dto: AddToCartDto) {
+    // Fix B-NEW-1 (wiki 0023): pre-check productId tồn tại trong DB.
+    // Trước đây HINCRBY thẳng vào Redis -> cart chứa ghost productId ->
+    // checkout JOIN Product crash 500 (chain bug).
+    const exists = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+
     const key = this.getCartKey(userId);
-    
     // HINCRBY: Tăng số lượng item trong hash. Nếu chưa có tự tạo mới.
     // Thao tác này là Atomic trên Redis.
     await this.redis.hincrby(key, dto.productId, dto.quantity);
-    
+
     // Set TTL (Time to live) cho giỏ hàng (ví dụ 7 ngày) để tự dọn dẹp rác
     await this.redis.expire(key, 60 * 60 * 24 * 7);
 
@@ -121,7 +131,14 @@ export class CartService {
   // 4. Update số lượng
   async updateQuantity(userId: string, productId: string, quantity: number) {
     if (quantity <= 0) return this.removeItem(userId, productId);
-    await this.redis.hset(this.getCartKey(userId), productId, quantity);
+    // Fix B-NEW-2 (wiki 0023): chỉ update nếu item đã tồn tại trong cart.
+    // Trước đây hset blind -> ghost item silent insert.
+    const key = this.getCartKey(userId);
+    const exists = await this.redis.hexists(key, productId);
+    if (!exists) {
+      throw new NotFoundException('Item không tồn tại trong giỏ hàng');
+    }
+    await this.redis.hset(key, productId, quantity);
     return { success: true };
   }
 

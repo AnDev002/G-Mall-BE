@@ -390,18 +390,34 @@ export class PromotionService {
 
   // --- 5. BUYER: CLAIM VOUCHER ---
   async claimVoucher(userId: string, code: string) {
+    // Fix B-NEW-6 (wiki 0025): pre-check voucher tồn tại + chưa hết hạn TRƯỚC
+    // khi vào Redis script. Trước đây Redis script chỉ check stock + dedup user,
+    // không check endDate -> user save voucher hết hạn vào ví -> UX confusing.
+    const voucher = await this.prisma.voucher.findUnique({ where: { code } });
+    if (!voucher) throw new BadRequestException('Voucher không tồn tại');
+    const now = new Date();
+    if (voucher.endDate < now) {
+      throw new BadRequestException('Voucher đã hết hạn');
+    }
+    if (voucher.startDate > now) {
+      throw new BadRequestException('Voucher chưa bắt đầu');
+    }
+    if (!voucher.isActive) {
+      throw new BadRequestException('Voucher đã bị tạm dừng');
+    }
+
     const stockKey = `voucher:${code}:stock`;
     const usersKey = `voucher:${code}:users`;
 
     const script = `
       local stock = tonumber(redis.call('GET', KEYS[1]))
-      if stock == nil then return -1 end 
-      if stock <= 0 then return 0 end    
+      if stock == nil then return -1 end
+      if stock <= 0 then return 0 end
       if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end
 
-      redis.call('DECR', KEYS[1])        
-      redis.call('SADD', KEYS[2], ARGV[1]) 
-      return 1 
+      redis.call('DECR', KEYS[1])
+      redis.call('SADD', KEYS[2], ARGV[1])
+      return 1
     `;
 
     const client = this.redisService.getClient();
@@ -411,12 +427,9 @@ export class PromotionService {
     if (result === 0) throw new BadRequestException('Voucher đã hết lượt sử dụng');
     if (result === -2) throw new BadRequestException('Bạn đã lưu voucher này rồi');
 
-    const voucher = await this.prisma.voucher.findUnique({ where: { code } });
-    if (voucher) {
-        await this.prisma.userVoucher.create({
-            data: { userId, voucherId: voucher.id }
-        }).catch(() => {});
-    }
+    await this.prisma.userVoucher.create({
+        data: { userId, voucherId: voucher.id }
+    }).catch(() => {});
 
     return { message: 'Lưu voucher thành công!' };
   }

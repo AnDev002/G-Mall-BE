@@ -81,10 +81,13 @@ export class AuthService {
 
 
     if(user.email) {
-      // Gửi OTP xác thực
-      await this.sendOtp(user.email);
+      // Fix B-NEW-PERF-1 (wiki 0021): KHÔNG await sendMail. Trước đây block
+      // response 4-10s vì SMTP slow/unavailable -> register/forgot-password chậm
+      // -> client timeout. Fire-and-forget OK vì user vẫn dùng được "Gửi lại OTP"
+      // nếu mail rớt. Lỗi đã được catch bên trong sendOtp.
+      void this.sendOtp(user.email);
     }
- 
+
     return { message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.' };
   }
 
@@ -151,12 +154,9 @@ export class AuthService {
         });
     });
 
-    // [MỚI] Gửi OTP sau khi Transaction đã commit thành công
-    // Nếu gửi mail lỗi, user vẫn được tạo và có thể bấm "Gửi lại OTP" sau
+    // Fix B-NEW-PERF-1 (wiki 0021): fire-and-forget — không block response.
     if(email) {
-        // Không dùng await để block response, cho chạy nền (tuỳ nhu cầu)
-        // Hoặc dùng await nếu muốn chắc chắn mail đi rồi mới báo success
-        await this.sendOtp(email); 
+        void this.sendOtp(email);
     }
 
     return { message: 'Đăng ký người bán thành công. Vui lòng xác thực OTP.' };
@@ -236,15 +236,15 @@ export class AuthService {
 
     console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
 
-    try {
-      await this.mailerService.sendMail({
+    // Fix B-NEW-PERF-1 (wiki 0021): fire-and-forget. Helper sendOtp được gọi
+    // trực tiếp từ /auth/send-otp endpoint nên cũng phải non-blocking.
+    void this.mailerService
+      .sendMail({
         to: normalizedEmail,
-        subject: 'Mã xác thực LoveGifts',
+        subject: 'Mã xác thực GMall',
         html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
-      });
-    } catch (error) {
-      console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
-    }
+      })
+      .catch((error) => console.log('>>> [WARNING] Lỗi gửi mail:', error.message));
   }
 
   // --- HELPER: Tạo Token ---
@@ -437,8 +437,10 @@ export class AuthService {
       const feUrl = (process.env.FE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
       const resetLink = `${feUrl}/reset-password?email=${encodeURIComponent(normalizedEmail)}&token=${otp}`;
 
-      try {
-        await this.mailerService.sendMail({
+      // Fix B-NEW-PERF-1 (wiki 0021): fire-and-forget sendMail.
+      // Nếu mail rớt user vẫn dùng được "Gửi lại mã" sau.
+      void this.mailerService
+        .sendMail({
           to: normalizedEmail,
           subject: 'Đặt lại mật khẩu GMall',
           html: `
@@ -448,10 +450,8 @@ export class AuthService {
             <p>Hoặc nhập mã này vào form đặt lại mật khẩu: <b>${otp}</b></p>
             <p>Nếu không phải bạn, hãy bỏ qua email này.</p>
           `,
-        });
-      } catch (error) {
-        console.log('>>> [WARNING] Lỗi gửi mail reset:', error.message);
-      }
+        })
+        .catch((error) => console.log('>>> [WARNING] Lỗi gửi mail reset:', error.message));
     }
 
     return { message: 'Nếu email tồn tại, mã đặt lại mật khẩu đã được gửi.' };

@@ -131,8 +131,12 @@ export class PointService {
         const now = moment();
         
         if (!record) {
+          // Fix B-NEW-7 (wiki 0026): dùng `now.clone()` vì moment.subtract()
+          // mutates! Trước đây `now.subtract(1, 'day')` biến `now` thành hôm
+          // qua -> dòng 140 so sánh `now (yesterday)` vs `lastCheckIn (yesterday)`
+          // -> isSame day -> throw "đã điểm danh" cho user vừa register.
           record = await tx.dailyCheckIn.create({
-            data: { userId, lastCheckInDate: now.subtract(1, 'day').toDate(), currentStreak: 0 }
+            data: { userId, lastCheckInDate: now.clone().subtract(1, 'day').toDate(), currentStreak: 0 }
           });
         }
 

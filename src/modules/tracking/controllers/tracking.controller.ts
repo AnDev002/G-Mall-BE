@@ -58,4 +58,14 @@ export class TrackingController {
         const productIds = await this.trackingService.getRecommendations(userId, guestId);
         return { productIds };
     }
+
+    // #20 + #38: trending keywords từ AnalyticsLog (eventType=SEARCH).
+    // Trả top N keyword tần suất cao nhất trong 30 ngày gần nhất, fallback
+    // về danh sách static khi DB chưa có data (cold start).
+    @Get('trending-keywords')
+    @Public()
+    async getTrendingKeywords(@Query('limit') limitRaw?: string) {
+        const limit = Math.min(Math.max(Number(limitRaw) || 8, 1), 20);
+        return this.trackingService.getTrendingKeywords(limit);
+    }
 }
