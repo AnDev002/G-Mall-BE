@@ -129,6 +129,9 @@ model User {
   // #65 — khiếu nại do user/seller gửi (xem model Complaint cuối file).
   complaints Complaint[]
 
+  // #11/#23/#35/#53 (wiki 0044/0045) — thông báo cá nhân (notification model cuối file).
+  notifications Notification[]
+
   @@index([email])
   @@index([role])
   @@index([createdAt])
@@ -661,6 +664,10 @@ model Order {
   paymentMethod String // MOMO, BANKING, COD
   paymentStatus String @default("UNPAID")
 
+  // G4 (wiki 0044/0045): IP của client lúc đặt đơn — dùng cho anti-farm referral
+  // (so sánh IP của referrer.lastOrder vs IP của referee.thisOrder).
+  clientIp String?
+
   items     OrderItem[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
@@ -1079,23 +1086,43 @@ model NewsletterSubscriber {
 //   relatedOrderId: optional link tới Order khi user đính kèm.
 //   attachments: JSON array các URL ảnh/video bằng chứng (R2).
 model Complaint {
-  id              String    @id @default(uuid())
-  userId          String
-  user            User      @relation(fields: [userId], references: [id])
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 
-  category        String    // shipping | product | finance | system | other
-  relatedOrderId  String?
-  title           String
-  content         String    @db.Text
-  attachments     Json?     // string[]
+  category       String // shipping | product | finance | system | other
+  relatedOrderId String?
+  title          String
+  content        String  @db.Text
+  attachments    Json? // string[]
 
-  status          String    @default("open") // open | processing | resolved | rejected
-  adminNote       String?   @db.Text
-  resolvedAt      DateTime?
+  status     String    @default("open") // open | processing | resolved | rejected
+  adminNote  String?   @db.Text
+  resolvedAt DateTime?
 
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
+}
+
+// #11/#23/#35/#53 (wiki 0044/0045) — thông báo cá nhân.
+// type: ORDER | PROMOTION | SYSTEM | CHAT | FRIEND
+// link: deeplink để FE click chuyển trang (vd /user/purchase, /messages?role=admin)
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String    @default("SYSTEM")
+  title     String    @db.VarChar(255)
+  content   String    @db.Text
+  link      String?
+  image     String?
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
 }

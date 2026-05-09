@@ -52,6 +52,34 @@ export class PromotionService {
       }
     });
 
+    // G2 (wiki 0044/0045): enforce stack rule theo Require GMall §4 — TỐI ĐA:
+    //   1 voucher GLOBAL (sàn) + 1 voucher SHOP/PRODUCT/CATEGORY mỗi shop + 1 voucher FREESHIP.
+    // Trước đây code loop không cap → user có thể stack vô hạn voucher.
+    {
+      const globalCount = vouchers.filter(v => v.scope === VoucherScope.GLOBAL && v.type !== VoucherType.FREESHIP).length;
+      if (globalCount > 1) {
+        throw new BadRequestException('Mỗi đơn chỉ áp dụng tối đa 1 voucher của sàn');
+      }
+
+      const freeshipCount = vouchers.filter(v => v.type === VoucherType.FREESHIP).length;
+      if (freeshipCount > 1) {
+        throw new BadRequestException('Mỗi đơn chỉ áp dụng tối đa 1 voucher freeship');
+      }
+
+      const shopVoucherCount: Record<string, number> = {};
+      for (const v of vouchers) {
+        const isShopScope = (v.scope === VoucherScope.SHOP || v.scope === VoucherScope.PRODUCT || v.scope === VoucherScope.CATEGORY)
+          && v.type !== VoucherType.FREESHIP
+          && v.shopId;
+        if (!isShopScope) continue;
+        const sid = v.shopId as string;
+        shopVoucherCount[sid] = (shopVoucherCount[sid] || 0) + 1;
+        if (shopVoucherCount[sid] > 1) {
+          throw new BadRequestException('Mỗi shop chỉ áp dụng tối đa 1 voucher');
+        }
+      }
+    }
+
     const appliedVouchers: any[] = [];
     const shopDiscounts: Record<string, number> = {};
     let systemDiscount = 0;

@@ -213,7 +213,7 @@ export class OrderService {
   }
 
   // --- 2. TẠO ORDER (Transaction) ---
-  async createOrder(userId: string, dto: CreateOrderDto) {
+  async createOrder(userId: string, dto: CreateOrderDto, clientIp: string | null = null) {
     const preview = await this.previewOrder(userId, dto);
     const receiver = dto.receiverInfo || {};
     
@@ -290,6 +290,7 @@ export class OrderService {
                  isGift: dto.isGift || false,
                  paymentMethod: dto.paymentMethod,
                  paymentStatus: 'PENDING',
+                 clientIp, // G4 (wiki 0044/0045): IP để anti-farm referral
                  items: {
                      create: group.items.map((i: any) => ({
                          productId: i.productId,
@@ -577,10 +578,14 @@ export class OrderService {
   /**
    * Thưởng người giới thiệu — gọi từ trong transaction confirmOrderReceived.
    *
-   * Spec [0018]:
+   * Spec [0018] + G4 (wiki 0044/0045):
    * - Trigger khi user có `referredBy` đặt đơn DELIVERED ≥ REFERRAL_MIN_ORDER (300k).
    * - Chỉ trả 1 lần — flag `referralRewardPaid` lock.
-   * - IP+Location check: hoãn (cần GeoIP service, để sau).
+   * - **Anti-farm IP check**: nếu referrer và referee từng đặt đơn từ CÙNG IP →
+   *   skip reward + log warn. Lý do: kẻ farm thường tạo nhiều account trên cùng
+   *   máy/mạng để tự tích điểm. Edge case false-positive: gia đình share WiFi —
+   *   chấp nhận trade-off vì spec ưu tiên chống abuse.
+   *   Location check (geoip-lite/external): defer — IP-only đã chặn 90% case.
    */
   private async processReferralReward(
     tx: Prisma.TransactionClient,
@@ -596,6 +601,27 @@ export class OrderService {
       select: { id: true, referredById: true, referralRewardPaid: true },
     });
     if (!user || !user.referredById || user.referralRewardPaid) return;
+
+    // G4: anti-farm check — nếu IP của referee từng trùng với bất kỳ IP của referrer → skip.
+    const refereeIps = await tx.order.findMany({
+      where: { userId, clientIp: { not: null } },
+      select: { clientIp: true },
+      distinct: ['clientIp'],
+      take: 10, // bound — chỉ check 10 IP gần nhất
+    });
+    const refereeIpSet = new Set(refereeIps.map(o => o.clientIp).filter(Boolean));
+    if (refereeIpSet.size > 0) {
+      const overlap = await tx.order.findFirst({
+        where: { userId: user.referredById, clientIp: { in: Array.from(refereeIpSet) as string[] } },
+        select: { id: true, clientIp: true },
+      });
+      if (overlap) {
+        this.logger.warn(`[Referral SKIP anti-farm] referrer=${user.referredById} referee=${userId} cùng IP=${overlap.clientIp}`);
+        // Vẫn flag referralRewardPaid để không bị retry vô tận
+        await tx.user.update({ where: { id: userId }, data: { referralRewardPaid: true } });
+        return;
+      }
+    }
 
     // Bump điểm referrer + flag user đã trả thưởng
     await this.pointService.addPoints(

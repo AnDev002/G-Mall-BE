@@ -120,7 +120,18 @@ export class PointService {
   }
 
   // 4. Điểm danh hàng ngày
+  // G3 (wiki 0044/0045): theo spec Require GMall §8 — 3000 xu/ngày, bonus 10000
+  // khi streak chẵn 10 ngày liên tục. Trước đây code thưởng theo thứ trong tuần
+  // (100/150/.../1000) — không khớp spec, không có bonus streak.
+  // Streak reset khi:
+  //   - Lần đầu điểm danh (record chưa có) → streak = 1
+  //   - Bỏ qua ngày (không liên tục) → streak = 1
+  // Bonus 10k cộng vào ngày thứ 10, 20, 30... — khuyến khích duy trì lâu dài.
   async dailyCheckIn(userId: string) {
+    const DAILY_REWARD = 3000;
+    const STREAK_BONUS = 10000;
+    const STREAK_THRESHOLD = 10;
+
     const lockKey = `lock:checkin:${userId}`;
     const isLocked = await this.redis.setNX(lockKey, '1', 5);
     if (!isLocked) throw new BadRequestException('Thao tác quá nhanh.');
@@ -129,12 +140,9 @@ export class PointService {
       return await this.prisma.$transaction(async (tx) => {
         let record = await tx.dailyCheckIn.findUnique({ where: { userId } });
         const now = moment();
-        
+
         if (!record) {
-          // Fix B-NEW-7 (wiki 0026): dùng `now.clone()` vì moment.subtract()
-          // mutates! Trước đây `now.subtract(1, 'day')` biến `now` thành hôm
-          // qua -> dòng 140 so sánh `now (yesterday)` vs `lastCheckIn (yesterday)`
-          // -> isSame day -> throw "đã điểm danh" cho user vừa register.
+          // Fix B-NEW-7 (wiki 0026): dùng `now.clone()` vì moment.subtract() mutates!
           record = await tx.dailyCheckIn.create({
             data: { userId, lastCheckInDate: now.clone().subtract(1, 'day').toDate(), currentStreak: 0 }
           });
@@ -146,21 +154,26 @@ export class PointService {
         }
 
         const isConsecutive = now.clone().subtract(1, 'day').isSame(lastCheckIn, 'day');
-        const isMonday = now.isoWeekday() === 1;
-        
-        let newStreak = (isConsecutive && !isMonday) ? record.currentStreak + 1 : 1;
-        
-        const rewards: Record<number, number> = { 1: 100, 2: 150, 3: 200, 4: 250, 5: 300, 6: 400, 7: 1000 };
-        const earned = rewards[now.isoWeekday()] || 100;
+        const newStreak = isConsecutive ? record.currentStreak + 1 : 1;
+
+        let earned = DAILY_REWARD;
+        let bonusApplied = false;
+        if (newStreak > 0 && newStreak % STREAK_THRESHOLD === 0) {
+          earned += STREAK_BONUS;
+          bonusApplied = true;
+        }
 
         await tx.dailyCheckIn.update({
           where: { userId },
           data: { lastCheckInDate: now.toDate(), currentStreak: newStreak }
         });
 
-        await this.addPoints(userId, earned, PointType.EARN_DAILY, `DAILY_${now.format('YYYYMMDD')}`, `Điểm danh T${now.isoWeekday()}`, tx);
+        const description = bonusApplied
+          ? `Điểm danh ngày ${newStreak} (streak +${STREAK_BONUS} bonus)`
+          : `Điểm danh ngày ${newStreak}`;
+        await this.addPoints(userId, earned, PointType.EARN_DAILY, `DAILY_${now.format('YYYYMMDD')}`, description, tx);
 
-        return { earned, streak: newStreak };
+        return { earned, streak: newStreak, bonusApplied };
       });
     } finally {
       await this.redis.del(lockKey);

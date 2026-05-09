@@ -33,6 +33,7 @@ import { AddressModule } from './modules/address/address.module';
 import { CharityModule } from './modules/charity/charity.module';
 import { NewsletterModule } from './modules/newsletter/newsletter.module';
 import { ComplaintModule } from './modules/complaint/complaint.module';
+import { NotificationModule } from './modules/notification/notification.module';
 import { SystemSettingModule } from './common/services/system-setting.module';
 @Module({
   imports: [
@@ -130,6 +131,7 @@ import { SystemSettingModule } from './common/services/system-setting.module';
     CharityModule,
     NewsletterModule,
     ComplaintModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

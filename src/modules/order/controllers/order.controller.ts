@@ -24,8 +24,10 @@ export class OrderController {
   // API đặt hàng thật
   @Post()
   async create(@Request() req, @Body() dto: CreateOrderDto) {
-    // Hứng kết quả từ Service (Lúc này là { orders: Order[], paymentUrl: ... })
-    const result = await this.orderService.createOrder(req.user.id, dto);
+    // G4 (wiki 0044/0045): pass client IP cho anti-farm referral check.
+    // Express trust-proxy nên đã set req.ip từ X-Forwarded-For khi qua reverse proxy.
+    const clientIp = (req.ip as string | undefined) || (req.headers?.['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() || null;
+    const result = await this.orderService.createOrder(req.user.id, dto, clientIp);
 
     // [FIX] Không còn result.order nữa, mà là result.orders (mảng)
     // Nếu bạn cần lấy ID để redirect, có thể lấy ID của đơn đầu tiên hoặc trả về cả danh sách
