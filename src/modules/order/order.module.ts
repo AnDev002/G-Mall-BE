@@ -15,6 +15,7 @@ import { GhnModule } from '../ghn/ghn.module';
 import { PaymentModule } from '../payment/payment.module';
 import { ReviewService } from './review.service';
 import { CharityModule } from '../charity/charity.module';
+import { NotificationModule } from '../notification/notification.module';
 @Module({
   imports: [
     DatabaseModule,
@@ -25,6 +26,7 @@ import { CharityModule } from '../charity/charity.module';
     GhnModule,
     PaymentModule,
     CharityModule, // Cho OrderService.confirmOrderReceived hook auto-trích quỹ (spec [0018])
+    NotificationModule, // wiki 0046: trigger notif khi cancel/confirm/status update
     BullModule.registerQueue({
       name: 'order_queue',
     }),

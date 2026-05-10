@@ -14,6 +14,7 @@ import { GhnService } from '../../modules/ghn/ghn.service';
 import { PaymentService } from '../payment/payment.service';
 import { CharityService } from '../charity/charity.service';
 import { SystemSettingService } from '../../common/services/system-setting.service';
+import { NotificationService } from '../notification/notification.service';
 
 // Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k. Index 0 (30k) là tùy chọn
 // rẻ nhất, không có "không gói".
@@ -36,6 +37,7 @@ export class OrderService {
     private paymentService: PaymentService,
     private charityService: CharityService,
     private systemSetting: SystemSettingService,
+    private notificationService: NotificationService,
   ) {}
 
   // --- HELPER: Lấy items, Validate tồn kho, Group theo Shop ---
@@ -471,8 +473,8 @@ export class OrderService {
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
     if (order.status !== 'PENDING') throw new BadRequestException('Không thể hủy đơn hàng này.');
 
-    return this.prisma.$transaction(async (tx) => {
-      const updatedOrder = await tx.order.update({
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
         where: { id: orderId },
         data: { status: 'CANCELLED' }
       });
@@ -482,8 +484,17 @@ export class OrderService {
           data: { stock: { increment: item.quantity } }
         });
       }
-      return updatedOrder;
+      // Notification trigger (wiki 0046 hookup point #1)
+      await this.notificationService.create({
+        userId,
+        type: 'ORDER',
+        title: 'Đơn hàng đã hủy',
+        content: `Đơn hàng #${orderId.slice(0, 8)} đã được hủy theo yêu cầu của bạn. Tồn kho đã được hoàn lại.`,
+        link: `/user/purchase`,
+      }, tx).catch(() => {/* best-effort, không fail order */});
+      return updated;
     });
+    return updatedOrder;
   }
   async confirmOrderReceived(userId: string, orderId: string) {
     // 1. Kiểm tra đơn hàng có tồn tại và thuộc về user này không
@@ -560,6 +571,21 @@ export class OrderService {
         await this.processReferralReward(tx, userId, Number(order.totalAmount));
       } catch (e: any) {
         this.logger.warn(`[Referral hook fail] order=${updatedOrder.id} err=${e?.message}`);
+      }
+
+      // F. Notification trigger (wiki 0046 hookup point #2): "Đơn hàng đã giao".
+      try {
+        await this.notificationService.create({
+          userId,
+          type: 'ORDER',
+          title: 'Giao hàng thành công',
+          content: pointsToEarn > 0
+            ? `Đơn hàng #${updatedOrder.id.slice(0, 8)} đã giao thành công. Bạn nhận được +${pointsToEarn.toLocaleString()} xu thưởng.`
+            : `Đơn hàng #${updatedOrder.id.slice(0, 8)} đã giao thành công. Hãy đánh giá sản phẩm để nhận xu nhé!`,
+          link: `/user/purchase?type=completed`,
+        }, tx);
+      } catch (e: any) {
+        this.logger.warn(`[Notif delivered fail] order=${updatedOrder.id} err=${e?.message}`);
       }
 
       return {
@@ -705,6 +731,29 @@ export class OrderService {
           }
       } else {
           this.logger.log(`[OrderUpdate] Logic skipped because status "${status}" is not DELIVERED.`);
+      }
+
+      // Notification trigger (wiki 0046 hookup point #3): khi seller chuyển status,
+      // báo cho buyer biết. Mapping status → message gọn.
+      try {
+        const statusMsg: Record<string, { title: string; content: (id: string) => string }> = {
+          CONFIRMED: { title: 'Đơn hàng đã được xác nhận', content: (id) => `Shop đã xác nhận đơn #${id.slice(0, 8)}. Hàng sẽ được chuẩn bị và gửi sớm.` },
+          SHIPPING: { title: 'Đơn hàng đang vận chuyển', content: (id) => `Đơn #${id.slice(0, 8)} đã được giao cho đơn vị vận chuyển. Vui lòng chú ý điện thoại.` },
+          DELIVERED: { title: 'Giao hàng thành công', content: (id) => `Đơn #${id.slice(0, 8)} đã giao thành công. Hãy đánh giá để nhận xu nhé!` },
+          CANCELLED: { title: 'Đơn hàng đã hủy', content: (id) => `Đơn #${id.slice(0, 8)} đã bị hủy.` },
+        };
+        const cfg = statusMsg[String(status).toUpperCase()];
+        if (cfg) {
+          await this.notificationService.create({
+            userId: order.userId,
+            type: 'ORDER',
+            title: cfg.title,
+            content: cfg.content(order.id),
+            link: `/user/purchase`,
+          }, tx);
+        }
+      } catch (e: any) {
+        this.logger.warn(`[Notif status fail] order=${order.id} err=${e?.message}`);
       }
 
       return updatedOrder;

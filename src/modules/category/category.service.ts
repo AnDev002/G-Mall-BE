@@ -284,45 +284,50 @@ export class CategoryService {
   }
 
   async getBreadcrumbs(categoryId: string) {
-    // 1. Query đệ quy ngược lên cha (Giả sử tối đa 4 cấp)
-    const category = await this.prisma.category.findUnique({
-      where: { id: categoryId },
-      include: {
-        parent: {
-          select: {
-            id: true, name: true, slug: true,
-            parent: {
-              select: {
-                id: true, name: true, slug: true,
-                parent: {
-                   select: { id: true, name: true, slug: true }
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (!category) return [];
-
-    // 2. Làm phẳng cây phả hệ thành mảng tuyến tính
-    // Định nghĩa kiểu dữ liệu rõ ràng để tránh lỗi TypeScript
-    const breadcrumbs: { id: string; name: string; slug: string }[] = []; 
-    
-    let current: any = category;
-    
-    // Duyệt ngược từ node con lên cha và đẩy vào đầu mảng
-    while (current) {
-      breadcrumbs.unshift({
-        id: current.id,
-        name: current.name,
-        slug: current.slug
+    // #15 (wiki 0044/0045/0046): trước đây hardcode include parent 4 cấp →
+    // Category cấp 5+ bị skip parent ở giữa (vd "Mẹ và Bé > Dinh dưỡng cho bé"
+    // chain bị mất). Spec Require GMall §5 cho phép tới 5 cấp + có thể tăng.
+    // Sửa: loop iterative đi ngược parentId, không giới hạn cấp.
+    // Cap cứng 10 vòng để đề phòng cycle data corruption.
+    const breadcrumbs: { id: string; name: string; slug: string }[] = [];
+    let currentId: string | null = categoryId;
+    let iterations = 0;
+    while (currentId && iterations < 10) {
+      const cat = await this.prisma.category.findUnique({
+        where: { id: currentId },
+        select: { id: true, name: true, slug: true, parentId: true },
       });
-      current = current.parent;
+      if (!cat) break;
+      breadcrumbs.unshift({ id: cat.id, name: cat.name, slug: cat.slug });
+      currentId = cat.parentId;
+      iterations++;
     }
-
     return breadcrumbs;
+  }
+
+  /**
+   * #10 (wiki 0044/0045/0046): khi user click category cấp cao (vd "Mẹ và Bé"),
+   * SP của cấp con (Dinh dưỡng cho bé, Tã bỉm...) cũng phải hiển. Trước đây
+   * query `categoryId = X` chỉ lấy SP đính trực tiếp vào X → empty.
+   * Fix: BFS đi xuống lấy tất cả descendant ids + chính nó.
+   * Cap depth 10 để tránh vô hạn nếu data có cycle.
+   */
+  async getDescendantIds(categoryId: string): Promise<string[]> {
+    const result = new Set<string>([categoryId]);
+    let frontier: string[] = [categoryId];
+    let depth = 0;
+    while (frontier.length > 0 && depth < 10) {
+      const children = await this.prisma.category.findMany({
+        where: { parentId: { in: frontier } },
+        select: { id: true },
+      });
+      const childIds = children.map(c => c.id).filter(id => !result.has(id));
+      if (childIds.length === 0) break;
+      childIds.forEach(id => result.add(id));
+      frontier = childIds;
+      depth++;
+    }
+    return Array.from(result);
   }
 
   async fixAllSlugs() {

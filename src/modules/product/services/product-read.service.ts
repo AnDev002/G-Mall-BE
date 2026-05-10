@@ -387,15 +387,19 @@ export class ProductReadService implements OnModuleInit {
             }
 
             // 3. Filter Categories
+            // #10 (wiki 0044/0045/0046): khi user click category cấp cao, SP của
+            // các cấp con phải hiển → dùng IN (descendantIds) thay vì = single.
             if (query.categoryId) {
-                whereConditions.push(Prisma.sql`categoryId = ${query.categoryId}`);
-            } else if (query.categorySlug) { 
+                const ids = await this.categoryService.getDescendantIds(query.categoryId);
+                whereConditions.push(Prisma.sql`categoryId IN (${Prisma.join(ids)})`);
+            } else if (query.categorySlug) {
                 const category = await this.prisma.category.findUnique({
                     where: { slug: query.categorySlug },
                     select: { id: true }
                 });
                 if (category) {
-                    whereConditions.push(Prisma.sql`categoryId = ${category.id}`);
+                    const ids = await this.categoryService.getDescendantIds(category.id);
+                    whereConditions.push(Prisma.sql`categoryId IN (${Prisma.join(ids)})`);
                 } else {
                     return { data: [], meta: { total: 0, page, limit, last_page: 0 } };
                 }

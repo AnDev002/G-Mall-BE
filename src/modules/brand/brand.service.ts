@@ -66,6 +66,38 @@ export class BrandService {
     });
   }
 
+  /**
+   * #22 (wiki 0044/0045/0046): brand chips dưới banner ở product detail.
+   * Trả các brand có ≥ 1 product trong category (hoặc descendant) cho trước.
+   * Sort theo số product DESC để brand phổ biến hiển trước.
+   */
+  async findActiveByCategoryIds(categoryIds: string[], limit = 12) {
+    if (!categoryIds || categoryIds.length === 0) return [];
+    // Group products by brandId, count
+    const products = await this.prisma.product.findMany({
+      where: { categoryId: { in: categoryIds }, status: 'ACTIVE', brandId: { not: null } },
+      select: { brandId: true },
+    });
+    const counts = new Map<number, number>();
+    for (const p of products) {
+      if (p.brandId == null) continue;
+      counts.set(p.brandId, (counts.get(p.brandId) || 0) + 1);
+    }
+    if (counts.size === 0) return [];
+    const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, limit);
+    const brandIds = sorted.map(([id]) => id);
+    const brands = await this.prisma.brand.findMany({
+      where: { id: { in: brandIds }, status: 'active' },
+      select: { id: true, name: true, slug: true, logoUrl: true },
+    });
+    // Reorder theo sort order count
+    const map = new Map(brands.map(b => [b.id, b]));
+    return sorted.map(([id, count]) => {
+      const brand = map.get(id);
+      return brand ? { ...brand, productCount: count } : null;
+    }).filter(Boolean);
+  }
+
   // --- CRUD Operations ---
   async create(dto: CreateBrandDto) {
     const exists = await this.prisma.brand.findUnique({

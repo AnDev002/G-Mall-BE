@@ -3,6 +3,7 @@ import {
 } from '@nestjs/common';
 import { BrandService } from './brand.service';
 import { BrandCrawlerService } from './brand-crawler.service';
+import { CategoryService } from '../category/category.service';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { UpdateBrandDto } from './dto/update-brand.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
@@ -16,6 +17,7 @@ export class BrandController {
   constructor(
     private readonly brandService: BrandService,
     private readonly brandCrawler: BrandCrawlerService,
+    private readonly categoryService: CategoryService,
   ) {}
 
   // Spec [0018]: Crawl brand từ URL Shopee/Tiki — seller-only.
@@ -29,7 +31,17 @@ export class BrandController {
   // --- Public/Seller Routes (Prefix: /brands) ---
   @Get('brands')
   @Public() // Accessible by Sellers & Public
-  async getActiveBrands() {
+  async getActiveBrands(
+    @Query('categoryId') categoryId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    // #22 (wiki 0046): nếu có categoryId, trả brand thuộc category (recursive
+    // descendant). Dùng cho brand chips dưới banner ở product detail page.
+    if (categoryId) {
+      const ids = await this.categoryService.getDescendantIds(categoryId);
+      const lim = limit ? Math.min(Math.max(Number(limit) || 12, 1), 30) : 12;
+      return this.brandService.findActiveByCategoryIds(ids, lim);
+    }
     return this.brandService.findAllActive();
   }
 
