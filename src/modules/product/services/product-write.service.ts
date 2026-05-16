@@ -8,6 +8,7 @@ import { ProductCacheService } from './product-cache.service';
 import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
 import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { ProductReadService } from './product-read.service';
+import { ImageSearchService } from '../../image-search/image-search.service'; // wiki 0052
 @Injectable()
 export class ProductWriteService {
   private readonly logger = new Logger(ProductWriteService.name);
@@ -15,7 +16,17 @@ export class ProductWriteService {
     private readonly prisma: PrismaService,
     private readonly productCache: ProductCacheService,
     private readonly productReadService: ProductReadService,
+    private readonly imageSearch: ImageSearchService, // wiki 0052
   ) {}
+
+  // wiki 0052: enqueue index job — fire and forget, never block product save.
+  // Failure here means the product is missing from image search until next
+  // reindex cycle; it does NOT corrupt the product itself.
+  private safeEnqueueIndex(productId: string): void {
+    this.imageSearch.enqueueIndex(productId).catch((err) =>
+      this.logger.warn(`image-search enqueue ${productId} failed: ${err.message}`),
+    );
+  }
 
   // --- 1. Tạo sản phẩm (Updated for Shop Module) ---
   async create(userId: string, dto: CreateProductDto) {
@@ -76,7 +87,7 @@ export class ProductWriteService {
 
     const imageList = Array.isArray(images) ? images : [];
 
-    return await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // A. Tạo Product Parent
       const product = await tx.product.create({
         data: {
@@ -156,14 +167,20 @@ export class ProductWriteService {
          });
       }
 
-      return await tx.product.findUnique({
+      const finalProduct = await tx.product.findUnique({
           where: { id: product.id },
           include: {
               options: { include: { values: true } },
               variants: true
           }
       });
+      return finalProduct;
     });
+
+    // wiki 0052: trigger image-search indexing AFTER transaction commits.
+    // Failure here cannot roll back the saved product — by design fire-and-forget.
+    if (result?.id) this.safeEnqueueIndex(result.id);
+    return result;
   }
 
   async updateProductTags(id: string, systemTags: string[]) {
@@ -402,6 +419,10 @@ export class ProductWriteService {
     }
 
     await this.productCache.invalidateProduct(id);
+
+    // wiki 0052: re-index nếu images đổi (hash check trong processor sẽ skip nếu giống cũ).
+    if (images !== undefined) this.safeEnqueueIndex(id);
+
     return updated;
   }
 

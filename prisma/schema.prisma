@@ -489,6 +489,9 @@ model Product {
   // 1 Product có nhiều biến thể SKU (VD: "Xanh - S", "Đỏ - M")
   variants ProductVariant[]
 
+  // wiki 0052: image search — trạng thái index vector vào Qdrant
+  embedding ProductEmbedding?
+
   // Thống kê (Dùng để sort phổ biến, bán chạy)
   salesCount Int   @default(0)
   rating     Float @default(0)
@@ -1125,4 +1128,32 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, isRead])
+}
+
+// wiki 0052: image search — metadata index trong MySQL, vector lưu trong Qdrant.
+// Tách table riêng để query Product không phải JOIN nặng + dễ rebuild index.
+enum EmbeddingStatus {
+  PENDING   // Chưa index
+  INDEXED   // Đã có vector trong Qdrant
+  FAILED    // Thử index nhưng lỗi (vd ảnh 404, CLIP service down)
+  SKIPPED   // SP không có ảnh → không index được
+}
+
+model ProductEmbedding {
+  id        String          @id @default(uuid())
+  productId String          @unique
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  status    EmbeddingStatus @default(PENDING)
+  // SHA-256 của image bytes — nếu ảnh đổi mà hash giống cũ thì skip re-encode
+  imageHash String?         @db.VarChar(64)
+  model     String          @default("clip-ViT-B-32-multilingual-v1")
+  // Lý do FAILED (vd "image fetch 404") để debug. Null khi INDEXED.
+  errorMsg  String?         @db.Text
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  indexedAt DateTime?       // Set khi status -> INDEXED
+
+  @@index([status, updatedAt])
 }
