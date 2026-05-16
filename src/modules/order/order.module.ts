@@ -14,6 +14,7 @@ import { AdminOrderController } from './controllers/admin-order.controller';
 import { GhnModule } from '../ghn/ghn.module';
 import { PaymentModule } from '../payment/payment.module';
 import { ReviewService } from './review.service';
+import { ReviewController } from './review.controller';
 import { CharityModule } from '../charity/charity.module';
 import { NotificationModule } from '../notification/notification.module';
 @Module({
@@ -31,7 +32,7 @@ import { NotificationModule } from '../notification/notification.module';
       name: 'order_queue',
     }),
   ],
-  controllers: [OrderController, AdminOrderController],
+  controllers: [OrderController, AdminOrderController, ReviewController],
   providers: [
     OrderService,  
     ReviewService,

@@ -6,6 +6,57 @@ import { SubmitOrderReviewDto } from './dto/submit-review.dto';
 export class ReviewService {
   constructor(private prisma: PrismaService) {}
 
+  // Wiki 0044: list các order đã DELIVERED nhưng chưa review → để hiển thị
+  // ở /user/reviews tab "Cần đánh giá". FE gọi /reviews/pending.
+  async listPending(userId: string) {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        userId,
+        status: 'DELIVERED',
+        isReviewed: false,
+      },
+      include: {
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, slug: true, images: true, price: true },
+            },
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+    });
+    return orders;
+  }
+
+  // Wiki 0044: list mọi review user đã submit (product + shop). FE gọi /reviews/me.
+  async listMine(userId: string) {
+    const [productReviews, shopReviews] = await Promise.all([
+      this.prisma.productReview.findMany({
+        where: { userId },
+        include: {
+          product: {
+            select: { id: true, name: true, slug: true, images: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+      this.prisma.shopReview.findMany({
+        where: { userId },
+        include: {
+          shop: {
+            select: { id: true, shopName: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+    ]);
+    return { productReviews, shopReviews };
+  }
+
   async submitReview(userId: string, dto: SubmitOrderReviewDto) {
     const { orderId, shopRating, shopComment, productReviews } = dto;
 
