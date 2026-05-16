@@ -47,7 +47,7 @@ export class ReviewService {
         where: { userId },
         include: {
           shop: {
-            select: { id: true, shopName: true },
+            select: { id: true, name: true, avatar: true },
           },
         },
         orderBy: { createdAt: 'desc' },
