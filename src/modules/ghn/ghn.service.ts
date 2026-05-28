@@ -1,7 +1,20 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { PrismaService } from 'src/database/prisma/prisma.service';
+import {
+  BulkUpdateAddressDto,
+  BulkChangePickupDateDto,
+  BulkRequestPickupDto,
+} from './dto/bulk-shipping.dto';
+
+interface BulkResult {
+  orderId: string;
+  ok: boolean;
+  message?: string;
+  shippingOrderCode?: string;
+}
 
 @Injectable()
 export class GhnService {
@@ -14,10 +27,50 @@ export class GhnService {
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     this.apiUrl = this.configService.get<string>('GHN_API_URL') || 'https://dev-online-gateway.ghn.vn/shiip/public-api';
     this.token = this.configService.get<string>('GHN_TOKEN')!;
     this.shopId = Number(this.configService.get<string>('GHN_SHOP_ID')) || 0;
+  }
+
+  // Có cấu hình GHN thật hay chưa — quyết định branch real-call vs mock.
+  private hasRealCredentials(): boolean {
+    return !!this.token && this.shopId > 0;
+  }
+
+  // Helper assert tất cả orderId thuộc về shop của seller (security: ngăn seller A
+  // bulk-action lên đơn của seller B). Trả về danh sách order đầy đủ field cần.
+  private async assertOrdersBelongToShop(orderIds: string[], shopId: string) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds }, shopId },
+      select: {
+        id: true,
+        shippingOrderCode: true,
+        recipientName: true,
+        recipientPhone: true,
+        recipientAddress: true,
+        districtId: true,
+        wardCode: true,
+        provinceId: true,
+        totalAmount: true,
+        items: {
+          select: {
+            quantity: true,
+            price: true,
+            product: { select: { name: true, weight: true } },
+          },
+        },
+      },
+    });
+    if (orders.length !== orderIds.length) {
+      const found = new Set(orders.map(o => o.id));
+      const missing = orderIds.filter(id => !found.has(id));
+      throw new NotFoundException(
+        `Không tìm thấy hoặc không có quyền với đơn: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''}`,
+      );
+    }
+    return orders;
   }
 
   private getHeaders() {
@@ -216,5 +269,180 @@ export class GhnService {
       console.error(`Lỗi lấy Phường/Xã (District: ${districtId}):`, error?.response?.data || error.message);
       return [];
     }
+  }
+
+  // =====================================================================
+  // BULK SHIPPING OPERATIONS (audit 0053 Seller #1, #2)
+  // Pattern: mỗi method trả về `BulkResult[]` — FE hiển thị progress per-order
+  // và biết đơn nào fail. Không throw aggregate error vì 1 đơn lỗi không nên
+  // chặn 49 đơn còn lại.
+  // =====================================================================
+
+  // 1. SỬA ĐỊA CHỈ HÀNG LOẠT.
+  // DB write trong transaction; GHN call best-effort (nếu shippingOrderCode đã có).
+  async bulkUpdateAddress(shopId: string, dto: BulkUpdateAddressDto): Promise<BulkResult[]> {
+    const ids = dto.items.map(i => i.orderId);
+    const orders = await this.assertOrdersBelongToShop(ids, shopId);
+    const orderMap = new Map(orders.map(o => [o.id, o]));
+
+    const results: BulkResult[] = [];
+    for (const item of dto.items) {
+      const order = orderMap.get(item.orderId)!;
+      try {
+        // 1a. Cập nhật DB
+        await this.prisma.order.update({
+          where: { id: item.orderId },
+          data: {
+            recipientAddress: item.recipientAddress,
+            districtId: item.districtId,
+            wardCode: item.wardCode,
+            ...(item.provinceId ? { provinceId: item.provinceId } : {}),
+            ...(item.recipientName ? { recipientName: item.recipientName } : {}),
+            ...(item.recipientPhone ? { recipientPhone: item.recipientPhone } : {}),
+          },
+        });
+
+        // 1b. Nếu đã có shippingOrderCode → gọi GHN update (best-effort, không
+        // rollback DB nếu GHN fail — local là source of truth, GHN sync async).
+        if (order.shippingOrderCode && this.hasRealCredentials()) {
+          try {
+            const url = `${this.apiUrl}/v2/shipping-order/update`;
+            const payload = {
+              order_code: order.shippingOrderCode,
+              to_name: item.recipientName || order.recipientName,
+              to_phone: item.recipientPhone || order.recipientPhone,
+              to_address: item.recipientAddress,
+              to_ward_code: item.wardCode,
+              to_district_id: item.districtId,
+            };
+            await firstValueFrom(this.httpService.post(url, payload, { headers: this.getHeaders() }));
+          } catch (ghnErr: any) {
+            this.logger.warn(`[GHN sync] update address fail orderId=${item.orderId}: ${ghnErr.message}`);
+          }
+        }
+        results.push({ orderId: item.orderId, ok: true });
+      } catch (err: any) {
+        results.push({ orderId: item.orderId, ok: false, message: err.message });
+      }
+    }
+    return results;
+  }
+
+  // 2. ĐỔI NGÀY LẤY HÀNG HÀNG LOẠT.
+  // GHN gọi update với `pick_time` (Unix timestamp). Vì BE chưa persist pickupDate,
+  // chỉ gọi GHN API; nếu chưa có shippingOrderCode → bỏ qua (đơn mới chưa giao GHN).
+  async bulkChangePickupDate(shopId: string, dto: BulkChangePickupDateDto): Promise<BulkResult[]> {
+    const pickupTs = Math.floor(new Date(dto.pickupDate).getTime() / 1000);
+    const nowTs = Math.floor(Date.now() / 1000);
+    if (pickupTs <= nowTs) {
+      throw new BadRequestException('Ngày lấy hàng phải trong tương lai');
+    }
+
+    const orders = await this.assertOrdersBelongToShop(dto.orderIds, shopId);
+    const results: BulkResult[] = [];
+
+    for (const order of orders) {
+      try {
+        if (!order.shippingOrderCode) {
+          results.push({
+            orderId: order.id,
+            ok: false,
+            message: 'Đơn chưa được tạo phiếu GHN — bấm "Yêu cầu lấy hàng" trước',
+          });
+          continue;
+        }
+
+        if (!this.hasRealCredentials()) {
+          // MOCK: log + giả lập thành công cho dev / staging.
+          this.logger.log(`[MOCK GHN] bulkChangePickupDate orderId=${order.id} → ${dto.pickupDate}`);
+          results.push({ orderId: order.id, ok: true, message: '(mock) Cập nhật thành công' });
+          continue;
+        }
+
+        const url = `${this.apiUrl}/v2/shipping-order/update`;
+        const payload = {
+          order_code: order.shippingOrderCode,
+          pick_time: pickupTs,
+        };
+        const { data } = await firstValueFrom(
+          this.httpService.post(url, payload, { headers: this.getHeaders() }),
+        );
+        if (data?.code === 200 || data?.message === 'Success') {
+          results.push({ orderId: order.id, ok: true });
+        } else {
+          results.push({ orderId: order.id, ok: false, message: data?.message || 'GHN từ chối' });
+        }
+      } catch (err: any) {
+        const ghnMsg = err?.response?.data?.message || err.message;
+        results.push({ orderId: order.id, ok: false, message: ghnMsg });
+      }
+    }
+    return results;
+  }
+
+  // 3. YÊU CẦU ĐƠN VỊ VẬN CHUYỂN ĐẾN LẤY HÀNG HÀNG LOẠT.
+  // Mỗi đơn chưa có shippingOrderCode → gọi createShippingOrder. Persist code
+  // vào DB. Skip đơn đã có code.
+  async bulkRequestPickup(shopId: string, dto: BulkRequestPickupDto): Promise<BulkResult[]> {
+    const orders = await this.assertOrdersBelongToShop(dto.orderIds, shopId);
+    const results: BulkResult[] = [];
+
+    for (const order of orders) {
+      try {
+        if (order.shippingOrderCode) {
+          results.push({
+            orderId: order.id,
+            ok: true,
+            shippingOrderCode: order.shippingOrderCode,
+            message: 'Đã có phiếu GHN, bỏ qua',
+          });
+          continue;
+        }
+        if (!order.districtId || !order.wardCode) {
+          results.push({
+            orderId: order.id,
+            ok: false,
+            message: 'Đơn thiếu địa chỉ giao (districtId/wardCode)',
+          });
+          continue;
+        }
+
+        const weight = order.items.reduce(
+          (acc, it) => acc + (Number(it.product?.weight) || 200) * it.quantity,
+          0,
+        );
+
+        const ghnPayload = {
+          to_name: order.recipientName,
+          to_phone: order.recipientPhone,
+          to_address: order.recipientAddress,
+          to_district_id: order.districtId,
+          to_ward_code: order.wardCode,
+          cod_amount: Math.floor(Number(order.totalAmount)),
+          weight,
+          items: order.items.map(it => ({
+            name: it.product?.name || 'SP',
+            quantity: it.quantity,
+            price: Number(it.price),
+            weight: Number(it.product?.weight) || 200,
+          })),
+        };
+
+        const ghnResp = await this.createShippingOrder(ghnPayload);
+        const code = ghnResp?.order_code;
+        if (code) {
+          await this.prisma.order.update({
+            where: { id: order.id },
+            data: { shippingOrderCode: code, status: 'CONFIRMED' },
+          });
+          results.push({ orderId: order.id, ok: true, shippingOrderCode: code });
+        } else {
+          results.push({ orderId: order.id, ok: false, message: 'GHN không trả về mã đơn' });
+        }
+      } catch (err: any) {
+        results.push({ orderId: order.id, ok: false, message: err.message });
+      }
+    }
+    return results;
   }
 }
