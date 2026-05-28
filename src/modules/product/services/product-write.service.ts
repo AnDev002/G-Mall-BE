@@ -103,7 +103,9 @@ export class ProductWriteService {
           images: imageList as any,
           attributes: finalAttributes,
           ...(shortDescJson ? { shortDesc: shortDescJson as any } : {}),
-          status: 'PENDING',
+          // FE truyền `status: 'DRAFT'` khi bấm "Lưu nháp"; default 'PENDING'
+          // khi seller submit để duyệt. Audit Seller #18 wiki 0061.
+          status: (dto.status === 'DRAFT' ? 'DRAFT' : 'PENDING'),
         },
       });
 

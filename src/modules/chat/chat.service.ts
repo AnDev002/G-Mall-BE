@@ -235,7 +235,7 @@ export class ChatService {
         {
           OR: [
             // <--- Xóa dòng mode: 'insensitive' để tránh lỗi type
-            { email: { contains: query } }, 
+            { email: { contains: query } },
             { name: { contains: query } },
           ],
         },
@@ -245,6 +245,22 @@ export class ChatService {
     take: 5,
   });
 }
+
+  // Audit Buyer Search/Game #21: "Chat với chuyên gia tư vấn" / "Chat với nhân viên"
+  // ở `/user/help` link sang `/messages?role=admin` nhưng FE không biết user
+  // admin nào để mở. Endpoint mới trả về 1 admin user để FE open-chat.
+  async findChatPartnerByRole(role: 'ADMIN' | 'SELLER') {
+    const user = await this.prisma.user.findFirst({
+      where: { role },
+      orderBy: { createdAt: 'asc' }, // admin đầu tiên (account hệ thống)
+      select: { id: true, name: true, email: true, role: true, avatar: true },
+    });
+    if (!user) {
+      // Không throw — FE sẽ hiển thị "Không tìm thấy admin để chat" thân thiện.
+      return null;
+    }
+    return user;
+  }
 
   async getUserConversations(userId: string) {
     const conversations = await this.prisma.conversation.findMany({

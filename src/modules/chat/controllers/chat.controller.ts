@@ -50,8 +50,17 @@ export class ChatController {
   @Get('users/search')
   @UseGuards(JwtAuthGuard) // [Nên thêm Guard vì bên trong dùng req.user]
   async searchUsers(@Query('q') q: string, @Req() req: any) {
-    const userId = req.user.userId; 
+    const userId = req.user.userId;
     if (!q) return [];
     return this.chatService.searchUsers(q, userId);
+  }
+
+  // Audit Buyer Search/Game #21 wiki 0061: FE `/messages?role=admin` cần lookup
+  // admin user để open chat. Trả `{ id, name, ... }` hoặc null.
+  @Get('find-partner')
+  @UseGuards(JwtAuthGuard)
+  async findPartner(@Query('role') role: string) {
+    const safeRole = role === 'ADMIN' || role === 'SELLER' ? role : 'ADMIN';
+    return this.chatService.findChatPartnerByRole(safeRole as 'ADMIN' | 'SELLER');
   }
 }
