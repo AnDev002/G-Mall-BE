@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from 'src/database/redis/redis.constants'; // Import từ module vừa tạo
 import { PrismaService } from 'src/database/prisma/prisma.service';
@@ -6,6 +6,8 @@ import { AddToCartDto } from './dto/add-to-cart.dto';
 
 @Injectable()
 export class CartService {
+  private readonly logger = new Logger(CartService.name);
+
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private prisma: PrismaService,
@@ -102,7 +104,7 @@ export class CartService {
     // Map lại dữ liệu để trả về FE
     const items = products.map(p => {
       const quantity = parseInt(cartItemsRaw[p.id]);
-      const images = p.images as any[]; 
+      const images = p.images as any[];
       return {
         id: p.id,
         productId: p.id,
@@ -117,6 +119,21 @@ export class CartService {
         shopName: p.shop?.name || 'Cửa hàng'
       };
     });
+
+    // Audit Buyer Cart/Checkout #22 wiki 0062: Redis-DB drift cleanup.
+    // Nếu Redis có productId nhưng DB không tìm thấy (SP bị xóa) → orphan.
+    // Tự dọn trong Redis để lần sau getCart() không phải skip nữa, và để
+    // count "totalItems" của FE khớp với data thực tế.
+    const foundIds = new Set(products.map(p => p.id));
+    const orphans = productIds.filter(id => !foundIds.has(id));
+    if (orphans.length > 0) {
+      try {
+        await this.redis.hdel(key, ...orphans);
+        this.logger.warn(`[cart-sync] dọn ${orphans.length} SP đã xóa khỏi Redis cart của user ${userId}`);
+      } catch (e: any) {
+        this.logger.error(`[cart-sync] hdel orphans fail: ${e.message}`);
+      }
+    }
 
     const total = items.reduce((sum, item) => sum + item.totalPrice, 0);
     return { items, total };
