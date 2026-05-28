@@ -1,7 +1,7 @@
 // Backend-GMall/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { INestApplicationContext, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, INestApplicationContext, ValidationPipe, ValidationError } from '@nestjs/common';
 import compression from 'compression';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { ServerOptions } from 'socket.io';
@@ -90,9 +90,80 @@ async function bootstrap() {
 
   // 2. Tối ưu & Validate
   app.use(compression());
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, transformOptions: {
-      enableImplicitConversion: true // 👈 Dòng quan trọng: Tự động chuyển đổi kiểu dữ liệu
-    } }));
+
+  // i18n cho thông báo class-validator. Trước đây trả message Anh mặc định
+  // ("name should not be empty") → seller QA feedback "thông báo tiếng Anh".
+  // Map các constraint key phổ biến sang câu tiếng Việt; fallback giữ raw message.
+  const FIELD_NAMES_VN: Record<string, string> = {
+    name: 'Tên',
+    email: 'Email',
+    password: 'Mật khẩu',
+    phone: 'Số điện thoại',
+    description: 'Mô tả',
+    price: 'Giá',
+    stock: 'Số lượng',
+    categoryId: 'Ngành hàng',
+    title: 'Tiêu đề',
+    code: 'Mã',
+    startDate: 'Ngày bắt đầu',
+    endDate: 'Ngày kết thúc',
+  };
+  const fieldLabel = (raw: string) => FIELD_NAMES_VN[raw] || `Trường "${raw}"`;
+  const translateConstraint = (key: string, raw: string, field: string): string => {
+    const label = fieldLabel(field);
+    const map: Record<string, string> = {
+      isNotEmpty: `${label} không được để trống`,
+      isString: `${label} phải là chuỗi ký tự`,
+      isEmail: `${label} không đúng định dạng email`,
+      isInt: `${label} phải là số nguyên`,
+      isNumber: `${label} phải là số`,
+      isBoolean: `${label} phải là true/false`,
+      isArray: `${label} phải là danh sách`,
+      isDateString: `${label} phải là ngày hợp lệ`,
+      isUrl: `${label} phải là URL hợp lệ`,
+      arrayNotEmpty: `${label} không được rỗng`,
+      isDefined: `${label} là bắt buộc`,
+    };
+    if (map[key]) return map[key];
+    const minLen = raw.match(/must be longer than or equal to (\d+) characters?/i);
+    if (minLen) return `${label} phải có ít nhất ${minLen[1]} ký tự`;
+    const maxLen = raw.match(/must be shorter than or equal to (\d+) characters?/i);
+    if (maxLen) return `${label} không được dài quá ${maxLen[1]} ký tự`;
+    const min = raw.match(/must not be less than (\d+)/i);
+    if (min) return `${label} không được nhỏ hơn ${min[1]}`;
+    const max = raw.match(/must not be greater than (\d+)/i);
+    if (max) return `${label} không được lớn hơn ${max[1]}`;
+    return raw;
+  };
+  const flattenErrors = (errs: ValidationError[], parentField = ''): string[] => {
+    const out: string[] = [];
+    for (const e of errs) {
+      const field = parentField ? `${parentField}.${e.property}` : e.property;
+      if (e.constraints) {
+        for (const [k, v] of Object.entries(e.constraints)) {
+          out.push(translateConstraint(k, v, e.property));
+        }
+      }
+      if (e.children?.length) out.push(...flattenErrors(e.children, field));
+    }
+    return out;
+  };
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+      exceptionFactory: (errors: ValidationError[]) => {
+        const messages = flattenErrors(errors);
+        return new BadRequestException({
+          statusCode: 400,
+          message: messages.length > 1 ? messages : messages[0] || 'Dữ liệu không hợp lệ',
+          error: 'Bad Request',
+        });
+      },
+    }),
+  );
 
   // 2b. Global Prisma exception filter — map Prisma errors → HTTP 4xx
   // (xem docs/wiki/decisions/0029-fix-13-bugs-from-test-suite.md). Trước đây

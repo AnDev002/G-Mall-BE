@@ -58,6 +58,23 @@ export class R2Service {
     }
   }
 
+  async uploadDirect(buffer: Buffer, originalName: string, mime: string, folder: string = 'avatars') {
+    try {
+      const ext = (originalName.split('.').pop() || 'bin').toLowerCase();
+      const key = `${folder}/${uuidv4()}.${ext}`;
+      await this.s3Client.send(new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: buffer,
+        ContentType: mime,
+      }));
+      return { url: `${this.publicDomain}/${key}`, key };
+    } catch (error) {
+      console.error('R2 Direct Upload Error:', error);
+      throw new InternalServerErrorException('Upload thất bại, vui lòng thử lại');
+    }
+  }
+
   async deleteFile(key: string) {
     try {
         // Xử lý key: Nếu key truyền vào là full URL, cần cắt bỏ phần domain
