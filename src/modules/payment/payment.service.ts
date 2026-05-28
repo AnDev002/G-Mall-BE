@@ -153,11 +153,15 @@ export class PaymentService {
         }
     }
 
-  // (Giữ nguyên verifyPay2SSignature cũ của bạn)
   verifyPay2SSignature(query: any): boolean {
-    const secretKey = this.configService.get('PAY2S_SECRET_KEY');
-    const accessKey = this.configService.get('PAY2S_ACCESS_KEY');
+    const secretKey = this.configService.get<string>('PAY2S_SECRET_KEY');
+    const accessKey = this.configService.get<string>('PAY2S_ACCESS_KEY');
+    // Bug fix smoke test 0064: nếu env chưa set → return false (invalid)
+    // thay vì throw `crypto.createHmac(undefined)` gây 500. IPN endpoint
+    // bắt được false → trả 400 'Invalid Signature' (an toàn).
+    if (!secretKey || !accessKey || !query) return false;
     const { amount, extraData, message, orderId, orderInfo, orderType, partnerCode, payType, requestId, responseTime, resultCode, transId, signature } = query;
+    if (!signature) return false;
     const safeExtraData = extraData || '';
     const safeTransId = transId || '';
     const rawHash = `accessKey=${accessKey}&amount=${amount}&extraData=${safeExtraData}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${safeTransId}`;

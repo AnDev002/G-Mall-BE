@@ -9,7 +9,7 @@ import {
   BulkRequestPickupDto,
 } from './dto/bulk-shipping.dto';
 
-interface BulkResult {
+export interface BulkResult {
   orderId: string;
   ok: boolean;
   message?: string;
