@@ -155,10 +155,16 @@ async function bootstrap() {
       transform: true,
       transformOptions: { enableImplicitConversion: true },
       exceptionFactory: (errors: ValidationError[]) => {
+        // Trả message luôn dạng string (join nếu nhiều) — đồng nhất với các
+        // BadRequestException khác trong codebase (BE throw string), không break
+        // FE handlers chỉ check `typeof message === 'string'`. Vẫn expose `messages`
+        // (array) ở extra field cho client nào cần render từng dòng.
         const messages = flattenErrors(errors);
+        const joined = messages.length ? messages.join('; ') : 'Dữ liệu không hợp lệ';
         return new BadRequestException({
           statusCode: 400,
-          message: messages.length > 1 ? messages : messages[0] || 'Dữ liệu không hợp lệ',
+          message: joined,
+          messages,
           error: 'Bad Request',
         });
       },

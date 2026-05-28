@@ -19,16 +19,24 @@ const ALLOWED_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 export class StorageController {
   constructor(private readonly r2Service: R2Service) {}
 
-  @Public()
+  // Security fix (review batch 5): bỏ `@Public()` — JwtAuthGuard.canActivate
+  // detect IS_PUBLIC_KEY và skip JWT check, ai cũng request được presigned URL.
+  // Cũng enforce MIME whitelist trên fileType từ body để tránh upload MIME bất kỳ.
   @Post('storage/presigned')
   @UseGuards(JwtAuthGuard)
   async getPresignedUrl(@Body() body: { fileName: string; fileType: string }) {
+    if (!ALLOWED_MIMES.includes(body.fileType)) {
+      throw new BadRequestException('Định dạng ảnh không hỗ trợ');
+    }
     return this.r2Service.generatePresignedUrl(body.fileName, body.fileType);
   }
 
   @Post('storage/presigned-url')
   @UseGuards(JwtAuthGuard)
   async getUploadUrl(@Body() body: { fileName: string; fileType: string; folder?: string }) {
+    if (!ALLOWED_MIMES.includes(body.fileType)) {
+      throw new BadRequestException('Định dạng ảnh không hỗ trợ');
+    }
     return this.r2Service.generatePresignedUrl(body.fileName, body.fileType, body.folder);
   }
 
