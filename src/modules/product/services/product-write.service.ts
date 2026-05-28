@@ -561,25 +561,55 @@ export class ProductWriteService {
     if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
     return this.bulkDelete([productId]);
   }
-  // --- 5. Find All By Seller (Updated) ---
-  async findAllBySeller(userId: string, status?: string) {
-    // [MỚI] Lấy Shop ID
+  // --- 5. Find All By Seller (search + sort + counts) ---
+  async findAllBySeller(
+    userId: string,
+    status?: string,
+    opts?: { page?: number; limit?: number; search?: string; sortBy?: string; sortOrder?: 'asc' | 'desc' },
+  ) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
     if (!shop) throw new NotFoundException("Shop không tồn tại");
 
-    const whereCondition: any = { shopId: shop.id }; // [MỚI] Filter by shopId
+    const page = Math.max(1, Number(opts?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(opts?.limit) || 10));
+    const search = opts?.search?.trim();
+    const sortBy = ['createdAt', 'price', 'updatedAt'].includes(opts?.sortBy || '') ? opts!.sortBy! : 'createdAt';
+    const sortOrder: 'asc' | 'desc' = opts?.sortOrder === 'asc' ? 'asc' : 'desc';
 
-    if (status && status !== 'ALL') {
-        whereCondition.status = status as ProductStatus;
+    const baseWhere: any = { shopId: shop.id };
+    if (search) {
+      baseWhere.name = { contains: search, mode: 'insensitive' };
     }
 
-    return this.prisma.product.findMany({
-      where: whereCondition,
-      include: {
-        _count: { select: { variants: true } }
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const statusWhere: any = { ...baseWhere };
+    if (status && status !== 'ALL') {
+      statusWhere.status = status as ProductStatus;
+    }
+
+    // counts theo status để FE hiển thị badge ("Chờ duyệt (3)", ...) —
+    // audit Seller #7 báo badge luôn 0.
+    const [data, total, statusGroup] = await this.prisma.$transaction([
+      this.prisma.product.findMany({
+        where: statusWhere,
+        include: { _count: { select: { variants: true } } },
+        orderBy: { [sortBy]: sortOrder },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.product.count({ where: statusWhere }),
+      this.prisma.product.groupBy({
+        by: ['status'],
+        where: baseWhere,
+        _count: { _all: true },
+        orderBy: { status: 'asc' },
+      }),
+    ]);
+
+    const counts: Record<string, number> = Object.fromEntries(
+      statusGroup.map((g: any) => [g.status, g._count?._all ?? 0]),
+    );
+
+    return { data, meta: { total, page, limit, counts } };
   }
 
   async findAllForAdmin() {
