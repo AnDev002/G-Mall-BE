@@ -416,15 +416,33 @@ export class ProductReadService implements OnModuleInit {
                 ? Prisma.sql`WHERE ${Prisma.join(whereConditions, ' AND ')}` 
                 : Prisma.sql``;
 
-            let orderBySql = Prisma.sql`ORDER BY createdAt DESC`;
-            if (query.sort === 'sales') orderBySql = Prisma.sql`ORDER BY salesCount DESC`;
-            else if (query.sort === 'price_asc') orderBySql = Prisma.sql`ORDER BY price ASC`;
-            else if (query.sort === 'price_desc') orderBySql = Prisma.sql`ORDER BY price DESC`;
+            // Default sort = createdAt DESC, NHƯNG khi có search keyword,
+            // mặc định chuyển sang relevance: tên match score 100, mô tả
+            // score 10. Kết hợp salesCount để boost SP bán chạy lên đầu
+            // khi có nhiều hit cùng score. Audit Buyer Search/Game #3 wiki 0062.
+            let orderBySql: Prisma.Sql;
+            const hasSearchSort = searchKeyword && !query.sort;
+            if (hasSearchSort) {
+                const exactLike = `%${searchKeyword}%`;
+                orderBySql = Prisma.sql`ORDER BY
+                    (CASE WHEN name LIKE ${exactLike} THEN 100 ELSE 0 END) +
+                    (CASE WHEN description LIKE ${exactLike} THEN 10 ELSE 0 END) DESC,
+                    salesCount DESC,
+                    createdAt DESC`;
+            } else if (query.sort === 'sales') {
+                orderBySql = Prisma.sql`ORDER BY salesCount DESC`;
+            } else if (query.sort === 'price_asc') {
+                orderBySql = Prisma.sql`ORDER BY price ASC`;
+            } else if (query.sort === 'price_desc') {
+                orderBySql = Prisma.sql`ORDER BY price DESC`;
+            } else {
+                orderBySql = Prisma.sql`ORDER BY createdAt DESC`;
+            }
 
             const products = await this.prisma.$queryRaw<any[]>`
                 SELECT id, name, price, slug, images, salesCount, originalPrice, createdAt, systemTags,
                        isDiscountActive, discountType, discountValue
-                FROM Product 
+                FROM Product
                 ${whereClause}
                 ${orderBySql}
                 LIMIT ${limit} OFFSET ${skip}

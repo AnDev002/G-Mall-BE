@@ -1,5 +1,5 @@
 // BE-1.7/modules/product/dto/create-product.dto.ts
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, IsPositive, IsArray, ValidateNested, IsJSON, IsObject, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, IsPositive, IsArray, ValidateNested, IsJSON, IsObject, MaxLength, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 
 // Spec [0018]: Mô tả ngắn — block 6 fields hiển thị nhanh trên trang SP.
@@ -54,6 +54,13 @@ export class ProductVariantDto {
 }
 
 export class CreateProductDto {
+  // Trạng thái khi seller tạo: 'DRAFT' (lưu nháp, không gửi duyệt) hoặc
+  // bỏ qua → BE để default 'PENDING'. Audit Seller #18 wiki 0061.
+  @IsOptional()
+  @IsString()
+  @IsIn(['DRAFT', 'PENDING'])
+  status?: 'DRAFT' | 'PENDING';
+
   // --- Cơ bản ---
   @IsString()
   @IsNotEmpty()

@@ -7,10 +7,12 @@ import { StoreProductController } from './controllers/store-product.controller';
 import { AdminProductController } from './controllers/admin-product.controller'; // Import mới
 import { CategoryModule } from '../category/category.module';
 import { ProductAutoTagService } from './services/product-auto-tag.service';
+import { ImageSearchModule } from '../image-search/image-search.module'; // wiki 0052
 
 @Module({
   imports: [
     CategoryModule, // [FIX] Thêm dòng này để ProductReadService dùng được CategoryService
+    ImageSearchModule, // wiki 0052: auto-index sau create/update SP
   ],
   controllers: [
     StoreProductController,  // Cho Khách hàng (Buyer)

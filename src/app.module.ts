@@ -35,6 +35,7 @@ import { NewsletterModule } from './modules/newsletter/newsletter.module';
 import { ComplaintModule } from './modules/complaint/complaint.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { SystemSettingModule } from './common/services/system-setting.module';
+import { ImageSearchModule } from './modules/image-search/image-search.module'; // wiki 0052
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -132,6 +133,7 @@ import { SystemSettingModule } from './common/services/system-setting.module';
     NewsletterModule,
     ComplaintModule,
     NotificationModule,
+    ImageSearchModule, // wiki 0052: image search (CLIP + Qdrant)
   ],
   controllers: [AppController],
   providers: [AppService],

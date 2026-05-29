@@ -8,12 +8,79 @@ export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   constructor(private configService: ConfigService) {}
 
-  // ... (Giữ nguyên phần MoMo) ...
-  async createMomoPayment(orderId: string, amount: number) {
-    // Code MoMo cũ giữ nguyên
-    return { payUrl: "https://momo.vn/dummy" }; 
+  // Tích hợp MoMo One-time Payment API v2 (chuẩn https://developers.momo.vn).
+  // Nếu thiếu env → throw BadRequest có message tiếng Việt rõ ràng để FE hiển thị.
+  async createMomoPayment(
+    orderId: string,
+    amount: number,
+    description: string = 'Thanh toan don hang Gmall',
+  ): Promise<string> {
+    const partnerCode = this.configService.get<string>('MOMO_PARTNER_CODE');
+    const accessKey = this.configService.get<string>('MOMO_ACCESS_KEY');
+    const secretKey = this.configService.get<string>('MOMO_SECRET_KEY');
+    const endpoint =
+      this.configService.get<string>('MOMO_ENDPOINT') ||
+      'https://test-payment.momo.vn/v2/gateway/api/create';
+    const redirectUrl = this.configService.get<string>('MOMO_RETURN_URL');
+    const ipnUrl = this.configService.get<string>('MOMO_IPN_URL');
+
+    if (!partnerCode || !accessKey || !secretKey || !redirectUrl || !ipnUrl) {
+      throw new BadRequestException(
+        'MoMo chưa được cấu hình, vui lòng chọn phương thức thanh toán khác',
+      );
+    }
+
+    const requestId = `${orderId}-${Date.now()}`;
+    const orderInfo = description;
+    const requestType = 'captureWallet';
+    const extraData = '';
+    const strAmount = String(Math.floor(amount));
+
+    const rawSignature = `accessKey=${accessKey}&amount=${strAmount}&extraData=${extraData}&ipnUrl=${ipnUrl}&orderId=${orderId}&orderInfo=${orderInfo}&partnerCode=${partnerCode}&redirectUrl=${redirectUrl}&requestId=${requestId}&requestType=${requestType}`;
+    const signature = crypto
+      .createHmac('sha256', secretKey)
+      .update(rawSignature)
+      .digest('hex');
+
+    const payload = {
+      partnerCode,
+      partnerName: 'GMall',
+      storeId: 'GMallStore',
+      requestId,
+      amount: strAmount,
+      orderId,
+      orderInfo,
+      redirectUrl,
+      ipnUrl,
+      lang: 'vi',
+      extraData,
+      requestType,
+      signature,
+    };
+
+    try {
+      const response = await axios.post(endpoint, payload, { timeout: 10000 });
+      if (response.data?.payUrl) return response.data.payUrl;
+      this.logger.error(`MoMo response không có payUrl: ${JSON.stringify(response.data)}`);
+      throw new Error(response.data?.message || 'MoMo không trả về link thanh toán');
+    } catch (error: any) {
+      this.logger.error(`Lỗi tạo link MoMo: ${error.message}`);
+      throw new BadRequestException('Lỗi kết nối cổng thanh toán MoMo');
+    }
   }
-  verifyMomoSignature(body: any) { return true; }
+
+  verifyMomoSignature(body: any): boolean {
+    const secretKey = this.configService.get<string>('MOMO_SECRET_KEY');
+    const accessKey = this.configService.get<string>('MOMO_ACCESS_KEY');
+    if (!secretKey || !accessKey) return false;
+    const {
+      amount, extraData, message, orderId, orderInfo, orderType,
+      partnerCode, payType, requestId, responseTime, resultCode, transId, signature,
+    } = body || {};
+    const rawHash = `accessKey=${accessKey}&amount=${amount}&extraData=${extraData || ''}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${transId || ''}`;
+    const expected = crypto.createHmac('sha256', secretKey).update(rawHash).digest('hex');
+    return expected === signature;
+  }
 
   // [UPDATED] Thêm tham số description (mặc định nếu không truyền)
   async createPay2SPayment(
@@ -86,11 +153,15 @@ export class PaymentService {
         }
     }
 
-  // (Giữ nguyên verifyPay2SSignature cũ của bạn)
   verifyPay2SSignature(query: any): boolean {
-    const secretKey = this.configService.get('PAY2S_SECRET_KEY');
-    const accessKey = this.configService.get('PAY2S_ACCESS_KEY');
+    const secretKey = this.configService.get<string>('PAY2S_SECRET_KEY');
+    const accessKey = this.configService.get<string>('PAY2S_ACCESS_KEY');
+    // Bug fix smoke test 0064: nếu env chưa set → return false (invalid)
+    // thay vì throw `crypto.createHmac(undefined)` gây 500. IPN endpoint
+    // bắt được false → trả 400 'Invalid Signature' (an toàn).
+    if (!secretKey || !accessKey || !query) return false;
     const { amount, extraData, message, orderId, orderInfo, orderType, partnerCode, payType, requestId, responseTime, resultCode, transId, signature } = query;
+    if (!signature) return false;
     const safeExtraData = extraData || '';
     const safeTransId = transId || '';
     const rawHash = `accessKey=${accessKey}&amount=${amount}&extraData=${safeExtraData}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${safeTransId}`;

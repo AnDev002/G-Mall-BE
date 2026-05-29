@@ -57,9 +57,20 @@ export class SellerProductController {
 
   @Get()
   getMyProducts(
-      @Request() req, 
-      @Query('status') status: string
+      @Request() req,
+      @Query('status') status: string,
+      @Query('page') page?: string,
+      @Query('limit') limit?: string,
+      @Query('search') search?: string,
+      @Query('sortBy') sortBy?: string,
+      @Query('sortOrder') sortOrder?: 'asc' | 'desc',
   ) {
-    return this.productWriteService.findAllBySeller(req.user.id, status);
+    return this.productWriteService.findAllBySeller(req.user.id, status, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      search,
+      sortBy,
+      sortOrder,
+    });
   }
 }

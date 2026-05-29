@@ -107,6 +107,24 @@ export class EnvVars {
   @IsOptional()
   @IsString()
   FACEBOOK_CALLBACK_URL?: string;
+
+  // wiki 0052: image search. Tùy chọn — thiếu thì /products/search/by-image trả 503.
+  // Default fallback: http://localhost:8000 (clip), http://localhost:6333 (qdrant).
+  @IsOptional()
+  @IsString()
+  CLIP_SERVICE_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  QDRANT_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  QDRANT_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  QDRANT_COLLECTION?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {

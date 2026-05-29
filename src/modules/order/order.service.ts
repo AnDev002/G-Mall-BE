@@ -339,17 +339,29 @@ export class OrderService {
     let paymentUrl: string | null = null;
     if (dto.paymentMethod === 'pay2s') {
         try {
-            const masterOrderId = result[0].id; 
+            const masterOrderId = result[0].id;
             const totalPay = preview.summary.total;
             const desc = `Thanh toan ${result.length} don hang`;
             paymentUrl = await this.paymentService.createPay2SPayment(
                 masterOrderId,
                 Number(totalPay),
-                desc 
+                desc
             );
         } catch (error) {
             this.logger.error(`Pay2S Error:`, error);
         }
+    }
+
+    if (dto.paymentMethod === 'momo') {
+        const masterOrderId = result[0].id;
+        const totalPay = preview.summary.total;
+        const desc = `Thanh toan ${result.length} don hang Gmall`;
+        // Lỗi MoMo không nuốt — bật BadRequest để FE hiển thị message.
+        paymentUrl = await this.paymentService.createMomoPayment(
+            masterOrderId,
+            Number(totalPay),
+            desc,
+        );
     }
 
     // --- GHN Logic (Giữ nguyên) ---

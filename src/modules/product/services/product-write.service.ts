@@ -8,6 +8,7 @@ import { ProductCacheService } from './product-cache.service';
 import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
 import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { ProductReadService } from './product-read.service';
+import { ImageSearchService } from '../../image-search/image-search.service'; // wiki 0052
 @Injectable()
 export class ProductWriteService {
   private readonly logger = new Logger(ProductWriteService.name);
@@ -15,7 +16,17 @@ export class ProductWriteService {
     private readonly prisma: PrismaService,
     private readonly productCache: ProductCacheService,
     private readonly productReadService: ProductReadService,
+    private readonly imageSearch: ImageSearchService, // wiki 0052
   ) {}
+
+  // wiki 0052: enqueue index job — fire and forget, never block product save.
+  // Failure here means the product is missing from image search until next
+  // reindex cycle; it does NOT corrupt the product itself.
+  private safeEnqueueIndex(productId: string): void {
+    this.imageSearch.enqueueIndex(productId).catch((err) =>
+      this.logger.warn(`image-search enqueue ${productId} failed: ${err.message}`),
+    );
+  }
 
   // --- 1. Tạo sản phẩm (Updated for Shop Module) ---
   async create(userId: string, dto: CreateProductDto) {
@@ -76,7 +87,7 @@ export class ProductWriteService {
 
     const imageList = Array.isArray(images) ? images : [];
 
-    return await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // A. Tạo Product Parent
       const product = await tx.product.create({
         data: {
@@ -92,7 +103,9 @@ export class ProductWriteService {
           images: imageList as any,
           attributes: finalAttributes,
           ...(shortDescJson ? { shortDesc: shortDescJson as any } : {}),
-          status: 'PENDING',
+          // FE truyền `status: 'DRAFT'` khi bấm "Lưu nháp"; default 'PENDING'
+          // khi seller submit để duyệt. Audit Seller #18 wiki 0061.
+          status: (dto.status === 'DRAFT' ? 'DRAFT' : 'PENDING'),
         },
       });
 
@@ -156,14 +169,20 @@ export class ProductWriteService {
          });
       }
 
-      return await tx.product.findUnique({
+      const finalProduct = await tx.product.findUnique({
           where: { id: product.id },
           include: {
               options: { include: { values: true } },
               variants: true
           }
       });
+      return finalProduct;
     });
+
+    // wiki 0052: trigger image-search indexing AFTER transaction commits.
+    // Failure here cannot roll back the saved product — by design fire-and-forget.
+    if (result?.id) this.safeEnqueueIndex(result.id);
+    return result;
   }
 
   async updateProductTags(id: string, systemTags: string[]) {
@@ -402,6 +421,10 @@ export class ProductWriteService {
     }
 
     await this.productCache.invalidateProduct(id);
+
+    // wiki 0052: re-index nếu images đổi (hash check trong processor sẽ skip nếu giống cũ).
+    if (images !== undefined) this.safeEnqueueIndex(id);
+
     return updated;
   }
 
@@ -540,25 +563,55 @@ export class ProductWriteService {
     if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
     return this.bulkDelete([productId]);
   }
-  // --- 5. Find All By Seller (Updated) ---
-  async findAllBySeller(userId: string, status?: string) {
-    // [MỚI] Lấy Shop ID
+  // --- 5. Find All By Seller (search + sort + counts) ---
+  async findAllBySeller(
+    userId: string,
+    status?: string,
+    opts?: { page?: number; limit?: number; search?: string; sortBy?: string; sortOrder?: 'asc' | 'desc' },
+  ) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
     if (!shop) throw new NotFoundException("Shop không tồn tại");
 
-    const whereCondition: any = { shopId: shop.id }; // [MỚI] Filter by shopId
+    const page = Math.max(1, Number(opts?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(opts?.limit) || 10));
+    const search = opts?.search?.trim();
+    const sortBy = ['createdAt', 'price', 'updatedAt'].includes(opts?.sortBy || '') ? opts!.sortBy! : 'createdAt';
+    const sortOrder: 'asc' | 'desc' = opts?.sortOrder === 'asc' ? 'asc' : 'desc';
 
-    if (status && status !== 'ALL') {
-        whereCondition.status = status as ProductStatus;
+    const baseWhere: any = { shopId: shop.id };
+    if (search) {
+      baseWhere.name = { contains: search, mode: 'insensitive' };
     }
 
-    return this.prisma.product.findMany({
-      where: whereCondition,
-      include: {
-        _count: { select: { variants: true } }
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const statusWhere: any = { ...baseWhere };
+    if (status && status !== 'ALL') {
+      statusWhere.status = status as ProductStatus;
+    }
+
+    // counts theo status để FE hiển thị badge ("Chờ duyệt (3)", ...) —
+    // audit Seller #7 báo badge luôn 0.
+    const [data, total, statusGroup] = await this.prisma.$transaction([
+      this.prisma.product.findMany({
+        where: statusWhere,
+        include: { _count: { select: { variants: true } } },
+        orderBy: { [sortBy]: sortOrder },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.product.count({ where: statusWhere }),
+      this.prisma.product.groupBy({
+        by: ['status'],
+        where: baseWhere,
+        _count: { _all: true },
+        orderBy: { status: 'asc' },
+      }),
+    ]);
+
+    const counts: Record<string, number> = Object.fromEntries(
+      statusGroup.map((g: any) => [g.status, g._count?._all ?? 0]),
+    );
+
+    return { data, meta: { total, page, limit, counts } };
   }
 
   async findAllForAdmin() {
