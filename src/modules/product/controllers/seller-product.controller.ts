@@ -73,4 +73,11 @@ export class SellerProductController {
       sortOrder,
     });
   }
+
+  // Wiki 0068 A1: đọc 1 SP của chính seller để prefill form chỉnh sửa.
+  // Đặt sau @Get('my-products') để route tĩnh không bị ':id' nuốt.
+  @Get(':id')
+  findOneForEdit(@Request() req, @Param('id') id: string) {
+    return this.productWriteService.findOneForEdit(req.user.id, id);
+  }
 }

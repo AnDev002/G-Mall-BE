@@ -934,8 +934,12 @@ model BlogCategory {
   parent    BlogCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
   children  BlogCategory[] @relation("CategoryHierarchy")
   posts     BlogPost[]
+  // Wiki 0068 C10: thứ tự hiển thị do admin kéo thả sắp xếp trong tab "Bài viết".
+  sortOrder Int            @default(0)
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
+
+  @@index([sortOrder])
 }
 
 model BlogPost {

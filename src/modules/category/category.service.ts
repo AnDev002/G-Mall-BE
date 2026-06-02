@@ -24,9 +24,10 @@ export class CategoryService {
           select: { children: true },
         },
       },
-      orderBy: {
-        name: 'asc', // Hoặc thêm field 'order' nếu muốn sắp xếp tùy chỉnh
-      },
+      // Wiki 0068 A13: sắp theo `order` (thứ tự hiển thị website) thay vì alphabet.
+      // Khớp với getCategoryTree() + menu trang chủ. `name` là tie-break ổn định
+      // khi nhiều danh mục cùng order (mặc định 0).
+      orderBy: [{ order: 'asc' }, { name: 'asc' }],
     });
 
     // Map lại dữ liệu để trả về field hasChildren boolean clean hơn

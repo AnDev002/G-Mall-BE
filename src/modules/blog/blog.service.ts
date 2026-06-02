@@ -82,9 +82,12 @@ export class BlogService {
       // Tìm danh mục cha và các danh mục con của nó
       // Lưu ý: Đảm bảo model tên là 'blogCategory' (khớp với file seed của bạn)
       // Nếu schema của bạn tên là 'category' thì sửa thành this.prisma.category
-      const rootCategory = await this.prisma.blogCategory.findUnique({
-        where: { slug: category },
-        include: { children: true }, 
+      // Wiki 0068 C11: bộ lọc admin gửi categoryId (UUID), buyer-facing gửi slug.
+      // Trước chỉ findUnique theo slug → admin gửi id ra null → filter rỗng
+      // ("bộ lọc không hoạt động"). Nhận CẢ id lẫn slug để robust mọi caller.
+      const rootCategory = await this.prisma.blogCategory.findFirst({
+        where: { OR: [{ id: category }, { slug: category }] },
+        include: { children: true },
       });
 
       if (rootCategory) {

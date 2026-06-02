@@ -428,6 +428,55 @@ export class ProductWriteService {
     return updated;
   }
 
+  // --- 3b. Lấy 1 sản phẩm để CHỈNH SỬA (wiki 0068 A1) ---
+  // Bug: FE AddProductPage gọi GET /products/:id (route không tồn tại) -> 404 ->
+  // toast "Không tải được dữ liệu sản phẩm để chỉnh sửa". Trước đây seller KHÔNG có
+  // endpoint đọc 1 SP của mình (chỉ có list + my-products search).
+  // Fix: endpoint owner-scoped, trả raw + FLATTEN attributes (videos/dimensions/
+  // origin/brand/sizeChart) về top-level đúng shape mà form prefill đọc, kèm
+  // crossSellProducts để prefill "mua kèm".
+  async findOneForEdit(userId: string, productId: string) {
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: userId } });
+    if (!shop) throw new ForbiddenException('Bạn không có quyền quản lý sản phẩm này');
+
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, shopId: shop.id },
+      include: {
+        options: { include: { values: true }, orderBy: { position: 'asc' } },
+        variants: true,
+        crossSells: { select: { relatedProductId: true } },
+      },
+    });
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại hoặc không thuộc Shop của bạn');
+    }
+
+    let attrs: any = {};
+    try {
+      attrs = typeof product.attributes === 'string'
+        ? JSON.parse(product.attributes)
+        : (product.attributes || {});
+    } catch {
+      attrs = {};
+    }
+    const dims = attrs.dimensions || {};
+
+    return {
+      ...product,
+      price: Number(product.price),
+      originalPrice: product.originalPrice != null ? Number(product.originalPrice) : null,
+      // Flatten attributes -> field top-level form prefill đang đọc
+      brand: attrs.brand ?? '',
+      origin: attrs.origin ?? '',
+      videos: Array.isArray(attrs.videos) ? attrs.videos : [],
+      sizeChart: attrs.sizeChart ?? null,
+      length: Number(dims.length ?? 0),
+      width: Number(dims.width ?? 0),
+      height: Number(dims.height ?? 0),
+      crossSellProducts: product.crossSells.map((cs) => ({ id: cs.relatedProductId })),
+    };
+  }
+
   // --- 4. Search My Products (Updated) ---
   async searchMyProducts(userId: string, keyword: string, limit: number = 10) {
     // [MỚI] Lấy Shop ID

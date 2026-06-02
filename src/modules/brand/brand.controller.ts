@@ -64,6 +64,15 @@ export class BrandController {
     });
   }
 
+  // Wiki 0068 C7: lấy 1 brand để prefill trang chỉnh sửa (trước chỉ có list,
+  // nên trang edit không có nguồn dữ liệu). findById đã sẵn trong service.
+  @Get('admin/brands/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  async getBrandById(@Param('id', ParseIntPipe) id: number) {
+    return this.brandService.findById(id);
+  }
+
   @Post('admin/brands')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)

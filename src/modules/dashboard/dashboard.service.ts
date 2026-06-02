@@ -74,8 +74,18 @@ export class DashboardService {
     });
 
     const shippingOrders = await this.prisma.order.count({
-      where: { 
+      where: {
         status: OrderStatus.SHIPPING,
+        items: { some: { product: { is: { sellerId } } } }
+      }
+    });
+
+    // Wiki 0068 A6: đơn CONFIRMED ("Chờ lấy hàng") cũng cần seller xử lý (nút
+    // "Giao ĐVVC" trong OrderTable). Trước đây todo thiếu confirmed nên sidebar
+    // "Đơn chờ" (= pending) đếm thiếu → hiển thị chưa chính xác.
+    const confirmedOrders = await this.prisma.order.count({
+      where: {
+        status: OrderStatus.CONFIRMED,
         items: { some: { product: { is: { sellerId } } } }
       }
     });
@@ -136,6 +146,7 @@ export class DashboardService {
       lowStockProducts,
       todo: {
         pending: pendingOrders,
+        confirmed: confirmedOrders,
         shipping: shippingOrders,
         returned: returnedOrders
       },
