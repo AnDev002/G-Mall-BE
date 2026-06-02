@@ -28,8 +28,11 @@ export class EventController {
     // 3. Trả về format đúng key mà Frontend cần
     return {
       // Sửa lỗi TS2339: checkInStatus.isCheckedIn -> dailyStatus.isCheckedInToday
-      isCheckedInToday: dailyStatus.isCheckedInToday, 
-      hasSpunToday: gachaStatus.hasSpun,           
+      isCheckedInToday: dailyStatus.isCheckedInToday,
+      hasSpunToday: gachaStatus.hasSpun,
+      // Wiki 0068 B4: thiếu currentStreak → CheckInModal đọc res.currentStreak luôn
+      // undefined → streak=0 → luôn highlight Ngày 1, không nhảy ngày sau check-in.
+      currentStreak: dailyStatus.currentStreak,
     };
   }
 

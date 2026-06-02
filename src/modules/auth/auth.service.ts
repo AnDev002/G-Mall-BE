@@ -80,15 +80,21 @@ export class AuthService {
     await this.prisma.cart.create({ data: { userId: user.id } });
 
 
-    if(user.email) {
-      // Fix B-NEW-PERF-1 (wiki 0021): KHÔNG await sendMail. Trước đây block
-      // response 4-10s vì SMTP slow/unavailable -> register/forgot-password chậm
-      // -> client timeout. Fire-and-forget OK vì user vẫn dùng được "Gửi lại OTP"
-      // nếu mail rớt. Lỗi đã được catch bên trong sendOtp.
-      void this.sendOtp(user.email);
-    }
+    // Wiki 0068 B2: await sendOtp để lấy OTP + biết mail có cấu hình hay không.
+    // (Việc gửi mail vẫn fire-and-forget BÊN TRONG sendOtp nên không block response —
+    // giữ nguyên tinh thần wiki 0021.)
+    const otpResult = await this.sendOtp(user.email ?? undefined);
 
-    return { message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.' };
+    // Bug "tạo tài khoản không nhận được OTP": MAIL_USER/PASS trống → mail fail im
+    // lặng → user kẹt không verify được. Khi mail CHƯA cấu hình + môi trường
+    // non-production → trả `devOtp` để hoàn tất đăng ký (không còn cách nhận OTP
+    // nào khác). Production có mail → KHÔNG trả (bảo mật). Client phải set
+    // MAIL_USER/MAIL_PASS để OTP gửi qua email thật ở prod.
+    const includeDevOtp = !otpResult.mailConfigured && process.env.NODE_ENV !== 'production';
+    return {
+      message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.',
+      ...(includeDevOtp ? { devOtp: otpResult.otp } : {}),
+    };
   }
 
   async registerSeller(
@@ -221,9 +227,16 @@ export class AuthService {
     return this.generateTokens(user);
   }
 
+  // Wiki 0068 B2: mail chỉ "đã cấu hình" khi có cả MAIL_USER lẫn MAIL_PASS.
+  private isMailConfigured(): boolean {
+    return !!(process.env.MAIL_USER && process.env.MAIL_PASS);
+  }
+
   // --- HELPER: Gửi OTP (Dùng chung cho Register & Forgot Password) ---
-  async sendOtp(email?: string) {
-    if (!email) return;
+  // Trả { otp, mailConfigured } để caller quyết định có lộ devOtp (non-prod) không.
+  async sendOtp(email?: string): Promise<{ otp: string | null; mailConfigured: boolean }> {
+    const mailConfigured = this.isMailConfigured();
+    if (!email) return { otp: null, mailConfigured };
 
     const normalizedEmail = email.toLowerCase();
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -236,15 +249,25 @@ export class AuthService {
 
     console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
 
-    // Fix B-NEW-PERF-1 (wiki 0021): fire-and-forget. Helper sendOtp được gọi
-    // trực tiếp từ /auth/send-otp endpoint nên cũng phải non-blocking.
-    void this.mailerService
-      .sendMail({
-        to: normalizedEmail,
-        subject: 'Mã xác thực GMall',
-        html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
-      })
-      .catch((error) => console.log('>>> [WARNING] Lỗi gửi mail:', error.message));
+    if (mailConfigured) {
+      // Fix B-NEW-PERF-1 (wiki 0021): fire-and-forget để không block response.
+      void this.mailerService
+        .sendMail({
+          to: normalizedEmail,
+          subject: 'Mã xác thực GMall',
+          html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
+        })
+        .catch((error) => console.log('>>> [WARNING] Lỗi gửi mail:', error.message));
+    } else {
+      // Wiki 0068 B2: không cấu hình mail → KHÔNG gửi (tránh fail im lặng gây
+      // hiểu nhầm "đã gửi"). Caller sẽ trả devOtp ở non-prod để vẫn verify được.
+      console.log(
+        `>>> [WARNING] MAIL_USER/MAIL_PASS chưa cấu hình — OTP cho ${normalizedEmail} KHÔNG gửi qua email. ` +
+        `Set MAIL_USER/MAIL_PASS (.env) để bật gửi email ở production.`,
+      );
+    }
+
+    return { otp, mailConfigured };
   }
 
   // --- HELPER: Tạo Token ---

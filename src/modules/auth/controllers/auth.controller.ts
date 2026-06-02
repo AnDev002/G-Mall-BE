@@ -115,14 +115,28 @@ export class AuthController {
   @RateLimit({ points: 3, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('send-otp')
   async sendOtp(@Body() dto: SendOtpDto) {
-    await this.authService.sendOtp(dto.email);
-    return { message: 'Đã gửi lại mã OTP' };
+    const r = await this.authService.sendOtp(dto.email);
+    // Wiki 0068 B2: lộ devOtp khi mail chưa cấu hình + non-production để user vẫn
+    // verify được (không có cách nhận OTP khác). Prod có mail → không lộ.
+    const includeDevOtp = !r.mailConfigured && process.env.NODE_ENV !== 'production';
+    return { message: 'Đã gửi lại mã OTP', ...(includeDevOtp ? { devOtp: r.otp } : {}) };
   }
 
   @Public()
   @Post('verify-otp')
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto);
+  }
+
+  // Wiki 0068 B3: FE hỏi provider nào đã cấu hình để KHÔNG redirect sang BE rồi
+  // dính trang 503 thô. Chưa cấu hình → FE hiện toast "chưa khả dụng" thân thiện.
+  @Public()
+  @Get('oauth-status')
+  oauthStatus() {
+    return {
+      google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL),
+      facebook: !!(process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET && process.env.FACEBOOK_CALLBACK_URL),
+    };
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

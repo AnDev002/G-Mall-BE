@@ -5,8 +5,11 @@ import { PointType } from '@prisma/client';
 
 @Injectable()
 export class DailyService {
-  // Cấu hình phần thưởng 7 ngày
-  private readonly REWARDS = [100, 150, 200, 250, 300, 400, 1000]; // Ngày 7 nổ hũ 1000
+  // Wiki 0068 B4 (sync spec G3 / wiki 0046,0048): 10 ngày, mỗi ngày 3000 xu,
+  // ngày 10 thưởng thêm 10000 (= 13000). Trước đây BE vẫn để 7 ngày [100..1000]
+  // trong khi FE đã đổi 10 ngày 3000 (wiki 0048 sót BE) → user thấy "Ngày 1 +3000"
+  // nhưng thực nhận 100, và chu kỳ ngày lệch nhau.
+  private readonly REWARDS = [3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 13000];
 
   constructor(
     private pointService: PointService,
@@ -45,8 +48,8 @@ export class DailyService {
         // Nếu diffDays == 0 là cùng ngày (đã chặn ở trên rồi)
     }
 
-    // Đảm bảo streak chạy từ 0 đến 6 (tương ứng ngày 1 -> 7)
-    if (currentStreak >= 7) currentStreak = 0; // Reset chu kỳ sau 7 ngày
+    // Streak chạy 0..9 (tương ứng ngày 1..10). Reset chu kỳ sau 10 ngày.
+    if (currentStreak >= 10) currentStreak = 0;
 
     const rewardPoints = this.REWARDS[currentStreak];
     const dayLabel = currentStreak + 1; // Ngày hiển thị (1-7)
