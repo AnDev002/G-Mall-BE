@@ -26,11 +26,12 @@ export class ChatController {
   @Get('messages/:conversationId')
   @UseGuards(JwtAuthGuard)
   getMessages(
+    @Request() req,
     @Param('conversationId') conversationId: string,
     @Query('limit') limit: number,
     @Query('cursor') cursor: string,
   ) {
-      return this.chatService.getMessages(conversationId, Number(limit) || 20, cursor);
+      return this.chatService.getMessages(conversationId, req.user.userId, Number(limit) || 20, cursor);
   }
 
   @Patch('read/:conversationId')

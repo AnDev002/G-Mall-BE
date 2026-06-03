@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { EncryptionUtil } from 'src/common/utils/encryption.util';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -306,7 +306,16 @@ export class ChatService {
     });
   }
 
-  async getMessages(conversationId: string, limit: number = 20, cursor?: string) {
+  async getMessages(conversationId: string, userId: string, limit: number = 20, cursor?: string) {
+    // Wiki 0075: chỉ participant mới đọc được tin nhắn. Trước đây fetch chỉ theo
+    // conversationId (không nhận userId) → bất kỳ ai biết convId đọc trộm tin nhắn
+    // (đã giải mã) của 2 người khác = lộ riêng tư.
+    const conv = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, participants: { some: { id: userId } } },
+      select: { id: true },
+    });
+    if (!conv) throw new ForbiddenException('Bạn không có quyền xem hội thoại này');
+
     // 1. Lấy dữ liệu từ DB (Cần await để lấy kết quả thô trước)
     const messages = await this.prisma.message.findMany({
       where: { conversationId },
