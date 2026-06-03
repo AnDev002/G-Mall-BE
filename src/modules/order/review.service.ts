@@ -84,6 +84,17 @@ export class ReviewService {
         throw new BadRequestException('Không tìm thấy thông tin Shop của đơn hàng này');
     }
 
+    // Wiki 0075: chỉ cho đánh giá sản phẩm THỰC SỰ có trong đơn. Trước đây loop tạo
+    // ProductReview theo productId từ DTO mà KHÔNG kiểm productId thuộc order.items →
+    // user review + sửa rating sản phẩm chưa mua (fake review / phá rating đối thủ,
+    // lại đội mác "đã mua" vì có orderId).
+    const orderProductIds = new Set(order.items.map((it: any) => it.productId));
+    for (const pr of productReviews) {
+        if (!orderProductIds.has(pr.productId)) {
+            throw new BadRequestException('Sản phẩm không thuộc đơn hàng này');
+        }
+    }
+
     return await this.prisma.$transaction(async (tx) => {
       // 2. Tạo Shop Review (Đánh giá Shop)
       await tx.shopReview.create({
