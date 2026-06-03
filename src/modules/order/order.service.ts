@@ -97,7 +97,10 @@ export class OrderService {
 
       if (item.variantId) {
          selectedVariant = product.variants.find(v => v.id === item.variantId);
-         // if (selectedVariant) finalPrice = Number(selectedVariant.price);
+         // Wiki 0075: tính theo GIÁ BIẾN THỂ. Trước đây dòng này bị comment → đặt
+         // variant vẫn tính theo product.price (giá gốc) → sai tiền (variant đắt/rẻ
+         // hơn đều lệch). Không tìm thấy variant → giữ giá gốc (fallback an toàn).
+         if (selectedVariant) finalPrice = Number(selectedVariant.price);
       }
 
       const productImages = product.images as unknown as string[];
