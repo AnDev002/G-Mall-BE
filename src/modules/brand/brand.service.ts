@@ -1,5 +1,6 @@
 import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { UpdateBrandDto } from './dto/update-brand.dto';
 import { Prisma } from '@prisma/client';
@@ -10,8 +11,9 @@ export class BrandService {
 
   // --- Admin: List All with Counts ---
   async findAllAdmin(query: { search?: string; page?: number; limit?: number }) {
-    const { search, page = 1, limit = 10 } = query;
-    const skip = (page - 1) * limit;
+    const { search } = query;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(query.page, query.limit);
 
     const where: Prisma.BrandWhereInput = search
       ? { name: { contains: search } } // Removed mode: 'insensitive' for MySQL compatibility, add if using Postgres

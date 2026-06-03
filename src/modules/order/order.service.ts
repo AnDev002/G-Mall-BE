@@ -3,6 +3,7 @@
 // ... (Giữ nguyên các import)
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { CartService } from '../../modules/cart/cart.service';
 import { PromotionService } from '../../modules/promotion/promotion.service';
 import { TrackingService } from '../../modules/tracking/tracking.service';
@@ -420,8 +421,9 @@ export class OrderService {
   
   // ... (Các hàm còn lại giữ nguyên)
   async findAll(params: { page?: number; limit?: number; status?: string; search?: string; }) {
-    const { page = 1, limit = 10, status, search } = params;
-    const skip = (page - 1) * limit;
+    const { status, search } = params;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(params.page, params.limit);
     const where: Prisma.OrderWhereInput = {};
     if (status && status !== 'ALL') { where.status = status as any; }
     if (search) {

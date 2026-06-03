@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateShopDto } from './dto/create-shop.dto'; // Bạn tự tạo DTO nhé
 import { nanoid } from 'nanoid';
 import { generateSlug } from 'src/common/utils/slug.util';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { Prisma, ShopStatus } from '@prisma/client';
 import { UpdateShopProfileDto } from '../auth/dto/update-shop.dto';
 
@@ -126,17 +127,15 @@ export class ShopService {
         };
     }
 
-    const { 
-        page = 1, 
-        limit = 12, 
-        sort = 'newest', 
-        minPrice, 
-        maxPrice, 
-        categoryId, 
-        rating 
+    const {
+        sort = 'newest',
+        minPrice,
+        maxPrice,
+        categoryId,
+        rating
     } = params;
-    
-    const skip = (Number(page) - 1) * Number(limit);
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(params.page, params.limit, { defaultLimit: 12 });
 
     // 2. Xây dựng điều kiện lọc (Where)
     const where: Prisma.ProductWhereInput = {
@@ -263,9 +262,8 @@ export class ShopService {
   }
 
   async getShops(query: any) {
-    const page = Number(query.page) || 1;
-    const limit = Number(query.limit) || 10;
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500). Xem getPagination.
+    const { page, limit, skip } = getPagination(query.page, query.limit);
     const search = query.search || '';
 
     // Điều kiện lọc: Chỉ lấy shop đang hoạt động (ACTIVE)

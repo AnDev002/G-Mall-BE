@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { Prisma } from '@prisma/client';
 
 /**
@@ -47,7 +48,10 @@ export class NotificationService {
   }
 
   async listMine(userId: string, page = 1, pageSize = 20) {
-    const skip = (page - 1) * pageSize;
+    // Wiki 0074: clamp page/pageSize (page=-1 → skip âm → Prisma 500).
+    const _pg = getPagination(page, pageSize, { defaultLimit: 20 });
+    page = _pg.page; pageSize = _pg.limit;
+    const skip = _pg.skip;
     const [items, total, unread] = await Promise.all([
       this.prisma.notification.findMany({
         where: { userId },

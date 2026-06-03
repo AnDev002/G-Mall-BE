@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../../modules/auth/guards/jwt.guard';
 import { Public } from 'src/common/decorators/public.decorator';
 import { UpdateShopProfileDto } from '../auth/dto/update-shop.dto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 // ... imports DTO
 
 @Controller('shops')
@@ -102,7 +103,10 @@ export class ShopController {
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
   ) {
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (ParseIntPipe cho -1 lọt → skip âm → Prisma 500).
+    const _pg = getPagination(page, limit);
+    page = _pg.page; limit = _pg.limit;
+    const skip = _pg.skip;
 
     const [reviews, total] = await Promise.all([
       this.prisma.shopReview.findMany({

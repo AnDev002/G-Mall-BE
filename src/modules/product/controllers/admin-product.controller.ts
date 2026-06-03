@@ -4,6 +4,7 @@
 import { Controller, Get, UseGuards, Param, Delete, Patch, Body, Query, Header, Post } from '@nestjs/common'; // [GENIUS] Thêm Header
 import { ProductWriteService } from '../services/product-write.service';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
@@ -33,9 +34,8 @@ export class AdminProductController {
   @Query('categoryId') categoryId: string
 ) {
    const whereCondition: any = {};
-   const pageNum = Number(page) || 1;
-   const limitNum = Number(limit) || 20;
-   const skip = (pageNum - 1) * limitNum;
+   // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+   const { page: pageNum, limit: limitNum, skip } = getPagination(page, limit, { defaultLimit: 20 });
 
    // 1. Filter theo status
    if (status && status !== 'ALL') {

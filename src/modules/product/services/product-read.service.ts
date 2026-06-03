@@ -8,6 +8,7 @@ import { ProductCacheService } from './product-cache.service';
 import { CategoryService } from '../../category/category.service';
 import { Prisma } from '@prisma/client';
 import { AUTO_TAG_RULES } from '../constants/tag-rules';
+import { getPagination } from 'src/common/utils/pagination.util';
 
 interface FindAllPublicDto {
   page?: number;
@@ -725,9 +726,8 @@ export class ProductReadService implements OnModuleInit {
   }
 
   async findAllForSeller(sellerId: string, query: { page?: number; limit?: number; keyword?: string }) {
-    const page = Number(query.page) || 1;
-    const limit = Number(query.limit) || 20;
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(query.page, query.limit, { defaultLimit: 20 });
     const where: Prisma.ProductWhereInput = { shopId: sellerId };
     if (query.keyword) where.name = { contains: query.keyword };
 
@@ -750,9 +750,8 @@ export class ProductReadService implements OnModuleInit {
       page?: number; limit?: number; sort?: string; 
       categoryId?: string; minPrice?: number; maxPrice?: number; rating?: number;
   }) {
-      const page = Number(query.page) || 1;
-      const limit = Number(query.limit) || 12;
-      const skip = (page - 1) * limit;
+      // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+      const { page, limit, skip } = getPagination(query.page, query.limit, { defaultLimit: 12 });
 
       const where: Prisma.ProductWhereInput = {
           shopId: shopId,

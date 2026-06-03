@@ -5,6 +5,7 @@ import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 // Wiki 0032: cache list/detail product (TTL 30s) — read-heavy, ít update so với traffic
 import { RedisCacheInterceptor, CacheKey, CacheTTL } from 'src/common/interceptors/redis-cache.interceptor';
+import { getPagination } from 'src/common/utils/pagination.util';
 
 @Controller('store/products')
 export class StoreProductController {
@@ -145,7 +146,10 @@ export class StoreProductController {
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('rating') rating?: number, // Filter theo sao (1-5)
   ) {
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (ParseIntPipe cho -1 lọt → skip âm → Prisma 500).
+    const _pg = getPagination(page, limit);
+    page = _pg.page; limit = _pg.limit;
+    const skip = _pg.skip;
     
     // Xây dựng điều kiện lọc
     const whereCondition: any = { productId };

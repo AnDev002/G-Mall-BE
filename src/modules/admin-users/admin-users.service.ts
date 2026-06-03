@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { TrackingService } from '../tracking/tracking.service';
 import { EventType } from '../tracking/dto/track-event.dto';
 import { MailerService } from '@nestjs-modules/mailer';
@@ -29,8 +30,9 @@ export class AdminUsersService {
   // =================================================================
 
   async getSellers(params: { page?: number; limit?: number; search?: string }) {
-    const { page = 1, limit = 10, search } = params;
-    const skip = (page - 1) * limit;
+    const { search } = params;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(params.page, params.limit);
 
     // Điều kiện lọc cho Shop
     const where: Prisma.ShopWhereInput = {
@@ -226,8 +228,10 @@ export class AdminUsersService {
   // --- [UPDATE] Lấy danh sách Shop chờ duyệt ---
   async getPendingShops(page: number = 1, limit: number = 10) {
     console.log(`🔍 [DEBUG] getPendingShops called with page=${page}, limit=${limit}`); // <--- LOG 1
-    
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const _pg = getPagination(page, limit);
+    page = _pg.page; limit = _pg.limit;
+    const skip = _pg.skip;
     
     // Kiểm tra xem có bao nhiêu shop đang pending trong DB
     const pendingCount = await this.prisma.shop.count({ where: { status: 'PENDING' } });
@@ -336,7 +340,10 @@ export class AdminUsersService {
   }
 
   async getShopUpdateRequests(page: number = 1, limit: number = 10) {
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const _pg = getPagination(page, limit);
+    page = _pg.page; limit = _pg.limit;
+    const skip = _pg.skip;
     
     // [FIX 1] Cách viết chuẩn để tìm trường JSON không phải là NULL trong Prisma
     const whereCondition: Prisma.ShopWhereInput = {
@@ -414,17 +421,15 @@ export class AdminUsersService {
     maxPoints?: number;
     industryId?: string; // Lọc theo ngành hàng chuyên của Seller
   }) {
-    const { 
-        page = 1, 
-        limit = 10, 
-        search, 
-        role, 
-        minPoints, 
-        maxPoints, 
-        industryId 
+    const {
+        search,
+        role,
+        minPoints,
+        maxPoints,
+        industryId
     } = params;
-    
-    const skip = (page - 1) * limit;
+    // Wiki 0074: clamp page/limit (page=-1 → skip âm → Prisma 500).
+    const { page, limit, skip } = getPagination(params.page, params.limit);
     const where: Prisma.UserWhereInput = {};
 
     // 1. Filter Role

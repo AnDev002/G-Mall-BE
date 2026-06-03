@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { getPagination } from 'src/common/utils/pagination.util';
 import { OrderStatus, PayoutStatus, WalletTransactionType } from '@prisma/client';
 
 @Injectable()
@@ -71,8 +72,11 @@ export class FinanceService {
 
   // API 2: Lấy danh sách rút tiền
   async getPayoutRequests(page: number, status?: string) {
+    // Wiki 0074: clamp page (page=-1 → skip âm → Prisma 500).
     const limit = 10;
-    const skip = (page - 1) * limit;
+    const _pg = getPagination(page, limit, { defaultLimit: 10 });
+    page = _pg.page;
+    const skip = _pg.skip;
     
     const where: any = {};
     if (status && status !== 'ALL') {
