@@ -74,6 +74,7 @@ export class OrderService {
       select: {
           id: true, name: true, price: true, originalPrice: true,
           stock: true, weight: true, images: true, variants: true,
+          status: true, // Wiki 0075: chặn mua SP không ACTIVE (ẩn/chưa duyệt)
           categoryId: true, // B7.9: cần cho voucher scope CATEGORY match theo danh mục
           shopId: true, shop: { select: { id: true, name: true, districtId: true, wardCode: true } }
       }
@@ -85,6 +86,9 @@ export class OrderService {
       // ... (Logic trong vòng lặp giữ nguyên)
       const product = products.find(p => p.id === item.productId);
       if (!product) throw new NotFoundException(`Sản phẩm ID ${item.productId} không tồn tại`);
+      // Wiki 0075: chỉ cho mua SP ACTIVE — chặn mua SP seller đã ẩn (INACTIVE) hoặc
+      // admin chưa duyệt (PENDING). Trước đây fetch không lọc status → mua được hết.
+      if ((product as any).status !== 'ACTIVE') throw new BadRequestException(`Sản phẩm ${product.name} hiện không khả dụng`);
       if (product.stock < item.quantity) throw new BadRequestException(`Sản phẩm ${product.name} không đủ hàng`);
       if (!product.shopId) throw new BadRequestException(`Dữ liệu sản phẩm ${product.name} lỗi (thiếu ShopId)`);
 
