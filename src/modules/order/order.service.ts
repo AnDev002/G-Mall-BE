@@ -164,12 +164,6 @@ export class OrderService {
     const { shopDiscounts, systemDiscount, appliedVouchers } = 
         await this.promotionService.calculateMultiShopVouchers(dto.voucherIds || [], shopGroups);
 
-    let coinDiscount = 0;
-    if (dto.useCoins) {
-        const wallet = await this.prisma.pointWallet.findUnique({ where: { userId } });
-        coinDiscount = Math.min(wallet?.balance || 0, 50000); 
-    }
-
     let totalSubtotal = 0;
     let totalShipping = 0;
     let totalShopDiscount = 0;
@@ -194,9 +188,19 @@ export class OrderService {
         giftFee = (GIFT_WRAP_PRICES[dto.giftWrapIndex || 0] || 0) + (CARD_PRICES[dto.cardIndex || 0] || 0);
     }
 
-    const grandTotal = Math.max(0, 
-        totalSubtotal + totalShipping + giftFee - totalShopDiscount - systemDiscount - coinDiscount
+    // Wiki 0075: cap xu theo số tiền THỰC phải trả (sau ship + voucher). Trước đây
+    // coinDiscount = min(balance, 50000) không xét bill → đơn rẻ hơn mức xu dùng thì
+    // ví vẫn bị trừ đủ 50000 trong khi total chỉ giảm tới 0 → khách MẤT OAN xu.
+    const payableBeforeCoins = Math.max(0,
+        totalSubtotal + totalShipping + giftFee - totalShopDiscount - systemDiscount
     );
+    let coinDiscount = 0;
+    if (dto.useCoins) {
+        const wallet = await this.prisma.pointWallet.findUnique({ where: { userId } });
+        coinDiscount = Math.min(wallet?.balance || 0, 50000, payableBeforeCoins);
+    }
+
+    const grandTotal = Math.max(0, payableBeforeCoins - coinDiscount);
 
     return {
         breakdown, 

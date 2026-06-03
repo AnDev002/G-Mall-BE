@@ -1,6 +1,6 @@
 // BE-110/modules/order/dto/create-order.dto.ts
 
-import { IsBoolean, IsOptional, IsString, IsArray, ValidateNested, IsNumber, Min, IsObject, IsNotEmpty } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, IsArray, ValidateNested, IsNumber, IsInt, Min, IsObject, IsNotEmpty } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export class CartItemDto {
@@ -8,7 +8,9 @@ export class CartItemDto {
   @IsNotEmpty()
   productId: string;
 
-  @IsNumber()
+  // Wiki 0075: @IsInt (không phải @IsNumber) — qty=1.5 lọt qua @IsNumber gây đơn +
+  // kho số lẻ (VND không thập phân). Đồng bộ với cart add-to-cart/update (đã @IsInt).
+  @IsInt()
   @Min(1)
   quantity: number;
 
