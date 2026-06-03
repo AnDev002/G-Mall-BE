@@ -181,14 +181,14 @@ export class CharityService {
     },
   ) {
     // 1. Read config từ SystemSetting
-    const commissionRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
     const charityRate = await this.systemSetting.getNumber('CHARITY_COMMISSION_RATE', 0.01);
 
-    // 2. Tính số tiền trích
-    const commissionAmount = params.orderTotal * commissionRate;
-    const donationAmount = Math.floor(commissionAmount * (charityRate / commissionRate));
-    // Note: donation = orderTotal * charityRate trực tiếp cũng OK; viết qua commission
-    // để rõ "trích từ phí hoa hồng" — ý nghĩa kinh doanh.
+    // 2. Tính số tiền trích.
+    // Wiki 0075: trích THẲNG orderTotal * charityRate. Công thức cũ nhân qua
+    // (charityRate / commissionRate) = 0.01/0.05 = 0.19999…(lỗi dấu phẩy động) →
+    // floor hụt 1đ (vd total 153.400: đúng 1.534, cũ ra 1.533 → quỹ thiếu so với 1%).
+    // Note gốc đã xác nhận 2 cách tương đương; chọn cách trực tiếp để khỏi sai số.
+    const donationAmount = Math.floor(params.orderTotal * charityRate);
 
     if (donationAmount <= 0) return null;
 
