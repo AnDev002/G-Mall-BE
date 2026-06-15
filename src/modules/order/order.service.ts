@@ -360,7 +360,14 @@ export class OrderService {
                 desc
             );
         } catch (error) {
+            // Wiki 0076: KHÔNG nuốt lỗi nữa. Trước đây catch chỉ log → paymentUrl
+            // để null → FE tưởng đặt hàng thành công nhưng đơn PENDING vĩnh viễn,
+            // không ai biết thanh toán fail. Giờ throw như nhánh MoMo (contract 0064).
             this.logger.error(`Pay2S Error:`, error);
+            throw new BadRequestException(
+                error?.message ||
+                'Không tạo được link thanh toán Pay2S, vui lòng thử lại hoặc chọn phương thức khác',
+            );
         }
     }
 

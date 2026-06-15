@@ -21,9 +21,12 @@ export class DailyService {
     const redisKey = `checkin:${userId}:${today}`;
     const streakKey = `streak:${userId}`;
 
-    // 1. Check đã điểm danh hôm nay chưa
-    const hasCheckedInCache = await this.redisService.get(redisKey);
-    if (hasCheckedInCache) {
+    // 1. CLAIM ngày hôm nay bằng setNX (ATOMIC) — wiki 0077: chống double check-in.
+    // Trước đây GET redisKey rồi mới SET (cuối hàm) = check-then-act KHÔNG atomic →
+    // nhiều request song song cùng qua cửa → cộng điểm 2+ lần (RACE-5 fail).
+    // setNX chỉ 1 request giành được ngày; các request còn lại trả false → chặn.
+    const claimed = await this.redisService.setNX(redisKey, '1', 86400);
+    if (!claimed) {
         throw new BadRequestException('Hôm nay bạn đã nhận thưởng rồi!');
     }
 
@@ -78,8 +81,10 @@ export class DailyService {
         };
 
     } catch (e) {
-        if (e instanceof ConflictException) { 
-             await this.redisService.set(redisKey, '1', 86400);
+        // Wiki 0077: award lỗi → nhả claim ngày (đã setNX ở đầu hàm) để user còn
+        // thử lại, tránh khoá nhầm cả ngày khi chưa thực nhận điểm.
+        await this.redisService.del(redisKey);
+        if (e instanceof ConflictException) {
              throw new BadRequestException('Hôm nay bạn đã điểm danh rồi!');
         }
         throw e;

@@ -74,9 +74,12 @@ export class GhnService {
   }
 
   private getHeaders() {
+    // GHN docs (api.ghn.vn id=63/82): header BẮT BUỘC `Token` + `ShopId` (PascalCase).
+    // Wiki 0078: trước gửi `shop_id` (snake_case) → GHN coi như THIẾU ShopId →
+    // fee/leadtime/create-order lỗi. (`shop_id` != `ShopId` dù header case-insensitive.)
     return {
-      token: this.token,
-      shop_id: this.shopId,
+      Token: this.token,
+      ShopId: this.shopId,
       'Content-Type': 'application/json',
     };
   }
@@ -187,8 +190,10 @@ export class GhnService {
 
   // [FIX 3] Truyền weight vào khi tạo đơn thật
   async createShippingOrder(orderData: any) {
-    // --- ĐOẠN CODE GỌI API THẬT (ĐÃ COMMENT LẠI) ---
-    /*
+    // Spec wiki 0064: STUB-by-default. Có GHN_TOKEN + GHN_SHOP_ID → gọi GHN thật;
+    // chưa cấu hình → fallback MOCK ở cuối hàm (cho dev/staging). Wiki 0076: bỏ
+    // comment khối real-call (trước đây bị /* */ nên LUÔN trả mock dù đã có key).
+    if (this.hasRealCredentials()) {
     try {
         const totalWeight = orderData.weight || 200;
         const serviceId = await this.getServiceId(
@@ -214,10 +219,10 @@ export class GhnService {
         this.logger.error('GHN Create Order Error:', error.response?.data || error.message);
         throw new BadRequestException('Không thể tạo đơn vận chuyển GHN');
     }
-    */
+    }
 
-    // --- ĐOẠN CODE GIẢ LẬP (MOCK) ---
-    this.logger.log(`[MOCK GHN] Giả lập tạo đơn hàng thành công cho: ${orderData.to_name}`);
+    // --- FALLBACK MOCK (chưa cấu hình GHN_TOKEN/GHN_SHOP_ID — dev/staging) ---
+    this.logger.warn(`[MOCK GHN] Chưa cấu hình GHN_TOKEN/GHN_SHOP_ID → giả lập đơn cho: ${orderData.to_name}`);
     
     // Trả về dữ liệu giả giống hệt cấu trúc GHN trả về thật
     // Để OrderService không bị lỗi khi đọc 'order_code' hay 'total_fee'
