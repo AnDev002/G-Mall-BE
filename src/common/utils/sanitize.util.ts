@@ -27,9 +27,11 @@ export function sanitizeHtml(input?: string | null): string {
   }
 
   // 2. Xóa các thuộc tính event handler on* (vd: onclick="...", onerror='...', onload=foo)
-  html = html.replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, '');
-  html = html.replace(/\son[a-z]+\s*=\s*'[^']*'/gi, '');
-  html = html.replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, '');
+  //    Wiki 0086: bắt cả dấu phân tách là SLASH, không chỉ whitespace — chặn bypass kiểu
+  //    <svg/onload=alert(1)> / <img/src=x/onerror=...> (trước đây chỉ match \son... nên lọt).
+  html = html.replace(/[\s/]on[a-z]+\s*=\s*"[^"]*"/gi, ' ');
+  html = html.replace(/[\s/]on[a-z]+\s*=\s*'[^']*'/gi, ' ');
+  html = html.replace(/[\s/]on[a-z]+\s*=\s*[^\s>]+/gi, ' ');
 
   // 3. Vô hiệu hóa URL scheme nguy hiểm trong href/src (javascript:, vbscript:, data:)
   //    Chỉ áp dụng cho giá trị nằm trong dấu nháy của thuộc tính.

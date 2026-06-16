@@ -13,6 +13,17 @@ export class PaymentController {
     private prisma: PrismaService,
   ) {}
 
+  // Wiki 0086: phát hiện tín hiệu THẤT BẠI tường minh từ IPN. Chỉ skip mark PAID khi có cờ lỗi
+  // rõ ràng (status string failed/cancelled, hoặc resultCode != 0). Giữ nguyên hành vi khi field
+  // vắng mặt → KHÔNG false-reject đơn hợp lệ (cổng nào không gửi field này vẫn chạy như cũ).
+  private hasExplicitPaymentFailure(body: any): boolean {
+    const statusStr = String(body?.status ?? body?.payment_status ?? body?.transactionStatus ?? '').toLowerCase();
+    if (['failed', 'fail', 'cancelled', 'canceled', 'declined', 'expired'].includes(statusStr)) return true;
+    if (body?.resultCode !== undefined && body?.resultCode !== null && body?.resultCode !== '' &&
+        Number.isFinite(Number(body.resultCode)) && Number(body.resultCode) !== 0) return true;
+    return false;
+  }
+
   // Cổng IPN của Pay2S (server-to-server callback). Đổi từ GET sang POST để
   // tránh trigger qua `<img src>` từ trang phishing — IPN không bao giờ
   // visible từ browser. Public để bypass JWT (Pay2S không có session user).
@@ -32,15 +43,24 @@ export class PaymentController {
 
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return res.status(HttpStatus.OK).send({ success: true });
+
+    // Wiki 0086: chỉ mark PAID khi KHÔNG có tín hiệu thất bại tường minh — Pay2S có thể callback
+    // cả giao dịch failed/cancelled với chữ ký hợp lệ → trước đây vẫn mark PAID (nhận đơn chưa trả).
+    if (this.hasExplicitPaymentFailure(body)) {
+      this.logger.warn(`[Pay2S IPN] not successful, skip PAID: status=${body?.status} resultCode=${body?.resultCode}`);
+      return res.status(HttpStatus.OK).send({ success: true });
+    }
     // Wiki 0083: nhóm thanh toán (multi-shop) — mark TẤT CẢ đơn cùng paymentGroupId + so khớp
-    // TỔNG tiền cả nhóm (gateway charge tổng cả giỏ). Chặn underpayment + idempotent (chống replay).
-    // Chữ ký đã verify ở trên nên body.amount tin được.
+    // TỔNG tiền cả nhóm. Chữ ký đã verify ở trên nên body.amount tin được.
     const groupWhere: any = order.paymentGroupId ? { paymentGroupId: order.paymentGroupId } : { id: orderId };
-    const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true } });
+    const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true }, _count: true });
     const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
     const paid = Math.floor(Number(body.amount ?? -1));
-    if (paid >= 0 && paid < expected) {
-      this.logger.warn(`[Pay2S IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected}`);
+    // Wiki 0086: dung sai làm tròn — tổng totalAmount/đơn (đã FLOOR phân bổ voucher/xu) có thể
+    // > số tiền cổng charge vài đồng/đơn → trước đây false-reject đơn ĐÃ trả. Vẫn chặn underpay thật.
+    const tolerance = (agg._count || 1) * 4 + 10;
+    if (paid >= 0 && paid < expected - tolerance) {
+      this.logger.warn(`[Pay2S IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
       return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
     }
     const upd = await this.prisma.order.updateMany({
@@ -75,11 +95,13 @@ export class PaymentController {
       if (!order) return res.status(HttpStatus.OK).send({ success: true });
       // Wiki 0083: nhóm thanh toán — mark tất cả đơn cùng group + so TỔNG tiền nhóm + idempotent.
       const groupWhere: any = order.paymentGroupId ? { paymentGroupId: order.paymentGroupId } : { id: orderId };
-      const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true } });
+      const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true }, _count: true });
       const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
       const paid = Math.floor(Number(body.amount ?? -1));
-      if (paid >= 0 && paid < expected) {
-        this.logger.warn(`[MoMo IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected}`);
+      // Wiki 0086: dung sai làm tròn (xem giải thích ở Pay2S) — tránh false-reject đơn đã trả.
+      const tolerance = (agg._count || 1) * 4 + 10;
+      if (paid >= 0 && paid < expected - tolerance) {
+        this.logger.warn(`[MoMo IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
         return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
       }
       const upd = await this.prisma.order.updateMany({

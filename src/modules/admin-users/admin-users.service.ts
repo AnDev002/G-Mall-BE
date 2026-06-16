@@ -786,16 +786,28 @@ export class AdminUsersService {
         // --- NHÓM 1: DỮ LIỆU CỬA HÀNG (Nếu là Seller) ---
         if (user.shop) {
             const shopId = user.shop.id;
-            // Xóa sản phẩm -> Biến thể -> FlashSale (Cần xóa theo thứ tự nếu không có cascade)
-            await tx.flashSaleProduct.deleteMany({ where: { productId: { in: (await tx.product.findMany({where: {shopId}, select: {id: true}})).map(p => p.id) } } });
-            await tx.productVariant.deleteMany({ where: { productId: { in: (await tx.product.findMany({where: {shopId}, select: {id: true}})).map(p => p.id) } } });
+            const shopProductIds = (await tx.product.findMany({ where: { shopId }, select: { id: true } })).map(p => p.id);
+            // Wiki 0086: ProductReview.productId mặc định RESTRICT → review của BUYER KHÁC trên sản
+            // phẩm của shop chặn xóa product. Trước đây chỉ xóa review theo userId (của seller) →
+            // xóa seller-có-sản-phẩm-được-người-khác-đánh-giá FAIL (FK). Xóa review theo productId.
+            // (CartItem.productId=Cascade, OrderItem.productId=SetNull → KHÔNG chặn, bỏ qua.)
+            if (shopProductIds.length) {
+                await tx.flashSaleProduct.deleteMany({ where: { productId: { in: shopProductIds } } });
+                await tx.productVariant.deleteMany({ where: { productId: { in: shopProductIds } } });
+                await tx.productReview.deleteMany({ where: { productId: { in: shopProductIds } } });
+            }
             await tx.product.deleteMany({ where: { shopId: shopId } });
             await tx.shopCategory.deleteMany({ where: { shopId: shopId } });
             await tx.voucher.deleteMany({ where: { shopId: shopId } });
+            // ShopReview.shopId RESTRICT → review của buyer khác chặn xóa shop → xóa trước.
+            await tx.shopReview.deleteMany({ where: { shopId: shopId } });
             await tx.shop.delete({ where: { id: shopId } });
         }
 
         // --- NHÓM 2: DỮ LIỆU GIAO DỊCH & TÀI CHÍNH ---
+        // Wiki 0086: Donation.userId RESTRICT chặn xóa user đã quyên góp. Set NULL (ẩn danh) thay vì
+        // xóa, để GIỮ tổng tiền quỹ charity đúng (tiền đã quyên thật, không trừ khỏi fund).
+        await tx.donation.updateMany({ where: { userId: userId }, data: { userId: null } });
         await tx.payoutRequest.deleteMany({ where: { userId: userId } });
         await tx.walletTransaction.deleteMany({ where: { userId: userId } });
         await tx.pointTransaction.deleteMany({ where: { userId: userId } });

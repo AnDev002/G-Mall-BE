@@ -568,10 +568,14 @@ export class OrderService {
     if (order.status !== 'PENDING') throw new BadRequestException('Không thể hủy đơn hàng này.');
 
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id: orderId },
-        data: { status: 'CANCELLED' }
+      // Wiki 0086: ATOMIC claim PENDING→CANCELLED. Trước đây check status NGOÀI tx rồi update
+      // vô điều kiện TRONG tx → 2 request hủy đồng thời cùng pass check, cùng chạy khối hoàn
+      // kho/xu/voucher → DOUBLE refund (xu free, kho/voucher sai). Thua race thì bail.
+      const claim = await tx.order.updateMany({
+        where: { id: orderId, status: 'PENDING' },
+        data: { status: 'CANCELLED' },
       });
+      if (claim.count === 0) throw new BadRequestException('Đơn hàng đã được xử lý.');
       for (const item of order.items) {
         if (item.productId) {
           await tx.product.update({
@@ -606,7 +610,7 @@ export class OrderService {
         content: `Đơn hàng #${orderId.slice(0, 8)} đã được hủy theo yêu cầu của bạn. Tồn kho đã được hoàn lại.`,
         link: `/user/purchase`,
       }, tx).catch(() => {/* best-effort, không fail order */});
-      return updated;
+      return await tx.order.findUnique({ where: { id: orderId } });
     });
     return updatedOrder;
   }
@@ -792,6 +796,10 @@ export class OrderService {
       const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
       const net = Math.floor(Number(order.totalAmount) * (1 - feeRate));
       if (net <= 0) return;
+      // Wiki 0086: idempotent — nếu đã có giao dịch ORDER_INCOME cho đơn này thì bỏ qua
+      // (lưới an toàn cuối: chống credit ví seller 2 lần dù bị gọi lại do race/toggle).
+      const already = await tx.walletTransaction.findFirst({ where: { referenceId: order.id, type: 'ORDER_INCOME' } });
+      if (already) return;
       const shop = await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } });
       if (!shop?.ownerId) return;
       await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: net } } });
@@ -816,23 +824,30 @@ export class OrderService {
     // [DEBUG] Log trạng thái ban đầu và input
     this.logger.log(`[OrderUpdate] Start update Order #${orderId}. Input Status: "${status}". Order Total: ${order.totalAmount}`);
 
-    if (order.status === 'DELIVERED') {
-         // Nếu đã giao rồi thì chỉ update status (nếu cần) mà không cộng lại xu
-         this.logger.warn(`[OrderUpdate] Order #${orderId} was already DELIVERED. Skipping reward logic.`);
-         return this.prisma.order.update({
-             where: { id: orderId },
-             data: { status }
-         });
+    // Wiki 0086: DELIVERED/CANCELLED là trạng thái CUỐI — chặn đổi tiếp. Trước đây cho phép
+    // DELIVERED→SHIPPING rồi SHIPPING→DELIVERED lại → mỗi lần set DELIVERED lại credit ví seller
+    // + mint xu (toggle = đúc tiền vô hạn). Chặn terminal-state ở đây + atomic claim bên dưới.
+    if (order.status === 'DELIVERED' || order.status === 'CANCELLED') {
+      throw new BadRequestException('Đơn đã ở trạng thái cuối, không thể đổi trạng thái.');
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Cập nhật trạng thái đơn hàng
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: { status }
-      });
+      // 1. Cập nhật trạng thái — chuyển sang DELIVERED phải ATOMIC: claim where status != DELIVERED.
+      //    Thua race (buyer confirm nhận hàng / seller bấm 2 lần đồng thời) → bail, KHÔNG reward/credit lần 2.
+      if (String(status).toUpperCase() === 'DELIVERED') {
+        const claim = await tx.order.updateMany({
+          where: { id: orderId, status: { not: 'DELIVERED' } },
+          data: { status },
+        });
+        if (claim.count === 0) {
+          return await tx.order.findUnique({ where: { id: orderId } });
+        }
+      } else {
+        await tx.order.update({ where: { id: orderId }, data: { status } });
+      }
+      const updatedOrder = await tx.order.findUnique({ where: { id: orderId } });
 
-      this.logger.log(`[OrderUpdate] DB Update Status Success: ${updatedOrder.status}`);
+      this.logger.log(`[OrderUpdate] DB Update Status Success: ${updatedOrder?.status}`);
 
       // [FIX LOGIC] Chuẩn hóa status về UpperCase để so sánh cho chắc chắn
       // Và đảm bảo so sánh với Enum hoặc string chuẩn

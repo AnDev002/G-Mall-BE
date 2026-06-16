@@ -269,7 +269,10 @@ export class ShopService {
 
     // Nếu có tìm kiếm theo tên
     if (search) {
-      where.name = { contains: search, mode: 'insensitive' };
+      // Wiki 0086: BỎ mode:'insensitive' — Prisma chỉ hỗ trợ `mode` trên PostgreSQL/Mongo; trên
+      // MySQL nó ném "Unknown argument mode" → tìm kiếm shop CRASH 500. Collation MySQL đã
+      // case-insensitive sẵn nên chỉ cần contains.
+      where.name = { contains: search };
     }
 
     const [shops, total] = await Promise.all([

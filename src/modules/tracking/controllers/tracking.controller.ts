@@ -2,7 +2,7 @@
 import { Body, Controller, Post, Get, UseGuards, Request, Headers, Ip, Query } from '@nestjs/common';
 import { TrackingService } from '../tracking.service';
 import { TrackBatchDto } from '../dto/track-event.dto';
-import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
+import { OptionalJwtAuthGuard } from 'src/modules/auth/guards/optional-jwt.guard';
 import { Public } from 'src/common/decorators/public.decorator';
 
 @Controller('tracking')
@@ -11,7 +11,7 @@ export class TrackingController {
 
     @Post('batch')
     @Public()
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(OptionalJwtAuthGuard)
     async trackBatch(
       @Request() req, 
       @Body() body: TrackBatchDto,
@@ -46,7 +46,7 @@ export class TrackingController {
 
     @Get('recommendations')
     @Public()
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(OptionalJwtAuthGuard)
     async getRecommendations(
         @Request() req,
         @Headers('x-device-id') deviceId: string

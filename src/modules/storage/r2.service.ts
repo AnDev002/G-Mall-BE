@@ -13,9 +13,6 @@ const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/gif': 'gif',
 };
 
-// Trần kích thước file (5MB) — đồng nhất với MAX_UPLOAD_BYTES ở controller.
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-
 @Injectable()
 export class R2Service {
   private s3Client: S3Client;
@@ -56,23 +53,21 @@ export class R2Service {
       const safeFileName = uuidv4();
       const key = `${folder}/${safeFileName}.${fileExtension}`;
 
-      // Giới hạn kích thước file: SDK presign chỉ ký từng header rời, không hỗ trợ
-      // content-length-range như POST policy. Ta KÝ luôn Content-Length sao cho
-      // header này nằm trong chữ ký → client buộc phải gửi đúng giá trị, không thể
-      // sửa size. Vì chưa biết kích thước thật lúc presign, ta cap ở MAX_UPLOAD_BYTES
-      // (5MB) làm trần cứng; mọi upload vượt quá sẽ bị R2 từ chối do sai chữ ký.
+      // Wiki 0086: KHÔNG ký Content-Length cố định. SDK presign ký từng header rời; ký
+      // ContentLength=5MB buộc MỌI upload phải gửi đúng 5MB → file thật (vài KB) luôn sai chữ ký
+      // → 403 SignatureDoesNotMatch (HỎNG TOÀN BỘ upload, regression round10). Chỉ ký content-type;
+      // giới hạn dung lượng dựa vào cấu hình bucket R2 (chống upload khổng lồ) chứ không ký ở đây.
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
         Key: key,
         ContentType: fileType,
-        ContentLength: MAX_UPLOAD_BYTES,
         // ACL: 'public-read', // R2 thường không cần cái này nếu bucket public, nhưng nếu lỗi Access Denied thì hãy thử bật lại
       });
 
-      // Tạo URL ký sẵn; signableHeaders ép content-type + content-length vào chữ ký.
+      // Tạo URL ký sẵn; chỉ ép content-type vào chữ ký (không ép content-length).
       const uploadUrl = await getSignedUrl(this.s3Client, command, {
         expiresIn: 300,
-        signableHeaders: new Set(['content-type', 'content-length']),
+        signableHeaders: new Set(['content-type']),
       });
 
       return {
