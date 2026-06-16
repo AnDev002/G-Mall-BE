@@ -104,8 +104,10 @@ export class TrackingProcessor implements OnModuleInit, OnModuleDestroy {
                 // Nếu lỗi bước này, vẫn cho qua để ghi log vào DB (quan trọng hơn)
                 try {
                     if (payload.type === EventType.IDENTIFY) {
-                        if (payload.metadata?.guestId && payload.targetId) {
-                            await this.trackingService.mergeGuestData(payload.metadata.guestId, payload.targetId);
+                        // Wiki 0084: merge target = payload.userId (controller set server-side từ auth),
+                        // KHÔNG dùng payload.targetId (client gửi → có thể poison gợi ý của user khác).
+                        if (payload.metadata?.guestId && payload.userId) {
+                            await this.trackingService.mergeGuestData(payload.metadata.guestId, payload.userId);
                         }
                     } else {
                         await this.trackingService.updateAffinityScore(payload);

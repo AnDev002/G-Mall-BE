@@ -102,6 +102,20 @@ export class OrderService {
          // variant vẫn tính theo product.price (giá gốc) → sai tiền (variant đắt/rẻ
          // hơn đều lệch). Không tìm thấy variant → giữ giá gốc (fallback an toàn).
          if (selectedVariant) finalPrice = Number(selectedVariant.price);
+         // Wiki 0084: nếu biến thể đang trong Flash Sale (session ACTIVE + còn flash stock) → áp
+         // GIÁ SALE. Trước đây checkout tính giá gốc dù UI hiện giá sale → buyer bị tính dư (overcharge).
+         const nowTs = new Date();
+         const fsp = await this.prisma.flashSaleProduct.findFirst({
+           where: {
+             variantId: item.variantId,
+             status: 'APPROVED',
+             session: { status: 'ENABLED', startTime: { lte: nowTs }, endTime: { gt: nowTs } },
+           },
+           select: { salePrice: true, stock: true, sold: true },
+         });
+         if (fsp && fsp.sold < fsp.stock) {
+           finalPrice = Number(fsp.salePrice);
+         }
       }
 
       const productImages = product.images as unknown as string[];
@@ -667,6 +681,9 @@ export class OrderService {
         this.logger.warn(`[Referral hook fail] order=${updatedOrder.id} err=${e?.message}`);
       }
 
+      // Wiki 0084: cộng doanh thu vào ví seller (mảnh ghép để payout chạy E2E).
+      await this.creditSellerOnDelivered(tx, order);
+
       // F. Notification trigger (wiki 0046 hookup point #2): "Đơn hàng đã giao".
       try {
         await this.notificationService.create({
@@ -758,6 +775,27 @@ export class OrderService {
     });
     this.logger.log(`[Referral] +${rewardAmount}đ cho ${user.referredById} từ user ${userId} (đơn ${orderTotal}đ)`);
   }
+  // Wiki 0084: cộng doanh thu vào ví seller khi đơn DELIVERED + đã thanh toán (COD/PAID).
+  // Best-effort (try/catch) — không làm fail flow giao hàng. Là mảnh ghép để payout chạy E2E.
+  private async creditSellerOnDelivered(tx: Prisma.TransactionClient, order: any) {
+    try {
+      if (!order?.shopId) return;
+      const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+      if (!isPaid) return;
+      const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
+      const net = Math.floor(Number(order.totalAmount) * (1 - feeRate));
+      if (net <= 0) return;
+      const shop = await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } });
+      if (!shop?.ownerId) return;
+      await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: net } } });
+      await tx.walletTransaction.create({
+        data: { userId: shop.ownerId, amount: net, type: 'ORDER_INCOME', status: 'COMPLETED', referenceId: order.id, description: `Doanh thu đơn #${order.id.slice(0, 8)}` },
+      });
+    } catch (e: any) {
+      this.logger.warn(`[SellerCredit fail] order=${order?.id} err=${e?.message}`);
+    }
+  }
+
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new NotFoundException('Shop không tồn tại');
@@ -830,6 +868,11 @@ export class OrderService {
           }
       } else {
           this.logger.log(`[OrderUpdate] Logic skipped because status "${status}" is not DELIVERED.`);
+      }
+
+      // Wiki 0084: cộng doanh thu ví seller khi DELIVERED (E2E payout).
+      if (String(status).toUpperCase() === 'DELIVERED') {
+        await this.creditSellerOnDelivered(tx, order);
       }
 
       // Notification trigger (wiki 0046 hookup point #3): khi seller chuyển status,
