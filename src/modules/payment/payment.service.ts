@@ -13,8 +13,15 @@ export class PaymentService {
   // sớm ở byte đầu tiên khác nhau. timingSafeEqual yêu cầu 2 Buffer CÙNG độ dài →
   // phải guard length trước (length mismatch → false ngay, không throw).
   private safeCompareHmac(expected: string, received: unknown): boolean {
-    if (typeof received !== 'string' || expected.length !== received.length) return false;
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
+    if (typeof received !== 'string') return false;
+    // Wiki 0086 (sửa bug): so byte-length của BUFFER (Buffer.from mặc định UTF-8), KHÔNG so
+    // .length chuỗi (UTF-16 code units). Chữ ký chứa ký tự multi-byte có thể cùng số ký tự nhưng
+    // khác số byte → timingSafeEqual THROW RangeError → IPN trả 500 (gateway retry storm) thay vì
+    // 400. Dựng buffer trước, so byte-length, rồi mới timingSafeEqual.
+    const a = Buffer.from(expected);
+    const b = Buffer.from(received);
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
   }
 
   // Tích hợp MoMo One-time Payment API v2 (chuẩn https://developers.momo.vn).

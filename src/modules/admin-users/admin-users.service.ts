@@ -747,7 +747,7 @@ export class AdminUsersService {
     if (isBanned && user.role === 'SELLER') {
        await this.prisma.shop.updateMany({
          where: { ownerId: userId, status: ShopStatus.ACTIVE },
-         data: { status: ShopStatus.BANNED, banReason: OWNER_BAN_REASON_PREFIX + reason }
+         data: { status: ShopStatus.BANNED, banReason: OWNER_BAN_REASON_PREFIX + (reason || 'tài khoản chủ sở hữu bị khóa') }
        });
     }
 

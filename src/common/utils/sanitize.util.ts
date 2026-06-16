@@ -29,12 +29,17 @@ export function sanitizeHtml(input?: string | null): string {
     html = html.replace(orphan, '');
   }
 
-  // 2. Xóa các thuộc tính event handler on* (vd: onclick="...", onerror='...', onload=foo)
-  //    Wiki 0086: bắt cả dấu phân tách là SLASH, không chỉ whitespace — chặn bypass kiểu
-  //    <svg/onload=alert(1)> / <img/src=x/onerror=...> (trước đây chỉ match \son... nên lọt).
-  html = html.replace(/[\s/]on[a-z]+\s*=\s*"[^"]*"/gi, ' ');
-  html = html.replace(/[\s/]on[a-z]+\s*=\s*'[^']*'/gi, ' ');
-  html = html.replace(/[\s/]on[a-z]+\s*=\s*[^\s>]+/gi, ' ');
+  // 2. Xóa thuộc tính event handler on* (onclick/onerror/onload...) — CHỈ trong phạm vi THẺ
+  //    (<...>) và BỎ QUA giá trị nằm trong dấu nháy. Wiki 0086 (sửa regression): bản trước dùng
+  //    `[\s/]on...` toàn cục → cắt nhầm URL chứa /on… (online, onboarding) trong href hoặc text
+  //    (vd href="/page/onload=x" bị mất cả dấu " đóng → vỡ HTML). Giờ alternation: nháy → giữ
+  //    nguyên, handler NGOÀI nháy → xoá. Vẫn chặn bypass <svg/onload=…> (handler không nằm trong nháy).
+  html = html.replace(/<[a-z][^>]*>/gi, (tag) =>
+    tag.replace(
+      /("[^"]*"|'[^']*')|[\s/]on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+      (_m, quoted) => (quoted ? quoted : ' '),
+    ),
+  );
 
   // 3. Vô hiệu hóa URL scheme nguy hiểm trong các thuộc tính mang URL
   //    (javascript:, vbscript:, data:).
