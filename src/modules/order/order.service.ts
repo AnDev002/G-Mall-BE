@@ -2,6 +2,7 @@
 
 // ... (Giữ nguyên các import)
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { getPagination } from 'src/common/utils/pagination.util';
 import { CartService } from '../../modules/cart/cart.service';
@@ -242,6 +243,7 @@ export class OrderService {
     const result = await this.prisma.$transaction(async (tx) => {
       const createdOrders: Order[] = [];
       const totalOrderValue = preview.summary.subtotal;
+      const paymentGroupId = randomUUID(); // Wiki 0083: 1 id nhóm cho cả batch (multi-shop checkout)
 
       if (preview.summary.discounts.coin > 0) {
         const amount = preview.summary.discounts.coin;
@@ -332,6 +334,8 @@ export class OrderService {
                  shopId: group.shopId,
                  totalAmount: new Prisma.Decimal(finalAmount),
                  shippingFee: new Prisma.Decimal(group.shippingFee),
+                 coinUsed: allocatedCoinDisc, // Wiki 0083: xu phân bổ cho đơn này (để hoàn khi hủy)
+                 paymentGroupId, // Wiki 0083: nhóm thanh toán (multi-shop)
                  voucherId: voucherIdToSave,
                  recipientName: receiver.name || dto.senderInfo?.name,
                  recipientPhone: receiver.phone || dto.senderInfo?.phone,
@@ -344,6 +348,7 @@ export class OrderService {
                  items: {
                      create: group.items.map((i: any) => ({
                          productId: i.productId,
+                         variantId: i.variantId || null, // Wiki 0083: lưu variant để hoàn kho khi hủy
                          quantity: i.quantity,
                          price: i.price,
                      }))
@@ -547,10 +552,30 @@ export class OrderService {
         data: { status: 'CANCELLED' }
       });
       for (const item of order.items) {
-        await tx.product.update({
-          where: { id: item.productId ?? undefined },
-          data: { stock: { increment: item.quantity } }
+        if (item.productId) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stock: { increment: item.quantity } }
+          });
+        }
+        // Wiki 0083: hoàn tồn kho BIẾN THỂ (đã trừ lúc tạo đơn) — nếu không sẽ leak stock variant.
+        if ((item as any).variantId) {
+          await tx.productVariant.updateMany({
+            where: { id: (item as any).variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+      }
+      // Wiki 0083: HOÀN XU đã trừ + NHẢ voucher khi hủy đơn (trước đây mất trắng xu + voucher).
+      if ((order as any).coinUsed && (order as any).coinUsed > 0) {
+        await tx.pointWallet.update({ where: { userId }, data: { balance: { increment: (order as any).coinUsed } } });
+        await tx.pointHistory.create({
+          data: { userId, amount: (order as any).coinUsed, type: PointType.REFUND, source: 'ORDER', description: `Hoàn xu hủy đơn #${orderId.slice(0, 8)}` },
         });
+      }
+      if (order.voucherId) {
+        await tx.voucher.updateMany({ where: { id: order.voucherId }, data: { usageCount: { decrement: 1 } } });
+        await tx.userVoucher.updateMany({ where: { userId, voucherId: order.voucherId }, data: { isUsed: false, usedAt: null } });
       }
       // Notification trigger (wiki 0046 hookup point #1)
       await this.notificationService.create({

@@ -318,7 +318,7 @@ model Conversation {
 // 3. Thêm model Message (Tin nhắn)
 model Message {
   id        String      @id @default(uuid())
-  content   String // Nội dung tin nhắn hoặc JSON string nếu là product
+  content   String      @db.Text // Wiki 0083: TEXT (was VARCHAR191) — tin nhắn dài không fail lưu
   type      MessageType @default(TEXT)
   isRead    Boolean     @default(false)
   createdAt DateTime    @default(now())
@@ -667,6 +667,10 @@ model Order {
   paymentMethod String // MOMO, BANKING, COD
   paymentStatus String @default("UNPAID")
 
+  // Wiki 0083: xu đã trừ cho đơn này (để hoàn khi hủy) + nhóm các đơn cùng 1 lần thanh toán (multi-shop checkout).
+  coinUsed       Int     @default(0)
+  paymentGroupId String?
+
   // G4 (wiki 0044/0045): IP của client lúc đặt đơn — dùng cho anti-farm referral
   // (so sánh IP của referrer.lastOrder vs IP của referee.thisOrder).
   clientIp String?
@@ -674,6 +678,8 @@ model Order {
   items     OrderItem[]
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
+
+  @@index([paymentGroupId])
 }
 
 model OrderItem {
@@ -682,6 +688,7 @@ model OrderItem {
   order     Order    @relation(fields: [orderId], references: [id])
   productId String? // 1. Đổi thành Optional (Thêm dấu ?)
   product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variantId String? // Wiki 0083: biến thể đã mua — để hoàn tồn kho variant khi hủy đơn
 
   quantity Int
   price    Decimal // Lưu giá tại thời điểm mua (đề phòng giá gốc đổi)

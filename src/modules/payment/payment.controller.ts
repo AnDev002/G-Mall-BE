@@ -32,20 +32,22 @@ export class PaymentController {
 
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return res.status(HttpStatus.OK).send({ success: true });
-    // Wiki 0082: chặn UNDERPAYMENT (paid < total) + cập nhật ATOMIC idempotent (chống replay IPN).
-    // Dùng "< total" (không "!= total") để giỏ nhiều shop — gateway charge tổng cả giỏ ≥ slice của
-    // master order — vẫn qua. Chữ ký đã verify phía trên nên body.amount tin được.
+    // Wiki 0083: nhóm thanh toán (multi-shop) — mark TẤT CẢ đơn cùng paymentGroupId + so khớp
+    // TỔNG tiền cả nhóm (gateway charge tổng cả giỏ). Chặn underpayment + idempotent (chống replay).
+    // Chữ ký đã verify ở trên nên body.amount tin được.
+    const groupWhere: any = order.paymentGroupId ? { paymentGroupId: order.paymentGroupId } : { id: orderId };
+    const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true } });
+    const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
     const paid = Math.floor(Number(body.amount ?? -1));
-    const expected = Math.floor(Number(order.totalAmount));
     if (paid >= 0 && paid < expected) {
-      this.logger.warn(`[Pay2S IPN] underpayment order=${orderId} paid=${paid} < expected=${expected}`);
+      this.logger.warn(`[Pay2S IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected}`);
       return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
     }
     const upd = await this.prisma.order.updateMany({
-      where: { id: orderId, paymentStatus: 'PENDING' },
+      where: { ...groupWhere, paymentStatus: 'PENDING' },
       data: { paymentStatus: 'PAID' },
     });
-    if (upd.count === 0) this.logger.log(`[Pay2S IPN] order=${orderId} đã xử lý hoặc không ở trạng thái chờ`);
+    if (upd.count === 0) this.logger.log(`[Pay2S IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
     return res.status(HttpStatus.OK).send({ success: true });
   }
 
@@ -71,18 +73,20 @@ export class PaymentController {
     if (isSuccess) {
       const order = await this.prisma.order.findUnique({ where: { id: orderId } });
       if (!order) return res.status(HttpStatus.OK).send({ success: true });
-      // Wiki 0082: chặn underpayment + cập nhật ATOMIC idempotent (chống replay IPN).
+      // Wiki 0083: nhóm thanh toán — mark tất cả đơn cùng group + so TỔNG tiền nhóm + idempotent.
+      const groupWhere: any = order.paymentGroupId ? { paymentGroupId: order.paymentGroupId } : { id: orderId };
+      const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true } });
+      const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
       const paid = Math.floor(Number(body.amount ?? -1));
-      const expected = Math.floor(Number(order.totalAmount));
       if (paid >= 0 && paid < expected) {
-        this.logger.warn(`[MoMo IPN] underpayment order=${orderId} paid=${paid} < expected=${expected}`);
+        this.logger.warn(`[MoMo IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected}`);
         return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
       }
       const upd = await this.prisma.order.updateMany({
-        where: { id: orderId, paymentStatus: 'PENDING' },
+        where: { ...groupWhere, paymentStatus: 'PENDING' },
         data: { paymentStatus: 'PAID' },
       });
-      if (upd.count === 0) this.logger.log(`[MoMo IPN] order=${orderId} đã xử lý`);
+      if (upd.count === 0) this.logger.log(`[MoMo IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
     } else {
       this.logger.log(`[MoMo IPN] orderId=${orderId} resultCode=${body.resultCode} message=${body.message}`);
     }
