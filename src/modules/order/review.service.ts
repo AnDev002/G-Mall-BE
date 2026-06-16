@@ -78,6 +78,11 @@ export class ReviewService {
         throw new BadRequestException('Trạng thái đơn hàng chưa thể đánh giá');
     }
 
+    // Không cho phép đánh dấu đơn "đã đánh giá" khi mảng review rỗng (0 review).
+    if (!productReviews || productReviews.length === 0) {
+        throw new BadRequestException('Phải có ít nhất một đánh giá sản phẩm');
+    }
+
     const shopId = order.shopId || order.items[0]?.product?.shopId;
 
     if (!shopId) {
@@ -158,14 +163,16 @@ export class ReviewService {
           }
       });
 
-      // 5. Cập nhật trạng thái đơn hàng -> Hoàn tất & Đã đánh giá
+      // 5. Đánh dấu đơn đã được đánh giá.
       // Wiki 0082: KHÔNG còn ép paymentStatus='PAID' ở đây — đó là BYPASS thanh toán (đơn
       // online/COD chưa trả vẫn thành "đã thanh toán" chỉ bằng cách viết review). Chỉ đánh dấu
       // đã review; trạng thái thanh toán do IPN / luồng giao hàng quyết định.
+      // DECOUPLE: KHÔNG ép status='DELIVERED' ở đây. Cho phép đánh giá khi đơn còn SHIPPING,
+      // nhưng không được tự nhảy state — nếu set DELIVERED thì confirmOrderReceived sẽ bị
+      // khoá và user mất phần thưởng (xu/điểm) của bước "đã nhận hàng".
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data: {
-          status: 'DELIVERED',
           isReviewed: true,
         },
       });

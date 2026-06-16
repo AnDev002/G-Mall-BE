@@ -1,4 +1,4 @@
-import { IsArray, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayNotEmpty, IsArray, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ProductReviewItemDto {
@@ -13,6 +13,7 @@ export class ProductReviewItemDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   comment?: string;
 }
 
@@ -28,9 +29,11 @@ export class SubmitOrderReviewDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   shopComment?: string;
 
   @IsArray()
+  @ArrayNotEmpty()
   @ValidateNested({ each: true })
   @Type(() => ProductReviewItemDto)
   productReviews: ProductReviewItemDto[];

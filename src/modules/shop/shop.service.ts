@@ -246,14 +246,10 @@ export class ShopService {
       }
     });
 
-    // 2. Kiểm tra trạng thái
-    if (!shop /* || shop.status !== ShopStatus.ACTIVE */) {
+    // 2. Kiểm tra trạng thái (mirror getShopBySlug: chỉ cho phép shop ACTIVE)
+    if (!shop || shop.status !== ShopStatus.ACTIVE) {
       throw new NotFoundException('Cửa hàng không tồn tại hoặc đã bị khóa');
     }
-
-    // if (shop.status === 'BANNED') {
-    //     throw new NotFoundException('Cửa hàng đã bị khóa');
-    // }
 
     return {
        ...shop,
@@ -304,7 +300,11 @@ export class ShopService {
     };
   }
 
-  async getShopVouchers(shopId: string) {
+  async getShopVouchers(shopIdOrSlug: string) {
+    // Resolve ID thật (mirror các endpoint :id/* khác) để slug cũng trả voucher, không rỗng
+    const shopId = await this.resolveShopId(shopIdOrSlug);
+    if (!shopId) return [];
+
     // Lấy voucher ACTIVE và còn hạn
     const now = new Date();
     return this.prisma.voucher.findMany({

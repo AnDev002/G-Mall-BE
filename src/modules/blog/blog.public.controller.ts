@@ -22,6 +22,7 @@ export class PublicBlogController {
   @Public()
   @ApiOperation({ summary: 'Get blog details' })
   findOne(@Param('idOrSlug') idOrSlug: string) {
-    return this.blogService.findOne(idOrSlug);
+    // publicOnly=true: chặn khách ẩn danh đọc bài DRAFT/HIDDEN
+    return this.blogService.findOne(idOrSlug, true);
   }
 }

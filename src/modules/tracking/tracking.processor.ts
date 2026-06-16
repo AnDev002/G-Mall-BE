@@ -120,7 +120,9 @@ export class TrackingProcessor implements OnModuleInit, OnModuleDestroy {
                 this.logBuffer.push({
                     msgId: msgId, // Giữ ID để ACK sau
                     data: {
-                        id: payload.id, 
+                        // KHÔNG dùng payload.id (client gửi): với skipDuplicates,
+                        // client có thể chọn PK trùng để chèn/đè log -> poison PK.
+                        // Bỏ id để Prisma @default(uuid()) sinh server-side.
                         userId: payload.userId || null,
                         guestId: payload.guestId || 'unknown',
                         eventType: payload.type,

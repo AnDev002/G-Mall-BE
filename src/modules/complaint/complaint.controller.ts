@@ -9,7 +9,14 @@ import {
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { IsArray, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { ComplaintService } from './complaint.service';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -36,6 +43,9 @@ class CreateComplaintDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @MaxLength(500, { each: true })
   attachments?: string[];
 }
 

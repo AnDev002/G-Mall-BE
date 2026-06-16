@@ -10,10 +10,9 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { R2Service } from './r2.service';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
-import { Public } from 'src/common/decorators/public.decorator';
+import { ALLOWED_MIMES, PresignDto, UploadUrlDto } from './dto/presign.dto';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB
-const ALLOWED_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 
 @Controller()
 export class StorageController {
@@ -21,22 +20,18 @@ export class StorageController {
 
   // Security fix (review batch 5): bỏ `@Public()` — JwtAuthGuard.canActivate
   // detect IS_PUBLIC_KEY và skip JWT check, ai cũng request được presigned URL.
-  // Cũng enforce MIME whitelist trên fileType từ body để tránh upload MIME bất kỳ.
+  // MIME whitelist + giới hạn fileName giờ enforce bằng PresignDto (class-validator).
   @Post('storage/presigned')
   @UseGuards(JwtAuthGuard)
-  async getPresignedUrl(@Body() body: { fileName: string; fileType: string }) {
-    if (!ALLOWED_MIMES.includes(body.fileType)) {
-      throw new BadRequestException('Định dạng ảnh không hỗ trợ');
-    }
+  async getPresignedUrl(@Body() body: PresignDto) {
     return this.r2Service.generatePresignedUrl(body.fileName, body.fileType);
   }
 
+  // folder validate qua allow-list trong UploadUrlDto (@IsIn ALLOWED_FOLDERS) →
+  // chặn path traversal ('..') và key tuỳ ý.
   @Post('storage/presigned-url')
   @UseGuards(JwtAuthGuard)
-  async getUploadUrl(@Body() body: { fileName: string; fileType: string; folder?: string }) {
-    if (!ALLOWED_MIMES.includes(body.fileType)) {
-      throw new BadRequestException('Định dạng ảnh không hỗ trợ');
-    }
+  async getUploadUrl(@Body() body: UploadUrlDto) {
     return this.r2Service.generatePresignedUrl(body.fileName, body.fileType, body.folder);
   }
 

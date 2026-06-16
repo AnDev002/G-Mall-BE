@@ -158,6 +158,11 @@ export class FlashSaleService {
     });
     if (!session) throw new NotFoundException('Session not found');
 
+    // [FIX] Từ chối đăng ký vào session đã kết thúc hoặc bị vô hiệu hóa
+    if (session.status !== 'ENABLED' || session.endTime <= new Date()) {
+      throw new BadRequestException('Session is not available for registration (disabled or ended)');
+    }
+
     const results: any[] = [];
     
     for (const item of items) {
@@ -173,7 +178,8 @@ export class FlashSaleService {
       const variant = await this.prisma.productVariant.findFirst({
         where: {
           id: item.variantId,
-          product: { shopId: sellerId } 
+          productId: item.productId,
+          product: { shopId: sellerId }
         },
         include: { product: true }
       });
@@ -222,7 +228,14 @@ export class FlashSaleService {
       const promoPrice = Number(item.promoPrice);
       if (promoPrice >= originalPrice) {
          console.log(`   -> SKIPPED: Promo Price (${promoPrice}) >= Original Price (${originalPrice})`);
-         continue; 
+         continue;
+      }
+
+      // [FIX] Giới hạn promoStock không vượt quá tồn kho thật của variant/product
+      const promoStock = Number(item.promoStock);
+      if (promoStock > dbStock) {
+         console.log(`   -> SKIPPED: Promo Stock (${promoStock}) > Available Stock (${dbStock})`);
+         continue;
       }
 
       // --- BƯỚC 4: Lưu vào DB ---
@@ -236,8 +249,8 @@ export class FlashSaleService {
           },
           update: {
             salePrice: promoPrice,
-            stock: Number(item.promoStock),
-            status: FlashSaleProductStatus.APPROVED, 
+            stock: promoStock,
+            status: FlashSaleProductStatus.APPROVED,
           },
           create: {
             sessionId,
@@ -245,7 +258,7 @@ export class FlashSaleService {
             variantId: finalVariantId, // Sử dụng ID chuẩn
             originalPrice: originalPrice,
             salePrice: promoPrice,
-            stock: Number(item.promoStock),
+            stock: promoStock,
             sold: 0,
             status: FlashSaleProductStatus.APPROVED,
           }

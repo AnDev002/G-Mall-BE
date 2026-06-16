@@ -1,16 +1,19 @@
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class CreateAddressDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   name: string;
 
   @IsString()
   @IsNotEmpty()
+  @Matches(/^0\d{9,10}$/, { message: 'Số điện thoại không hợp lệ' })
   phone: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   specificAddress: string;
 
   @IsInt()

@@ -95,6 +95,7 @@ export class OrderService {
 
       let selectedVariant: any = null;
       let finalPrice = Number(product.price);
+      let flashSaleProductId: string | null = null;
 
       if (item.variantId) {
          selectedVariant = product.variants.find(v => v.id === item.variantId);
@@ -111,10 +112,11 @@ export class OrderService {
              status: 'APPROVED',
              session: { status: 'ENABLED', startTime: { lte: nowTs }, endTime: { gt: nowTs } },
            },
-           select: { salePrice: true, stock: true, sold: true },
+           select: { id: true, salePrice: true, stock: true, sold: true },
          });
          if (fsp && fsp.sold < fsp.stock) {
            finalPrice = Number(fsp.salePrice);
+           flashSaleProductId = fsp.id;
          }
       }
 
@@ -147,6 +149,7 @@ export class OrderService {
         weight: (product.weight || 200) * item.quantity,
         shopId: product.shopId,
         categoryId: product.categoryId, // B7.9: cần cho voucher scope CATEGORY
+        flashSaleProductId, // Wiki 0084: để trừ flash sold lúc tạo đơn
       });
 
       shopGroups[product.shopId].subtotal += lineTotal;
@@ -338,6 +341,10 @@ export class OrderService {
                 data: { stock: { decrement: item.quantity } }
              });
              if (update.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} vừa hết hàng.`);
+             // Wiki 0084: track flash-sale sold (giá flash tự ngừng áp khi sold >= stock cho đơn sau).
+             if (item.flashSaleProductId) {
+                await tx.flashSaleProduct.updateMany({ where: { id: item.flashSaleProductId }, data: { sold: { increment: item.quantity } } });
+             }
           }
 
           const note = noteMap[group.shopId] || noteMap['ALL'] || '';

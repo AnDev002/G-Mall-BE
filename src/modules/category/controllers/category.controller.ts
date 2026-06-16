@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseArrayPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CategoryService } from '../category.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -7,6 +7,8 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Role } from '@prisma/client';
 import { UpdateCategoryOrderDto } from '../dto/update-category-order.dto';
 import { CreateCategoryDto } from '../dto/create-category.dto';
+import { UpdateCategoryDto } from '../dto/update-category.dto';
+import { UpdateCategoryBatchItemDto } from '../dto/update-category-batch.dto';
 
 // Wiki 0039 BUG-CAT-1: trước đây controller không có @UseGuards → ai cũng POST/PATCH/DELETE
 // được. Đặt @UseGuards ở class level (JwtAuthGuard tôn trọng @Public) nhưng KHÔNG đặt
@@ -47,7 +49,9 @@ export class CategoryController {
 
   @Patch(':id')
   @Roles(Role.ADMIN)
-  update(@Param('id') id: string, @Body() updateCategoryDto: any) {
+  // Wiki 0082 fix-3: thay `any` bằng UpdateCategoryDto để ValidationPipe enforce
+  // type + whitelist (strip field rác trước khi xuống prisma.update).
+  update(@Param('id') id: string, @Body() updateCategoryDto: UpdateCategoryDto) {
     return this.categoryService.update(id, updateCategoryDto);
   }
 
@@ -65,7 +69,12 @@ export class CategoryController {
 
   @Post('batch-update')
   @Roles(Role.ADMIN)
-  async updateBatch(@Body() items: any[]) {
+  // Wiki 0082 fix-3: ParseArrayPipe (có sẵn @nestjs/common) validate từng phần tử
+  // mảng top-level theo UpdateCategoryBatchItemDto → id bắt buộc, type sai bị 400.
+  async updateBatch(
+    @Body(new ParseArrayPipe({ items: UpdateCategoryBatchItemDto }))
+    items: UpdateCategoryBatchItemDto[],
+  ) {
       return this.categoryService.updateBatch(items);
   }
 
@@ -75,8 +84,11 @@ export class CategoryController {
     return this.categoryService.getBreadcrumbs(id);
   }
 
-  @Public() // Để gọi không cần token (tiện test)
-  @Get('fix-all-slugs')
+  // Wiki 0082 fix-1: endpoint này mutate TOÀN BỘ bảng category (loop update slug)
+  // nhưng trước đây là @Public() @Get → bất kỳ ai cũng trigger full-table write.
+  // Chuyển sang @Post + gate ADMIN (khớp các mutation khác). Bỏ @Public().
+  @Post('fix-all-slugs')
+  @Roles(Role.ADMIN)
   async fixAllSlugs() {
     // Gọi hàm logic từ Service (đúng chuẩn NestJS)
     return this.categoryService.fixAllSlugs();

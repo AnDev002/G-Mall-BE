@@ -42,26 +42,31 @@ export class AddressService {
   }
 
   async create(userId: string, dto: CreateAddressDto) {
-    if (dto.isDefault) {
-      await this.prisma.address.updateMany({
-        where: { userId, isDefault: true },
-        data: { isDefault: false },
-      });
-    }
-
-    const count = await this.prisma.address.count({ where: { userId } });
-    const isDefault = count === 0 ? true : dto.isDefault || false;
-
-    // Build full string hiển thị
+    // Build full string hiển thị (gọi GHN API) — để ngoài transaction tránh giữ
+    // kết nối DB trong lúc chờ network, gây timeout transaction.
     const fullAddress = await this.buildFullAddress(dto);
 
-    return this.prisma.address.create({
-      data: {
-        userId,
-        ...dto,
-        isDefault,
-        fullAddress,
-      },
+    // Bọc clear-defaults + count + create trong 1 interactive transaction để
+    // giữ bất biến "chỉ 1 địa chỉ mặc định" khi có request đồng thời.
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.isDefault) {
+        await tx.address.updateMany({
+          where: { userId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+
+      const count = await tx.address.count({ where: { userId } });
+      const isDefault = count === 0 ? true : dto.isDefault || false;
+
+      return tx.address.create({
+        data: {
+          userId,
+          ...dto,
+          isDefault,
+          fullAddress,
+        },
+      });
     });
   }
 
@@ -73,21 +78,27 @@ export class AddressService {
   }
 
   async update(userId: string, id: string, dto: UpdateAddressDto) {
-    if (dto.isDefault) {
-      await this.prisma.address.updateMany({
-        where: { userId, isDefault: true, id: { not: id } },
-        data: { isDefault: false },
-      });
-    }
-
+    // Build full string hiển thị (gọi GHN API) — để ngoài transaction tránh
+    // giữ kết nối DB trong lúc chờ network, gây timeout transaction.
     const fullAddress = await this.buildFullAddress(dto);
 
-    return this.prisma.address.update({
-      where: { id, userId },
-      data: {
-        ...dto,
-        fullAddress,
-      },
+    // Bọc clear-others + update trong 1 interactive transaction để giữ bất biến
+    // "chỉ 1 địa chỉ mặc định" khi có request đồng thời (mirror setDefault()).
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.isDefault) {
+        await tx.address.updateMany({
+          where: { userId, isDefault: true, id: { not: id } },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.address.update({
+        where: { id, userId },
+        data: {
+          ...dto,
+          fullAddress,
+        },
+      });
     });
   }
 

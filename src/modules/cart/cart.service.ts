@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from 'src/database/redis/redis.constants'; // Import từ module vừa tạo
 import { PrismaService } from 'src/database/prisma/prisma.service';
@@ -53,13 +53,20 @@ export class CartService {
     // checkout JOIN Product crash 500 (chain bug).
     const exists = await this.prisma.product.findUnique({
       where: { id: dto.productId },
-      select: { id: true },
+      select: { id: true, stock: true },
     });
     if (!exists) {
       throw new NotFoundException('Sản phẩm không tồn tại');
     }
 
     const key = this.getCartKey(userId);
+    // Reject nếu tổng số lượng (đã có trong cart + thêm mới) vượt quá tồn kho.
+    const currentRaw = await this.redis.hget(key, dto.productId);
+    const currentQty = currentRaw ? parseInt(currentRaw) : 0;
+    if (currentQty + dto.quantity > exists.stock) {
+      throw new BadRequestException('Vượt quá tồn kho');
+    }
+
     // HINCRBY: Tăng số lượng item trong hash. Nếu chưa có tự tạo mới.
     // Thao tác này là Atomic trên Redis.
     await this.redis.hincrby(key, dto.productId, dto.quantity);
@@ -154,6 +161,17 @@ export class CartService {
     const exists = await this.redis.hexists(key, productId);
     if (!exists) {
       throw new NotFoundException('Item không tồn tại trong giỏ hàng');
+    }
+    // Reject nếu số lượng yêu cầu vượt quá tồn kho.
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: { stock: true },
+    });
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+    if (quantity > product.stock) {
+      throw new BadRequestException('Vượt quá tồn kho');
     }
     await this.redis.hset(key, productId, quantity);
     return { success: true };

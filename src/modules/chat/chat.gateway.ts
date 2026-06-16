@@ -69,10 +69,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // Kiểm tra xem payload giải mã ra cái gì
         console.log('3. Decoded Payload:', payload);
 
-        const userId = payload.userId || payload.sub || payload.id; 
+        const userId = payload.userId || payload.sub || payload.id;
 
         if (!userId) {
             console.log('❌ Token valid but UserID is missing in payload');
+            client.disconnect();
+            return;
+        }
+
+        // Áp dụng các check giống JwtStrategy.validate (gateway không qua
+        // JwtAuthGuard): user phải tồn tại, chưa bị ban, tokenVersion khớp.
+        // Nếu không hợp lệ -> ngắt kết nối.
+        const validUser = await this.chatService.validateSocketUser(
+            userId,
+            payload.tokenVersion,
+        );
+        if (!validUser) {
+            console.log('❌ User not found / banned / token revoked');
             client.disconnect();
             return;
         }
@@ -107,6 +120,34 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
     }
 
+    // Validate payload trước khi xử lý: tránh null/empty content, content quá
+    // dài (DoS / abuse), và phải có receiverId hợp lệ.
+    const MAX_CONTENT_LENGTH = 5000;
+    const content = data?.content;
+    const receiverId = data?.receiverId;
+
+    if (typeof content !== 'string' || content.trim().length === 0) {
+        client.emit('message_error', {
+            clientTempId: data?.clientTempId,
+            message: 'Nội dung tin nhắn không hợp lệ.',
+        });
+        return;
+    }
+    if (content.length > MAX_CONTENT_LENGTH) {
+        client.emit('message_error', {
+            clientTempId: data?.clientTempId,
+            message: `Tin nhắn quá dài (tối đa ${MAX_CONTENT_LENGTH} ký tự).`,
+        });
+        return;
+    }
+    if (typeof receiverId !== 'string' || receiverId.trim().length === 0) {
+        client.emit('message_error', {
+            clientTempId: data?.clientTempId,
+            message: 'Người nhận không hợp lệ.',
+        });
+        return;
+    }
+
     // ... (Giữ code logic cũ)
 
     // B3.3 fix: optimistic clientTempId — FE gửi kèm clientTempId khi send,
@@ -116,8 +157,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
         const savedMessage = await this.chatService.sendMessage(senderId, {
-            content: data.content,
-            receiverId: data.receiverId,
+            content: content.trim(),
+            receiverId,
             type: (data.type as any) || 'TEXT'
         });
 

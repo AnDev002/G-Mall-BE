@@ -63,7 +63,19 @@ export class TrackingService {
       const score = SCORES[payload.type] || 0;
       if (score === 0) return;
 
-      const identifier = payload.userId 
+      // Wiki: chống fake high-trust events. PURCHASE/BEGIN_CHECKOUT là tín hiệu
+      // mua hàng giá trị cao (score 10/50) — chỉ chấm điểm khi request đã đăng nhập
+      // (payload.userId set server-side từ auth). Guest gửi PURCHASE/BEGIN_CHECKOUT
+      // tự do -> bỏ qua để không poison gợi ý. View/click vẫn cho qua.
+      if (
+        (payload.type === EventType.PURCHASE ||
+          payload.type === EventType.BEGIN_CHECKOUT) &&
+        !payload.userId
+      ) {
+        return;
+      }
+
+      const identifier = payload.userId
         ? `user:affinity:${payload.userId}` 
         : `user:affinity:guest:${payload.guestId}`;
       

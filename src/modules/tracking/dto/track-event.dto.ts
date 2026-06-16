@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsObject, IsEnum, IsArray, ValidateNested, IsUUID } from 'class-validator';
+import { IsString, IsOptional, IsObject, IsEnum, IsArray, ValidateNested, IsUUID, ArrayMaxSize } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum EventType {
@@ -44,6 +44,7 @@ export class TrackEventDto {
 
 export class TrackBatchDto {
   @IsArray()
+  @ArrayMaxSize(50)
   @ValidateNested({ each: true })
   @Type(() => TrackEventDto)
   events: TrackEventDto[];

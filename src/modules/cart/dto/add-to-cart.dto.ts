@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsInt, IsString, Min } from 'class-validator';
+import { IsNotEmpty, IsInt, IsString, Min, Max } from 'class-validator';
 
 export class AddToCartDto {
   @IsString()
@@ -7,5 +7,6 @@ export class AddToCartDto {
 
   @IsInt()
   @Min(1)
+  @Max(1000)
   quantity: number;
 }

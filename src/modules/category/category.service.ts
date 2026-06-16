@@ -99,6 +99,53 @@ export class CategoryService {
   }
   async updateOrder(dto: UpdateCategoryOrderDto) {
     const { parentId, orderedIds } = dto;
+    const targetParentId = parentId || null;
+
+    // Wiki 0082 fix-2: trước đây re-parent tất cả orderedIds vào parentId mà KHÔNG
+    // kiểm tra gì → có thể tạo vòng lặp cây (gán 1 node làm con của chính con cháu
+    // nó) hoặc gán vào id không tồn tại.
+
+    // (a) parentId không được nằm trong chính tập orderedIds (node không thể là cha
+    // của chính nó / của tập đang re-parent → vòng lặp trực tiếp).
+    if (targetParentId && orderedIds.includes(targetParentId)) {
+      throw new BadRequestException('Danh mục cha không được nằm trong danh sách cần sắp xếp (gây vòng lặp)');
+    }
+
+    // (b) Tất cả id (gồm cả parentId nếu có) phải tồn tại.
+    const idsToCheck = targetParentId ? [...orderedIds, targetParentId] : orderedIds;
+    const existing = await this.prisma.category.findMany({
+      where: { id: { in: idsToCheck } },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((c) => c.id));
+    const missing = idsToCheck.filter((id) => !existingIds.has(id));
+    if (missing.length > 0) {
+      throw new BadRequestException(`Danh mục không tồn tại: ${missing.join(', ')}`);
+    }
+
+    // (c) Cycle check: parentId không được là con cháu của bất kỳ node nào đang
+    // re-parent. Đi ngược từ parentId lên gốc; nếu gặp 1 id trong orderedIds nghĩa
+    // là ta sắp đặt node đó làm cha của tổ tiên nó → vòng lặp.
+    if (targetParentId) {
+      const orderedSet = new Set(orderedIds);
+      const seen = new Set<string>();
+      let cur: { id: string; parentId: string | null } | null =
+        await this.prisma.category.findUnique({
+          where: { id: targetParentId },
+          select: { id: true, parentId: true },
+        });
+      while (cur && cur.parentId) {
+        if (orderedSet.has(cur.parentId)) {
+          throw new BadRequestException('Không thể gán danh mục con/cháu làm cha (tạo vòng lặp)');
+        }
+        if (seen.has(cur.parentId)) break; // an toàn nếu DB đã có vòng sẵn
+        seen.add(cur.parentId);
+        cur = await this.prisma.category.findUnique({
+          where: { id: cur.parentId },
+          select: { id: true, parentId: true },
+        });
+      }
+    }
 
     try {
       // Sử dụng Transaction để tối ưu hiệu năng và đảm bảo tính toàn vẹn
@@ -108,7 +155,7 @@ export class CategoryService {
           where: { id },
           data: {
             order: index, // Vị trí trong mảng chính là thứ tự mới (0, 1, 2...)
-            parentId: parentId || null, // Cập nhật luôn parentId để hỗ trợ kéo thả giữa các cấp cha con
+            parentId: targetParentId, // Cập nhật luôn parentId để hỗ trợ kéo thả giữa các cấp cha con
           },
         });
       });

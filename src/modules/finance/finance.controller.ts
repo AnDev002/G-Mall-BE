@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
+import { RejectPayoutDto } from './dto/reject-payout.dto';
 
 @Controller('admin/finance')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -34,7 +35,7 @@ export class FinanceController {
 
   // 4. Từ chối yêu cầu rút tiền
   @Patch('payouts/:id/reject')
-  async rejectPayout(@Param('id') id: string, @Body('reason') reason: string) {
-    return this.financeService.rejectPayout(id, reason);
+  async rejectPayout(@Param('id') id: string, @Body() dto: RejectPayoutDto) {
+    return this.financeService.rejectPayout(id, dto.reason);
   }
 }

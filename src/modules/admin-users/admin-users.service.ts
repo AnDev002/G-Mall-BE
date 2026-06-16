@@ -296,6 +296,8 @@ export class AdminUsersService {
 
     if (!shop) throw new NotFoundException('Shop không tồn tại');
     if (shop.status === 'ACTIVE') throw new BadRequestException('Shop này đã được duyệt rồi');
+    // Chỉ duyệt khi shop đang ở trạng thái PENDING — tránh "hồi sinh" shop đã bị REJECTED/BANNED.
+    if (shop.status !== ShopStatus.PENDING) throw new BadRequestException('Chỉ có thể duyệt shop đang chờ duyệt (PENDING)');
 
     // 1. Cập nhật trạng thái Shop -> ACTIVE
     await this.prisma.shop.update({
@@ -304,11 +306,12 @@ export class AdminUsersService {
     });
 
     // 2. Cập nhật Role cho User -> SELLER (nếu chưa phải)
-    // Để họ có quyền truy cập vào các API seller
-    if (shop.owner.role !== 'SELLER') {
+    // Để họ có quyền truy cập vào các API seller.
+    // Chỉ nâng cấp BUYER/PENDING_SELLER lên SELLER — KHÔNG hạ cấp ADMIN.
+    if (shop.owner.role === Role.BUYER || shop.owner.role === Role.PENDING_SELLER) {
         await this.prisma.user.update({
             where: { id: shop.ownerId },
-            data: { role: 'SELLER', isVerified: true }
+            data: { role: Role.SELLER, isVerified: true }
         });
     }
     if(shop.owner.email)
@@ -736,6 +739,14 @@ export class AdminUsersService {
        await this.prisma.shop.updateMany({
          where: { ownerId: userId },
          data: { status: 'BANNED', banReason: 'Tài khoản chủ sở hữu bị khóa: ' + reason }
+       });
+    }
+
+    // Nếu mở khóa User là SELLER -> Khôi phục lại Shop về ACTIVE (đảo ngược logic ban ở trên)
+    if (!isBanned && user.role === 'SELLER') {
+       await this.prisma.shop.updateMany({
+         where: { ownerId: userId, status: ShopStatus.BANNED },
+         data: { status: ShopStatus.ACTIVE, banReason: null }
        });
     }
 

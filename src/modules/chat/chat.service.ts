@@ -12,6 +12,25 @@ export class ChatService {
   ) {}
 
   // --- SOCKET LOGIC ---
+
+  // Dùng cho ChatGateway.handleConnection: áp dụng các check giống JwtStrategy
+  // (user tồn tại, chưa bị ban, tokenVersion khớp) cho kết nối WebSocket vì
+  // gateway không đi qua JwtAuthGuard. Trả về user hợp lệ hoặc null nếu invalid.
+  async validateSocketUser(userId: string, tokenVersion?: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isBanned: true, tokenVersion: true },
+    });
+
+    if (!user) return null;
+    if (user.isBanned) return null;
+    if (typeof tokenVersion === 'number' && tokenVersion !== user.tokenVersion) {
+      return null;
+    }
+
+    return user;
+  }
+
   async getAiHistory(userId: string, limit: number = 6) {
     // 1. Tìm Conversation giữa User và AI
     const conversation = await this.prisma.conversation.findFirst({
@@ -241,7 +260,9 @@ export class ChatService {
         },
       ],
     },
-    select: { id: true, name: true, email: true, role: true },
+    // Không trả email ra ngoài — chỉ id/name/avatar/role để tránh lộ email
+    // của người dùng khác qua API tìm kiếm (vẫn cho phép search theo email).
+    select: { id: true, name: true, avatar: true, role: true },
     take: 5,
   });
 }
@@ -344,6 +365,15 @@ export class ChatService {
   }
 
   async markAsRead(conversationId: string, userId: string) {
+    // Wiki 0075 (tương tự getMessages): chỉ participant của hội thoại mới được
+    // markAsRead. Trước đây updateMany chỉ lọc theo conversationId nên bất kỳ ai
+    // biết convId cũng có thể đánh dấu đã đọc tin nhắn của 2 người khác.
+    const conv = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, participants: { some: { id: userId } } },
+      select: { id: true },
+    });
+    if (!conv) throw new ForbiddenException('Bạn không có quyền với hội thoại này');
+
     // Đánh dấu tất cả tin nhắn trong hội thoại mà KHÔNG PHẢI do mình gửi là đã đọc
     await this.prisma.message.updateMany({
       where: {

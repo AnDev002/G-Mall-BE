@@ -520,47 +520,46 @@ export class ProductWriteService {
         throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
     }
 
-    // --- LOGIC XỬ LÝ BIẾN THỂ (VARIANTS) ---
-    // Chỉ chạy khi user gửi danh sách variations (Cài đặt riêng)
+    // --- VALIDATE TOÀN BỘ TRƯỚC KHI GHI (atomic) ---
+    // Wiki 0082 fix: validate ALL variant discountValues up front nên một biến thể
+    // lỗi không để lại ghi dở dang. Tính sẵn payload để dùng trong transaction.
+    type VariantDiscountUpdate = { id: string; price: number; originalPrice: number; discountValue: number };
+    const variantUpdates: VariantDiscountUpdate[] = [];
+
     if (dto.isDiscountActive && dto.variants && dto.variants.length > 0) {
-        
-        const updates = dto.variants.map(async (vDto) => {
+        for (const vDto of dto.variants) {
             const currentVariant = product.variants.find(v => v.id === vDto.id);
-            if (!currentVariant) return;
+            if (!currentVariant) continue;
+
+            // Fix: bắt buộc discountValue là số hữu hạn (chặn NaN/undefined) khi bật discount.
+            const discountPercent = Number(vDto.discountValue);
+            if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+                throw new BadRequestException('Phần trăm giảm giá của biến thể phải trong khoảng 0–100');
+            }
 
             // [CHUẨN] Logic y hệt Product cha:
             // Nếu chưa có originalPrice thì lấy price hiện tại làm gốc.
             // Nếu đã có originalPrice thì GIỮ NGUYÊN nó làm gốc.
             const vOriginalPrice = Number(currentVariant.originalPrice ?? currentVariant.price);
-            
-            // Tính giá bán mới (price)
-            const discountPercent = vDto.discountValue;
-            if (discountPercent > 100) throw new BadRequestException('Giảm giá không quá 100%');
-            
             const vNewPrice = Math.round(vOriginalPrice * (1 - discountPercent / 100));
 
-            return this.prisma.productVariant.update({
-                where: { id: vDto.id },
-                data: {
-                    price: vNewPrice,           // Cập nhật giá bán
-                    originalPrice: vOriginalPrice, // Neo giá gốc
-                    discountValue: discountPercent // Lưu % giảm
-                }
+            variantUpdates.push({
+                id: vDto.id,
+                price: vNewPrice,
+                originalPrice: vOriginalPrice,
+                discountValue: discountPercent,
             });
-        });
+        }
+    }
 
-        await Promise.all(updates);
-    } 
-    
-    // --- LOGIC XỬ LÝ PRODUCT CHA (Giữ nguyên của bạn) ---
-    // ... (Code xử lý finalPrice cho product cha như cũ) ...
+    // --- LOGIC XỬ LÝ PRODUCT CHA ---
     // Lưu ý: Nếu có variants, giá Product cha nên là giá Min của variants
-    
     let originalPrice = Number(product.originalPrice ?? product.price);
     let finalPrice = originalPrice;
-    
+
     if (dto.isDiscountActive) {
          // Wiki 0082: chặn discount ngoài [0,100] → giá âm (defense-in-depth cùng @Max(100) ở DTO).
+         // Fix: !Number.isFinite cũng loại NaN/undefined.
          const dv = Number(dto.discountValue);
          if (!Number.isFinite(dv) || dv < 0 || dv > 100) {
             throw new BadRequestException('Phần trăm giảm giá phải trong khoảng 0–100');
@@ -568,39 +567,51 @@ export class ProductWriteService {
          finalPrice = Math.round(originalPrice * (1 - dv / 100));
     } else {
          finalPrice = originalPrice;
-         // Nếu tắt discount -> Reset cả variants về giá gốc
-         if (product.variants.length > 0) {
-             await this.prisma.productVariant.updateMany({
-                 where: { productId },
-                 data: { 
-                    discountValue: 0 
-                    // Lưu ý: Prisma updateMany không set được price = originalPrice
-                    // Nếu muốn reset giá variant chính xác, cần loop update
-                 }
-             });
-             // Loop reset giá variant (Optional nhưng Recommended)
-             await Promise.all(product.variants.map(v => 
-                 this.prisma.productVariant.update({
-                     where: { id: v.id },
-                     data: { price: v.originalPrice ?? v.price }
-                 })
-             ));
-         }
     }
 
-    // Update Product
-    const updatedProduct = await this.prisma.product.update({
-      where: { id: productId },
-      data: {
-        originalPrice, 
-        price: finalPrice,
-        discountValue: dto.discountValue,
-        discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
-        discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
-        isDiscountActive: dto.isDiscountActive,
-        discountType: 'PERCENT' // Ép cứng theo yêu cầu
-      },
-      include: { variants: true, shop: true }
+    // --- GHI ATOMIC: tất cả variant + product cha trong 1 transaction ---
+    // Mọi validate đã chạy ở trên nên transaction không thể fail giữa chừng vì giá trị xấu,
+    // và nếu DB lỗi giữa chừng thì rollback toàn bộ — không để ghi dở dang.
+    const updatedProduct = await this.prisma.$transaction(async (tx) => {
+      if (dto.isDiscountActive) {
+        // Cập nhật từng variant theo payload đã tính sẵn.
+        for (const vu of variantUpdates) {
+          await tx.productVariant.update({
+            where: { id: vu.id },
+            data: {
+              price: vu.price,
+              originalPrice: vu.originalPrice,
+              discountValue: vu.discountValue,
+            },
+          });
+        }
+      } else if (product.variants.length > 0) {
+        // Nếu tắt discount -> Reset cả variants về giá gốc.
+        for (const v of product.variants) {
+          await tx.productVariant.update({
+            where: { id: v.id },
+            data: {
+              discountValue: 0,
+              price: v.originalPrice ?? v.price,
+            },
+          });
+        }
+      }
+
+      // Update Product cha trong cùng transaction.
+      return tx.product.update({
+        where: { id: productId },
+        data: {
+          originalPrice,
+          price: finalPrice,
+          discountValue: dto.discountValue,
+          discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
+          discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
+          isDiscountActive: dto.isDiscountActive,
+          discountType: 'PERCENT', // Ép cứng theo yêu cầu
+        },
+        include: { variants: true, shop: true },
+      });
     });
 
     // Sync Redis

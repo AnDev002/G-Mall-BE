@@ -5,7 +5,7 @@ import { Public } from 'src/common/decorators/public.decorator';
 import { UpdateShopProfileDto } from '../auth/dto/update-shop.dto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { getPagination } from 'src/common/utils/pagination.util';
-// ... imports DTO
+import { CreateShopDto } from './dto/create-shop.dto';
 
 @Controller('shops')
 export class ShopController {
@@ -14,8 +14,8 @@ export class ShopController {
   // API Đăng ký Shop (Thay thế luồng cũ)
   @UseGuards(JwtAuthGuard)
   @Post('register')
-  async registerShop(@Request() req, @Body() body: any) {
-    // body: { name, pickupAddress, description... }
+  async registerShop(@Request() req, @Body() body: CreateShopDto) {
+    // body: { name, pickupAddress, description... } — validated by global ValidationPipe
     return this.shopService.createShop(req.user.userId, body);
   }
   @Public()

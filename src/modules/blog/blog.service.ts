@@ -6,6 +6,7 @@ import { CreateBlogDto } from './dto/create-blog.dto';
 import { UpdateBlogDto } from './dto/update-blog.dto';
 import { BlogQueryDto } from './dto/blog-query.dto';
 import { generateSlug } from '../../common/utils/slug.util';
+import { sanitizeHtml, sanitizeUrl } from '../../common/utils/sanitize.util';
 import { Prisma } from '@prisma/client';
 
 @Injectable()
@@ -38,8 +39,10 @@ export class BlogService {
     return this.prisma.blogPost.create({
       data: {
         title,
-        content: restData.content,
-        thumbnail: restData.thumbnail,
+        // Stored XSS: làm sạch HTML/URL trước khi lưu
+        content: sanitizeHtml(restData.content),
+        excerpt: restData.excerpt !== undefined ? sanitizeHtml(restData.excerpt) : undefined,
+        thumbnail: sanitizeUrl(restData.thumbnail),
         metaTitle: restData.metaTitle,
         metaDescription: restData.metaDescription,
         status: status || 'DRAFT',
@@ -155,9 +158,16 @@ export class BlogService {
   }
 
   // --- FIND ONE ---
-  async findOne(idOrSlug: string) {
+  // publicOnly=true: chỉ trả bài đã PUBLISHED → khách ẩn danh không đọc được
+  // DRAFT/HIDDEN. Admin controller gọi không truyền cờ → vẫn thấy mọi trạng thái.
+  async findOne(idOrSlug: string, publicOnly = false) {
     const blog = await this.prisma.blogPost.findFirst({
-      where: { OR: [{ id: idOrSlug }, { slug: idOrSlug }] },
+      where: {
+        AND: [
+          { OR: [{ id: idOrSlug }, { slug: idOrSlug }] },
+          ...(publicOnly ? [{ status: 'PUBLISHED' }] : []),
+        ],
+      },
       include: {
         author: { select: { id: true, name: true, avatar: true } },
         category: true, // Include full category
@@ -195,6 +205,10 @@ export class BlogService {
       where: { id },
       data: {
         ...restData,
+        // Stored XSS: làm sạch HTML/URL khi update (override giá trị spread ở trên)
+        content: restData.content !== undefined ? sanitizeHtml(restData.content) : undefined,
+        excerpt: restData.excerpt !== undefined ? sanitizeHtml(restData.excerpt) : undefined,
+        thumbnail: restData.thumbnail !== undefined ? sanitizeUrl(restData.thumbnail) : undefined,
         title,
         slug: finalSlug,
         keywords: Array.isArray(keywords) ? JSON.stringify(keywords) : undefined,

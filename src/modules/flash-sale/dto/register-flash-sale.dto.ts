@@ -1,4 +1,5 @@
-import { IsArray, IsNotEmpty, IsNumber, IsString, IsUUID, Min } from 'class-validator';
+import { IsArray, IsNotEmpty, IsNumber, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class FlashSaleItemDto {
   @IsNotEmpty()
@@ -33,5 +34,7 @@ export class RegisterFlashSaleDto {
   sessionId: string;
 
   @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FlashSaleItemDto)
   items: FlashSaleItemDto[];
 }
