@@ -795,6 +795,11 @@ export class AdminUsersService {
         // --- NHÓM 3: TƯƠNG TÁC & CÁ NHÂN HÓA ---
         await tx.address.deleteMany({ where: { userId: userId } });
         await tx.userVoucher.deleteMany({ where: { userId: userId } });
+        // Wiki 0082: review/complaint của user (FK userId + orderId, KHÔNG cascade) phải xóa TRƯỚC
+        // order/user — nếu không sẽ vướng FK constraint → xóa user luôn FAIL với buyer thật (đã review).
+        await tx.productReview.deleteMany({ where: { userId: userId } });
+        await tx.shopReview.deleteMany({ where: { userId: userId } });
+        await tx.complaint.deleteMany({ where: { userId: userId } });
         await tx.orderItem.deleteMany({ where: { order: { userId: userId } } }); // Xóa items trước
         await tx.order.deleteMany({ where: { userId: userId } });
         

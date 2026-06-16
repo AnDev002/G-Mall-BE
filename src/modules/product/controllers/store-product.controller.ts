@@ -2,6 +2,9 @@ import { Controller, Get, Param, Query, Request, Headers, UseGuards, UseIntercep
 import { ProductReadService } from '../services/product-read.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
+import { RolesGuard } from 'src/common/guards/roles.guard';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { Role } from '@prisma/client';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 // Wiki 0032: cache list/detail product (TTL 30s) — read-heavy, ít update so với traffic
 import { RedisCacheInterceptor, CacheKey, CacheTTL } from 'src/common/interceptors/redis-cache.interceptor';
@@ -67,8 +70,11 @@ export class StoreProductController {
     return this.productReadService.findOnePublic(id);
   }
 
+  // Wiki 0082: trước đây guard bị comment → endpoint resync toàn bộ DB→Redis chạy KHÔNG cần
+  // auth (DoS amplification). Khoá lại ADMIN-only.
   @Post('sync-search-index')
-  // @Public() // Hoặc bảo vệ bằng Admin Guard
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
   async syncSearchIndex() {
     return this.productReadService.syncAllProductsToRedis();
   }

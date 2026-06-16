@@ -1,6 +1,6 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateProductDto } from './create-product.dto';
-import { IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min, IsString, IsArray, ValidateNested } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min, Max, IsString, IsArray, ValidateNested } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 
@@ -15,6 +15,7 @@ export class ProductVariantDiscountDto {
   @ApiProperty()
   @IsNumber()
   @Min(0)
+  @Max(100) // Wiki 0082: chặn giảm > 100% → giá âm
   discountValue: number; // % giảm giá
 }
 export class UpdateProductDiscountDto {
@@ -26,6 +27,7 @@ export class UpdateProductDiscountDto {
   @ApiProperty()
   @IsNumber()
   @Min(0)
+  @Max(100) // Wiki 0082: chặn giảm > 100% → giá âm
   @IsOptional()
   discountValue: number;
 

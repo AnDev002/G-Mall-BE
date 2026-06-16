@@ -245,20 +245,47 @@ export class OrderService {
 
       if (preview.summary.discounts.coin > 0) {
         const amount = preview.summary.discounts.coin;
-        await tx.pointWallet.update({ where: { userId }, data: { balance: { decrement: amount } } });
+        // Wiki 0082: trừ xu CÓ ĐIỀU KIỆN (balance>=amount) — chặn double-spend/âm ví khi 2 đơn
+        // song song cùng đọc balance ở preview (TOCTOU). Trước đây update vô điều kiện → ví âm.
+        const w = await tx.pointWallet.updateMany({
+          where: { userId, balance: { gte: amount } },
+          data: { balance: { decrement: amount } },
+        });
+        if (w.count === 0) throw new BadRequestException('Số dư xu không đủ hoặc vừa thay đổi, vui lòng thử lại.');
         await tx.pointHistory.create({
            data: { userId, amount: -amount, type: PointType.SPEND_ORDER, source: 'ORDER', description: 'Thanh toán đơn hàng' }
         });
       }
 
       for (const voucher of preview.appliedVouchers) {
-         await tx.voucher.update({ where: { id: voucher.id }, data: { usageCount: { increment: 1 } } });
-         // Logic userVoucher...
-         const userVoucher = await tx.userVoucher.findUnique({
-             where: { userId_voucherId: { userId, voucherId: voucher.id } }
+         // Wiki 0082: enforce per-user (userUsageLimit) + global (usageLimit) ATOMIC khi redeem.
+         // Trước đây increment vô điều kiện + tạo userVoucher cho voucher chưa claim → 1 user
+         // dùng lại 1 voucher vô hạn + vượt tổng usageLimit (lỗ tiền). calculateMultiShopVouchers
+         // KHÔNG check ownership/limit nên phải chặn ở đây.
+         const perUserLimit = Number((voucher as any).userUsageLimit ?? 1) || 1;
+         const usedByUser = await tx.userVoucher.count({
+            where: { userId, voucherId: voucher.id, isUsed: true },
          });
-         if (userVoucher) {
-             await tx.userVoucher.update({ where: { id: userVoucher.id }, data: { isUsed: true, usedAt: new Date() } });
+         if (usedByUser >= perUserLimit) {
+            throw new BadRequestException(`Bạn đã dùng hết lượt voucher ${(voucher as any).code || ''}.`);
+         }
+         const globalLimit = Number((voucher as any).usageLimit ?? 0);
+         if (globalLimit > 0) {
+            const inc = await tx.voucher.updateMany({
+               where: { id: voucher.id, usageCount: { lt: globalLimit } },
+               data: { usageCount: { increment: 1 } },
+            });
+            if (inc.count === 0) throw new BadRequestException(`Voucher ${(voucher as any).code || ''} đã hết lượt sử dụng.`);
+         } else {
+            await tx.voucher.update({ where: { id: voucher.id }, data: { usageCount: { increment: 1 } } });
+         }
+         const existing = await tx.userVoucher.findUnique({
+             where: { userId_voucherId: { userId, voucherId: voucher.id } },
+         });
+         if (existing) {
+             if (!existing.isUsed) {
+                await tx.userVoucher.update({ where: { id: existing.id }, data: { isUsed: true, usedAt: new Date() } });
+             }
          } else {
              await tx.userVoucher.create({ data: { userId, voucherId: voucher.id, isUsed: true, usedAt: new Date() } });
          }
@@ -281,6 +308,15 @@ export class OrderService {
 
           // Trừ tồn kho
           for (const item of group.items) {
+             // Wiki 0082: nếu có biến thể, trừ tồn kho BIẾN THỂ (ProductVariant.stock) atomic —
+             // trước đây chỉ trừ product.stock nên bán được biến thể đã hết hàng (oversell variant).
+             if (item.variantId) {
+                const vu = await tx.productVariant.updateMany({
+                   where: { id: item.variantId, stock: { gte: item.quantity } },
+                   data: { stock: { decrement: item.quantity } },
+                });
+                if (vu.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} (phân loại đã chọn) vừa hết hàng.`);
+             }
              const update = await tx.product.updateMany({
                 where: { id: item.productId, stock: { gte: item.quantity } },
                 data: { stock: { decrement: item.quantity } }
@@ -549,14 +585,15 @@ export class OrderService {
 
     // 2. TRANSACTION: Cập nhật trạng thái + Cộng xu + Ghi lịch sử
     return this.prisma.$transaction(async (tx) => {
-      // A. Cập nhật trạng thái sang DELIVERED
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: { 
-            status: 'DELIVERED',
-            updatedAt: new Date() 
-        }
+      // A. Cập nhật trạng thái sang DELIVERED — ATOMIC guard (Wiki 0082): chỉ 1 request thắng
+      // khi 2 confirm song song; còn lại count===0 → throw, KHÔNG cộng xu/điểm 2 lần.
+      const claim = await tx.order.updateMany({
+        where: { id: orderId, status: { in: ['SHIPPING', 'CONFIRMED'] } },
+        data: { status: 'DELIVERED', updatedAt: new Date() },
       });
+      if (claim.count === 0) throw new BadRequestException('Đơn hàng đã được xử lý.');
+      const updatedOrder = await tx.order.findUnique({ where: { id: orderId } });
+      if (!updatedOrder) throw new NotFoundException('Đơn hàng không tồn tại');
 
       // B. Tính toán xu thưởng (Ví dụ: 1% giá trị đơn hàng, làm tròn xuống)
       // Logic: 100.000đ = 10 xu (Tùy logic dự án của bạn)
@@ -729,8 +766,13 @@ export class OrderService {
 
       // [FIX LOGIC] Chuẩn hóa status về UpperCase để so sánh cho chắc chắn
       // Và đảm bảo so sánh với Enum hoặc string chuẩn
-      if (String(status).toUpperCase() === 'DELIVERED') {
-          
+      const isPaidForReward = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+      if (String(status).toUpperCase() === 'DELIVERED' && !isPaidForReward) {
+          // Wiki 0082: KHÔNG cộng xu cho đơn thanh toán ONLINE chưa trả (paymentStatus != PAID).
+          // Trước đây seller tự set DELIVERED = mint xu cho đơn chưa trả. COD vẫn thưởng (trả khi nhận).
+          this.logger.warn(`[Reward] SKIP — order ${orderId} chưa thanh toán (paymentStatus=${order.paymentStatus}, method=${order.paymentMethod}).`);
+      } else if (String(status).toUpperCase() === 'DELIVERED') {
+
           // Tính toán
           const conversionRate = await this.pointService.getConversionRate(); // Lấy từ DB/Redis
           const rawPoints = Number(order.totalAmount) / conversionRate;

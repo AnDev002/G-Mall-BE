@@ -210,6 +210,19 @@ export class CategoryService {
     if (data.parentId && data.parentId === id) {
         throw new BadRequestException('Không thể chọn chính danh mục này làm cha');
     }
+    // Wiki 0082: chặn chọn CON/CHÁU làm cha (tạo vòng lặp cây). Đi ngược từ parentId lên gốc;
+    // nếu gặp lại `id` thì parentId nằm trong cây con của id → là vòng lặp.
+    if (data.parentId && data.parentId !== 'ROOT') {
+        let cur = await this.prisma.category.findUnique({ where: { id: data.parentId }, select: { id: true, parentId: true } });
+        if (!cur) throw new BadRequestException('Danh mục cha không tồn tại');
+        const seen = new Set<string>();
+        while (cur && cur.parentId) {
+            if (cur.parentId === id) throw new BadRequestException('Không thể chọn danh mục con/cháu làm cha (tạo vòng lặp)');
+            if (seen.has(cur.parentId)) break; // an toàn nếu DB đã có vòng sẵn
+            seen.add(cur.parentId);
+            cur = await this.prisma.category.findUnique({ where: { id: cur.parentId }, select: { id: true, parentId: true } });
+        }
+    }
 
     return this.prisma.category.update({
       where: { id },

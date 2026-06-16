@@ -560,7 +560,12 @@ export class ProductWriteService {
     let finalPrice = originalPrice;
     
     if (dto.isDiscountActive) {
-         finalPrice = Math.round(originalPrice * (1 - dto.discountValue / 100));
+         // Wiki 0082: chặn discount ngoài [0,100] → giá âm (defense-in-depth cùng @Max(100) ở DTO).
+         const dv = Number(dto.discountValue);
+         if (!Number.isFinite(dv) || dv < 0 || dv > 100) {
+            throw new BadRequestException('Phần trăm giảm giá phải trong khoảng 0–100');
+         }
+         finalPrice = Math.round(originalPrice * (1 - dv / 100));
     } else {
          finalPrice = originalPrice;
          // Nếu tắt discount -> Reset cả variants về giá gốc

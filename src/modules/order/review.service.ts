@@ -89,10 +89,17 @@ export class ReviewService {
     // user review + sửa rating sản phẩm chưa mua (fake review / phá rating đối thủ,
     // lại đội mác "đã mua" vì có orderId).
     const orderProductIds = new Set(order.items.map((it: any) => it.productId));
+    // Wiki 0082: chống productId TRÙNG trong mảng → tạo nhiều ProductReview cho 1 đơn
+    // (fake review / phá rating). One-review-per-product-per-order.
+    const seenReview = new Set<string>();
     for (const pr of productReviews) {
         if (!orderProductIds.has(pr.productId)) {
             throw new BadRequestException('Sản phẩm không thuộc đơn hàng này');
         }
+        if (seenReview.has(pr.productId)) {
+            throw new BadRequestException('Mỗi sản phẩm chỉ được đánh giá 1 lần trong đơn.');
+        }
+        seenReview.add(pr.productId);
     }
 
     return await this.prisma.$transaction(async (tx) => {
@@ -152,12 +159,14 @@ export class ReviewService {
       });
 
       // 5. Cập nhật trạng thái đơn hàng -> Hoàn tất & Đã đánh giá
+      // Wiki 0082: KHÔNG còn ép paymentStatus='PAID' ở đây — đó là BYPASS thanh toán (đơn
+      // online/COD chưa trả vẫn thành "đã thanh toán" chỉ bằng cách viết review). Chỉ đánh dấu
+      // đã review; trạng thái thanh toán do IPN / luồng giao hàng quyết định.
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data: {
-          status: 'DELIVERED', 
+          status: 'DELIVERED',
           isReviewed: true,
-          paymentStatus: 'PAID', // Giả sử nhận hàng xong & đánh giá là đã thanh toán
         },
       });
 
