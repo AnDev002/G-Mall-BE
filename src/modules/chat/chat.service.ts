@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { EncryptionUtil } from 'src/common/utils/encryption.util';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -70,7 +70,8 @@ export class ChatService {
   async processUserMessage(userId: string | null, dto: CreateMessageDto) {
     if (!userId) {
       if (dto.receiverId === 'AI_ASSISTANT') {
-        const guestHistory = dto['history'] || []; 
+        // Wiki 0086: `history` giờ là field hợp lệ trên DTO (không còn bị whitelist cắt).
+        const guestHistory = dto.history || [];
         const aiResponse = await this.aiService.getAiResponse('guest', dto.content, guestHistory);
         
         return {
@@ -95,6 +96,16 @@ export class ChatService {
         };
       }
       throw new Error("Guest login required");
+    }
+
+    // Wiki 0086: chặn tự nhắn cho chính mình. Trước đây receiverId === senderId
+    // khiến find-or-create conversation match nhầm 1 hội thoại sẵn có của user với
+    // người khác (vì điều kiện chỉ là "participants có cả 2 id", mà 2 id trùng nhau
+    // → bất kỳ conversation nào chứa user đều khớp) → tin tự gửi lọt vào hội thoại
+    // người lạ = rò rỉ riêng tư / inject chéo hội thoại. AI_ASSISTANT không bị ảnh
+    // hưởng vì id của nó không bao giờ bằng userId thật.
+    if (userId === dto.receiverId) {
+      throw new BadRequestException('Không thể nhắn tin cho chính mình');
     }
 
     // 2. Xử lý logic USER ĐĂNG NHẬP (Lưu DB như cũ)
@@ -188,6 +199,13 @@ export class ChatService {
      return { ...message, content: EncryptionUtil.decrypt(message.content) };
   }
   async sendMessage(senderId: string, dto: CreateMessageDto) {
+    // Wiki 0086: chặn tự nhắn cho chính mình ngay tại get-or-create-conversation
+    // (path WebSocket gateway). Nếu senderId === receiverId thì điều kiện
+    // "participants có cả 2 id" khớp BẤT KỲ hội thoại nào chứa user → tin lọt vào
+    // hội thoại người lạ = inject chéo / rò rỉ riêng tư.
+    if (senderId === dto.receiverId) {
+      throw new BadRequestException('Không thể nhắn tin cho chính mình');
+    }
     // B3.3 fix: bọc find/create conversation + create message trong transaction
     // để tránh trường hợp conversation được tạo nhưng message fail -> có
     // conversation rỗng trong DB + client nghĩ tin đã gửi (vì gateway
@@ -274,7 +292,10 @@ export class ChatService {
     const user = await this.prisma.user.findFirst({
       where: { role },
       orderBy: { createdAt: 'asc' }, // admin đầu tiên (account hệ thống)
-      select: { id: true, name: true, email: true, role: true, avatar: true },
+      // Wiki 0086: KHÔNG trả email ra ngoài — endpoint này cho mọi user đã đăng nhập
+      // gọi, trước đây lộ email của admin/seller cho bất kỳ ai. Mirror fix round10 ở
+      // searchUsers (đã bỏ email). Chỉ cần id/name/avatar/role để FE mở chat.
+      select: { id: true, name: true, role: true, avatar: true },
     });
     if (!user) {
       // Không throw — FE sẽ hiển thị "Không tìm thấy admin để chat" thân thiện.
@@ -387,6 +408,12 @@ export class ChatService {
   }
 
   async findOrCreateConversation(userId: string, partnerId: string) {
+    // Wiki 0086: chặn mở hội thoại với chính mình. Cùng lỗ hổng như send-message:
+    // userId === partnerId khiến điều kiện match BẤT KỲ hội thoại nào của user với
+    // người khác → trả về partner/lastMessage của người lạ = rò rỉ riêng tư.
+    if (userId === partnerId) {
+      throw new BadRequestException('Không thể nhắn tin cho chính mình');
+    }
     // 1. Tìm hội thoại cũ
     let conversation = await this.prisma.conversation.findFirst({
       where: {

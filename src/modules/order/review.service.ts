@@ -74,8 +74,16 @@ export class ReviewService {
     
     // Chỉ cho phép đánh giá khi đơn hàng ở trạng thái hợp lệ (SHIPPING, DELIVERED hoặc CONFIRMED)
     const validStatuses = ['SHIPPING', 'DELIVERED', 'CONFIRMED'];
-    if (!validStatuses.includes(order.status)) { 
+    if (!validStatuses.includes(order.status)) {
         throw new BadRequestException('Trạng thái đơn hàng chưa thể đánh giá');
+    }
+
+    // Wiki 0086: đơn ONLINE chưa thanh toán (paymentStatus !== 'PAID') KHÔNG được đánh giá →
+    // tránh "verified purchase" giả / thổi phồng rating. Chỉ cho phép khi COD hoặc đã PAID.
+    // Dùng cùng convention với order.service.ts (paymentMethod là String tự do nên so sánh case-insensitive).
+    const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+    if (!isPaid) {
+        throw new BadRequestException('Đơn hàng chưa thanh toán nên chưa thể đánh giá');
     }
 
     // Không cho phép đánh dấu đơn "đã đánh giá" khi mảng review rỗng (0 review).

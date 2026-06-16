@@ -52,6 +52,29 @@ export class BlogCategoryService {
     if (data.parentId && data.parentId === id) {
       throw new BadRequestException('Không thể chọn chính danh mục này làm cha');
     }
+    // Wiki 0086: chặn chọn CON/CHÁU làm cha (tạo vòng lặp cây) — mirror product
+    // CategoryService.update. Đi ngược từ parentId lên gốc; nếu gặp lại `id` thì
+    // parentId nằm trong cây con của id → vòng lặp. Trước đây thiếu check này.
+    if (data.parentId) {
+      let cur = await this.prisma.blogCategory.findUnique({
+        where: { id: data.parentId },
+        select: { id: true, parentId: true },
+      });
+      const seen = new Set<string>();
+      while (cur && cur.parentId) {
+        if (cur.parentId === id) {
+          throw new BadRequestException(
+            'Không thể chọn danh mục con/cháu làm cha (tạo vòng lặp)',
+          );
+        }
+        if (seen.has(cur.parentId)) break; // an toàn nếu DB đã có vòng sẵn
+        seen.add(cur.parentId);
+        cur = await this.prisma.blogCategory.findUnique({
+          where: { id: cur.parentId },
+          select: { id: true, parentId: true },
+        });
+      }
+    }
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.parentId !== undefined) updateData.parentId = data.parentId || null;

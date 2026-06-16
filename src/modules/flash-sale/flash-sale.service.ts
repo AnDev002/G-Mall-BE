@@ -111,10 +111,13 @@ export class FlashSaleService {
         // Lọc lại các điều kiện kinh doanh ở tầng JS để log ra được lỗi
         const validProducts = s.products.filter(p => {
             const isProductActive = p.product.status === 'ACTIVE';
-            const hasStock = p.stock > 0;
-            
+            // Wiki 0086: availability phải tính theo tồn flash sale còn lại = stock - sold,
+            // KHÔNG dùng stock thuần (item đã bán hết sold == stock vẫn bị hiện là còn hàng).
+            const remaining = p.stock - p.sold;
+            const hasStock = remaining > 0;
+
             if (!isProductActive) console.log(`   ❌ Product ${p.productId} ignored: Parent Status is ${p.product.status}`);
-            if (!hasStock) console.log(`   ❌ Product ${p.productId} ignored: Out of Flash Sale Stock (stock=${p.stock})`);
+            if (!hasStock) console.log(`   ❌ Product ${p.productId} ignored: Sold out (stock=${p.stock}, sold=${p.sold}, remaining=${remaining})`);
 
             return isProductActive && hasStock;
         });
@@ -136,6 +139,9 @@ export class FlashSaleService {
       ...this.mapSessionStatus(validSession),
       products: validSession.products.map((item: any) => ({
         ...item,
+        // Wiki 0086: phơi bày remaining (stock - sold) để FE hiển thị tồn thực + đánh dấu sold-out
+        remaining: item.stock - item.sold,
+        isSoldOut: item.stock - item.sold <= 0,
         product: {
           ...item.product,
           thumbnail: item.product.images && item.product.images.length > 0 

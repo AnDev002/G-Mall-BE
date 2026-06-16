@@ -62,7 +62,10 @@ export class CartService {
     const key = this.getCartKey(userId);
     // Reject nếu tổng số lượng (đã có trong cart + thêm mới) vượt quá tồn kho.
     const currentRaw = await this.redis.hget(key, dto.productId);
-    const currentQty = currentRaw ? parseInt(currentRaw) : 0;
+    // Fix #10 (Wiki 0086): coerce qty hiện tại bằng Number(...)||0.
+    // Trước đây parseInt(rác phi-số) -> NaN; mà NaN + quantity > stock luôn = false
+    // -> guard tồn kho bị bypass khi data Redis bị hỏng/phi-số. Number(...)||0 ép NaN về 0.
+    const currentQty = Number(currentRaw) || 0;
     if (currentQty + dto.quantity > exists.stock) {
       throw new BadRequestException('Vượt quá tồn kho');
     }

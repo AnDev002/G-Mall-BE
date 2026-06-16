@@ -552,10 +552,20 @@ export class ProductWriteService {
         }
     }
 
+    // Wiki 0086 (#18): chỉ đụng tới discount khi caller CHỦ ĐỊNH gửi `isDiscountActive`.
+    // whitelist:true + @IsOptional() ⇒ field thiếu = undefined (KHÔNG bị ép thành false).
+    // Nếu undefined nghĩa là FE không nhắc gì tới discount ⇒ giữ nguyên trạng thái cũ của
+    // cha lẫn variants, tránh reset variants ngoài ý muốn.
+    const touchDiscount = dto.isDiscountActive !== undefined;
+
     // --- LOGIC XỬ LÝ PRODUCT CHA ---
     // Lưu ý: Nếu có variants, giá Product cha nên là giá Min của variants
     let originalPrice = Number(product.originalPrice ?? product.price);
     let finalPrice = originalPrice;
+    // Wiki 0086 (#17): theo dõi discountValue sẽ ghi cho cha — khi tắt discount phải reset về 0.
+    let parentDiscountValue = Number(product.discountValue ?? 0);
+    // % giảm của cha dùng để propagate xuống các variant KHÔNG có trong payload (#16).
+    let parentDiscountPercent = 0;
 
     if (dto.isDiscountActive) {
          // Wiki 0082: chặn discount ngoài [0,100] → giá âm (defense-in-depth cùng @Max(100) ở DTO).
@@ -565,13 +575,22 @@ export class ProductWriteService {
             throw new BadRequestException('Phần trăm giảm giá phải trong khoảng 0–100');
          }
          finalPrice = Math.round(originalPrice * (1 - dv / 100));
-    } else {
+         parentDiscountValue = dv;
+         parentDiscountPercent = dv;
+    } else if (touchDiscount) {
+         // Tắt discount (isDiscountActive=false): trả giá cha về gốc.
          finalPrice = originalPrice;
+         // Wiki 0086 (#17): reset discountValue=0 để cha không còn "mang" % giảm cũ.
+         parentDiscountValue = 0;
     }
 
     // --- GHI ATOMIC: tất cả variant + product cha trong 1 transaction ---
     // Mọi validate đã chạy ở trên nên transaction không thể fail giữa chừng vì giá trị xấu,
     // và nếu DB lỗi giữa chừng thì rollback toàn bộ — không để ghi dở dang.
+    // Wiki 0086 (#16): ID các variant đã có trong payload — phần còn lại sẽ được
+    // propagate % giảm của cha để không bị STALE (cha giảm, variant giữ giá cũ).
+    const payloadVariantIds = new Set(variantUpdates.map((vu) => vu.id));
+
     const updatedProduct = await this.prisma.$transaction(async (tx) => {
       if (dto.isDiscountActive) {
         // Cập nhật từng variant theo payload đã tính sẵn.
@@ -585,8 +604,27 @@ export class ProductWriteService {
             },
           });
         }
-      } else if (product.variants.length > 0) {
-        // Nếu tắt discount -> Reset cả variants về giá gốc.
+
+        // Wiki 0086 (#16): các variant KHÔNG nằm trong payload (thiếu/partial) phải được
+        // áp lại % giảm của cha trên CHÍNH giá gốc của variant đó — không wipe dữ liệu,
+        // chỉ tính lại price hiệu lực để nhất quán với discount của cha.
+        for (const v of product.variants) {
+          if (payloadVariantIds.has(v.id)) continue;
+          const vOriginalPrice = Number(v.originalPrice ?? v.price);
+          const vNewPrice = Math.round(vOriginalPrice * (1 - parentDiscountPercent / 100));
+          await tx.productVariant.update({
+            where: { id: v.id },
+            data: {
+              price: vNewPrice,
+              originalPrice: vOriginalPrice,
+              discountValue: parentDiscountPercent,
+            },
+          });
+        }
+      } else if (touchDiscount && product.variants.length > 0) {
+        // Wiki 0086 (#18): chỉ reset variants khi caller CHỦ ĐỊNH tắt discount
+        // (isDiscountActive=false). Nếu field absent (undefined) thì bỏ qua nhánh này,
+        // variants được giữ nguyên.
         for (const v of product.variants) {
           await tx.productVariant.update({
             where: { id: v.id },
@@ -599,17 +637,24 @@ export class ProductWriteService {
       }
 
       // Update Product cha trong cùng transaction.
+      // Wiki 0086 (#18): nếu caller không gửi isDiscountActive thì KHÔNG đổi các field
+      // discount của cha (giữ nguyên giá/cờ cũ), chỉ cập nhật khi có chủ định.
+      const parentData: Prisma.ProductUpdateInput = touchDiscount
+        ? {
+            originalPrice,
+            price: finalPrice,
+            // Wiki 0086 (#17): khi tắt discount, parentDiscountValue đã được set = 0 ở trên.
+            discountValue: parentDiscountValue,
+            discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
+            discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
+            isDiscountActive: dto.isDiscountActive,
+            discountType: 'PERCENT', // Ép cứng theo yêu cầu
+          }
+        : {};
+
       return tx.product.update({
         where: { id: productId },
-        data: {
-          originalPrice,
-          price: finalPrice,
-          discountValue: dto.discountValue,
-          discountStartDate: dto.discountStartDate ? new Date(dto.discountStartDate) : null,
-          discountEndDate: dto.discountEndDate ? new Date(dto.discountEndDate) : null,
-          isDiscountActive: dto.isDiscountActive,
-          discountType: 'PERCENT', // Ép cứng theo yêu cầu
-        },
+        data: parentData,
         include: { variants: true, shop: true },
       });
     });

@@ -8,6 +8,12 @@ import { Prisma, Role, ShopStatus } from '@prisma/client';
 import { CreateUserDto } from './dto/admin-users.dto';
 import * as bcrypt from 'bcrypt';
 
+// Wiki 0086: marker đánh dấu shop bị khóa DO chủ sở hữu (user) bị ban, để khi unban user
+// chỉ khôi phục đúng những shop này — KHÔNG vô tình "hồi sinh" shop đang bị BANNED vì vi phạm
+// của chính nó (qua toggleBanShop). Không cần thêm cột schema: ta dùng prefix của banReason
+// làm cờ phân biệt, vừa rẻ vừa không phá dữ liệu hiện có.
+const OWNER_BAN_REASON_PREFIX = 'Tài khoản chủ sở hữu bị khóa: ';
+
 function generateSlug(name: string): string {
   return name
     .toLowerCase()
@@ -735,17 +741,27 @@ export class AdminUsersService {
     });
 
     // Nếu khóa User -> Cần xem xét khóa luôn Shop của họ (nếu có)
+    // Wiki 0086: CHỈ khóa-theo-chủ những shop đang ACTIVE. Shop đã ở trạng thái khác
+    // (BANNED vì vi phạm riêng, REJECTED, PENDING...) KHÔNG bị đè banReason — giữ nguyên
+    // lý do/trạng thái gốc, tránh việc unban sau này khôi phục nhầm.
     if (isBanned && user.role === 'SELLER') {
        await this.prisma.shop.updateMany({
-         where: { ownerId: userId },
-         data: { status: 'BANNED', banReason: 'Tài khoản chủ sở hữu bị khóa: ' + reason }
+         where: { ownerId: userId, status: ShopStatus.ACTIVE },
+         data: { status: ShopStatus.BANNED, banReason: OWNER_BAN_REASON_PREFIX + reason }
        });
     }
 
     // Nếu mở khóa User là SELLER -> Khôi phục lại Shop về ACTIVE (đảo ngược logic ban ở trên)
+    // Wiki 0086 (bug #19): CHỈ khôi phục những shop bị khóa DO chủ bị ban (banReason mang
+    // prefix marker). Shop bị BANNED vì vi phạm của CHÍNH NÓ (qua toggleBanShop) phải được
+    // giữ nguyên, để admin chủ động mở khóa shop bằng toggleBanShop nếu thấy phù hợp.
     if (!isBanned && user.role === 'SELLER') {
        await this.prisma.shop.updateMany({
-         where: { ownerId: userId, status: ShopStatus.BANNED },
+         where: {
+           ownerId: userId,
+           status: ShopStatus.BANNED,
+           banReason: { startsWith: OWNER_BAN_REASON_PREFIX },
+         },
          data: { status: ShopStatus.ACTIVE, banReason: null }
        });
     }

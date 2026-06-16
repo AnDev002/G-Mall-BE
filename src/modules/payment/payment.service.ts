@@ -8,6 +8,15 @@ export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   constructor(private configService: ConfigService) {}
 
+  // Wiki 0086: so sánh HMAC bằng crypto.timingSafeEqual để chống timing side-channel
+  // (rò rỉ độ dài prefix khớp qua thời gian phản hồi). `===` so sánh chuỗi sẽ trả về
+  // sớm ở byte đầu tiên khác nhau. timingSafeEqual yêu cầu 2 Buffer CÙNG độ dài →
+  // phải guard length trước (length mismatch → false ngay, không throw).
+  private safeCompareHmac(expected: string, received: unknown): boolean {
+    if (typeof received !== 'string' || expected.length !== received.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
+  }
+
   // Tích hợp MoMo One-time Payment API v2 (chuẩn https://developers.momo.vn).
   // Nếu thiếu env → throw BadRequest có message tiếng Việt rõ ràng để FE hiển thị.
   async createMomoPayment(
@@ -79,7 +88,8 @@ export class PaymentService {
     } = body || {};
     const rawHash = `accessKey=${accessKey}&amount=${amount}&extraData=${extraData || ''}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${transId || ''}`;
     const expected = crypto.createHmac('sha256', secretKey).update(rawHash).digest('hex');
-    return expected === signature;
+    // Wiki 0086: so sánh chữ ký hằng-thời-gian (xem safeCompareHmac).
+    return this.safeCompareHmac(expected, signature);
   }
 
   // [UPDATED] Thêm tham số description (mặc định nếu không truyền)
@@ -166,6 +176,7 @@ export class PaymentService {
     const safeTransId = transId || '';
     const rawHash = `accessKey=${accessKey}&amount=${amount}&extraData=${safeExtraData}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${safeTransId}`;
     const mySignature = crypto.createHmac('sha256', secretKey).update(rawHash).digest('hex');
-    return mySignature === signature;
+    // Wiki 0086: so sánh chữ ký hằng-thời-gian (xem safeCompareHmac).
+    return this.safeCompareHmac(mySignature, signature);
   }
 }

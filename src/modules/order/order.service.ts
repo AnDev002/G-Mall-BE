@@ -599,8 +599,17 @@ export class OrderService {
         });
       }
       if (order.voucherId) {
-        await tx.voucher.updateMany({ where: { id: order.voucherId }, data: { usageCount: { decrement: 1 } } });
-        await tx.userVoucher.updateMany({ where: { userId, voucherId: order.voucherId }, data: { isUsed: false, usedAt: null } });
+        // Wiki 0086: voucher (đặc biệt system/GLOBAL) có thể gắn trên NHIỀU đơn cùng paymentGroup
+        // nhưng usageCount chỉ +1 lúc redeem. Trước đây mỗi lần hủy 1 đơn lại -1 → hủy N đơn = -N
+        // cho 1 lần +1 → drift ÂM = bypass global usageLimit. Chỉ NHẢ voucher khi đây là đơn CUỐI
+        // còn tham chiếu voucher trong group (không còn đơn anh em nào active). +guard usageCount>0.
+        const siblingUsing = (order as any).paymentGroupId
+          ? await tx.order.count({ where: { paymentGroupId: (order as any).paymentGroupId, voucherId: order.voucherId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
+          : 0;
+        if (siblingUsing === 0) {
+          await tx.voucher.updateMany({ where: { id: order.voucherId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
+          await tx.userVoucher.updateMany({ where: { userId, voucherId: order.voucherId }, data: { isUsed: false, usedAt: null } });
+        }
       }
       // Notification trigger (wiki 0046 hookup point #1)
       await this.notificationService.create({

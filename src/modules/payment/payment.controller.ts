@@ -56,10 +56,17 @@ export class PaymentController {
     const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true }, _count: true });
     const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
     const paid = Math.floor(Number(body.amount ?? -1));
+    // Wiki 0086: nếu amount THIẾU/không phải số hữu hạn (paid < 0 hoặc NaN khi amount="abc") →
+    // KHÔNG verify được số tiền → KHÔNG mark PAID. Trước đây `paid >= 0` false → bỏ qua check
+    // underpay → đơn PAID không kiểm tiền. Trả 200 OK để cổng ngừng retry nhưng KHÔNG đụng paymentStatus.
+    if (!Number.isFinite(paid) || paid < 0) {
+      this.logger.warn(`[Pay2S IPN] missing/invalid amount, skip PAID: group=${order.paymentGroupId ?? orderId} amount=${body?.amount}`);
+      return res.status(HttpStatus.OK).send({ success: true });
+    }
     // Wiki 0086: dung sai làm tròn — tổng totalAmount/đơn (đã FLOOR phân bổ voucher/xu) có thể
     // > số tiền cổng charge vài đồng/đơn → trước đây false-reject đơn ĐÃ trả. Vẫn chặn underpay thật.
     const tolerance = (agg._count || 1) * 4 + 10;
-    if (paid >= 0 && paid < expected - tolerance) {
+    if (paid < expected - tolerance) {
       this.logger.warn(`[Pay2S IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
       return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
     }
@@ -98,9 +105,16 @@ export class PaymentController {
       const agg = await this.prisma.order.aggregate({ where: groupWhere, _sum: { totalAmount: true }, _count: true });
       const expected = Math.floor(Number(agg._sum.totalAmount ?? order.totalAmount));
       const paid = Math.floor(Number(body.amount ?? -1));
+      // Wiki 0086: nếu amount THIẾU/không phải số hữu hạn (paid < 0 hoặc NaN khi amount="abc") →
+      // KHÔNG verify được số tiền → KHÔNG mark PAID. Trước đây `paid >= 0` false → bỏ qua check
+      // underpay → đơn PAID không kiểm tiền. Trả 200 OK để cổng ngừng retry nhưng KHÔNG đụng paymentStatus.
+      if (!Number.isFinite(paid) || paid < 0) {
+        this.logger.warn(`[MoMo IPN] missing/invalid amount, skip PAID: group=${order.paymentGroupId ?? orderId} amount=${body?.amount}`);
+        return res.status(HttpStatus.OK).send({ success: true });
+      }
       // Wiki 0086: dung sai làm tròn (xem giải thích ở Pay2S) — tránh false-reject đơn đã trả.
       const tolerance = (agg._count || 1) * 4 + 10;
-      if (paid >= 0 && paid < expected - tolerance) {
+      if (paid < expected - tolerance) {
         this.logger.warn(`[MoMo IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
         return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
       }
