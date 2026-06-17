@@ -122,12 +122,12 @@ export class AuthController {
     return { message: 'Đã gửi lại mã OTP', ...(includeDevOtp ? { devOtp: r.otp } : {}) };
   }
 
-  // [FIX review-H6 - wiki 0088] thêm RateLimitGuard cho verify-otp (trước đây là endpoint @Public
-  // DUY NHẤT thiếu rate-limit) → chặn brute-force OTP 6 số ở tầng endpoint (IP/email), bổ trợ bộ
-  // đếm INCR trong service.
+  // [FIX review2-H6 - wiki 0088] Chống brute-force OTP bằng BỘ ĐẾM INCR ATOMIC trong service (5 lần
+  // SAI valid-format → khoá trong TTL). KHÔNG dùng RateLimitGuard ở đây: guard chạy TRƯỚC Validation
+  // pipe nên đếm cả request OTP sai-định-dạng (bị 400) → trả 429 cho cả validation hợp lệ + che lỗi
+  // 400. INCR counter chỉ tăng cho OTP đúng-định-dạng (đúng vector đoán OTP); send-otp đã có rate-limit
+  // riêng nên không spam OTP mới được. Đủ chặn brute-force mà không phá validation.
   @Public()
-  @UseGuards(RateLimitGuard)
-  @RateLimit({ points: 10, windowSeconds: 300, keyBy: 'body.email+path' })
   @Post('verify-otp')
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto);
