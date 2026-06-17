@@ -122,7 +122,12 @@ export class AuthController {
     return { message: 'Đã gửi lại mã OTP', ...(includeDevOtp ? { devOtp: r.otp } : {}) };
   }
 
+  // [FIX review-H6 - wiki 0088] thêm RateLimitGuard cho verify-otp (trước đây là endpoint @Public
+  // DUY NHẤT thiếu rate-limit) → chặn brute-force OTP 6 số ở tầng endpoint (IP/email), bổ trợ bộ
+  // đếm INCR trong service.
   @Public()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, windowSeconds: 300, keyBy: 'body.email+path' })
   @Post('verify-otp')
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto);
@@ -172,8 +177,17 @@ export class AuthController {
   /** Đổi MK khi đã login (biết MK cũ) — fix B2.3. */
   @UseGuards(JwtAuthGuard)
   @Post('change-password')
-  async changePassword(@User() user: any, @Body() dto: ChangePasswordDto) {
-    return this.authService.changePassword(user.id, dto);
+  async changePassword(
+    @User() user: any,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.changePassword(user.id, dto);
+    // [FIX M5 - wiki 0088] changePassword bump tokenVersion → cookie cũ (token cũ) thành invalid.
+    // Trước đây controller KHÔNG set lại cookie → request kế dùng cookie cũ → 401 → tự logout
+    // CHÍNH thiết bị vừa đổi MK (trái mô tả "session hiện tại vẫn hoạt động"). Set lại cookie token mới.
+    if (result?.access_token) this.setAuthCookie(res, result.access_token);
+    return result;
   }
 
   /** Bước 1: gửi mã reset tới email — fix B1.2 (email không gửi khi quên MK). */

@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, Min, Max } from 'class-validator';
 import { VoucherType, VoucherScope } from '@prisma/client';
 
 export class CreateVoucherDto {
@@ -14,8 +14,11 @@ export class CreateVoucherDto {
   @IsEnum(VoucherScope)
   scope: VoucherScope;
 
+  // [FIX M2 - wiki 0088] chặn sanity số tiền vô lý (giảm giá thực được cap ≤ subtotal ở
+  // promotion.service). PERCENTAGE nên ≤100 nhưng validate chéo theo type phức tạp → service cap.
   @IsNumber()
   @Min(0)
+  @Max(100_000_000)
   amount: number;
 
   @IsNumber()

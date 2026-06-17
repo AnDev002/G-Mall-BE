@@ -21,8 +21,10 @@ export class BrandController {
   ) {}
 
   // Spec [0018]: Crawl brand từ URL Shopee/Tiki — seller-only.
-  // Đặt ở /brands/crawl để dễ nhớ; auth check qua JwtAuthGuard chung của app.
-  @UseGuards(JwtAuthGuard)
+  // [FIX brand-guard - wiki 0088] thêm RolesGuard+@Roles(SELLER). Trước đây chỉ JwtAuthGuard →
+  // BẤT KỲ buyer nào cũng gọi được endpoint crawl ngoài (vi phạm ranh giới quyền seller).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SELLER)
   @Post('brands/crawl')
   async crawlBrand(@Body() dto: { url: string }) {
     return this.brandCrawler.crawlByUrl(dto?.url);

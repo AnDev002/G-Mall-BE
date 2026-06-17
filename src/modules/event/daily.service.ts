@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, ConflictException } from '@nestjs/comm
 import { PointService } from '../point/point.service';
 import { RedisService } from '../../database/redis/redis.service';
 import { PointType } from '@prisma/client';
+import moment from 'moment'; // [FIX review-H8 - wiki 0088] khoá-ngày dùng ngày LOCAL khớp PointService
 
 @Injectable()
 export class DailyService {
@@ -17,7 +18,7 @@ export class DailyService {
   ) {}
 
   async checkIn(userId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = moment().format('YYYY-MM-DD'); // [FIX review-H8] ngày LOCAL (trùng key với PointService)
     const redisKey = `checkin:${userId}:${today}`;
     const streakKey = `streak:${userId}`;
 
@@ -92,7 +93,7 @@ export class DailyService {
   }
 
   async getDailyStatus(userId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = moment().format('YYYY-MM-DD'); // [FIX review-H8] ngày LOCAL (trùng key với PointService)
     const checkinKey = `checkin:${userId}:${today}`;
     const streakKey = `streak:${userId}`;
 
@@ -110,7 +111,7 @@ export class DailyService {
   }
 
   async resetDailyTest(userId: string) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = moment().format('YYYY-MM-DD'); // [FIX review-H8] ngày LOCAL (trùng key với PointService)
     const checkinKey = `checkin:${userId}:${today}`;
     const gachaKey = `gacha:${userId}:${today}`;
     

@@ -211,11 +211,22 @@ export class AuthService {
     }
 
     if (storedOtp !== dto.otp) {
+      // [FIX review-H6 - wiki 0088] Đếm sai bằng INCR ATOMIC (tránh TOCTOU get+set). KHÔNG xoá OTP
+      // của user khi đạt ngưỡng — trước đây xoá → attacker (endpoint @Public) vô hiệu OTP của NẠN
+      // NHÂN = griefing/DoS. Thay vào đó KHOÁ thử trong cửa sổ TTL; brute-force còn bị chặn thêm bởi
+      // RateLimitGuard (email+path) ở controller. OTP vẫn còn để user thật dùng / khi xin lại.
+      const failKey = `otp_fail:${normalizedEmail}`;
+      const fails = await this.redisService.getClient().incr(failKey);
+      if (fails === 1) await this.redisService.getClient().expire(failKey, 300);
+      if (fails > 5) {
+        throw new UnauthorizedException('Nhập sai OTP quá nhiều lần. Vui lòng thử lại sau ít phút hoặc yêu cầu mã mới.');
+      }
       throw new UnauthorizedException('Mã OTP không đúng');
     }
 
-    // Xóa OTP sau khi dùng (prevent replay)
+    // Xóa OTP sau khi dùng (prevent replay) + reset bộ đếm sai
     await this.redisService.del(this.otpKey(normalizedEmail));
+    await this.redisService.del(`otp_fail:${normalizedEmail}`);
 
     // Cập nhật User thành đã verify
     const user = await this.prisma.user.update({

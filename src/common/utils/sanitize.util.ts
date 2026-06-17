@@ -34,9 +34,19 @@ export function sanitizeHtml(input?: string | null): string {
   //    `[\s/]on...` toàn cục → cắt nhầm URL chứa /on… (online, onboarding) trong href hoặc text
   //    (vd href="/page/onload=x" bị mất cả dấu " đóng → vỡ HTML). Giờ alternation: nháy → giữ
   //    nguyên, handler NGOÀI nháy → xoá. Vẫn chặn bypass <svg/onload=…> (handler không nằm trong nháy).
-  html = html.replace(/<[a-z][^>]*>/gi, (tag) =>
+  // [FIX M6 - wiki 0088] Outer matcher cho phép '>' NẰM TRONG nháy (title="a>b") — trước đây
+  // `<[a-z][^>]*>` dừng ở '>' đầu tiên nên `<img title="a>b" onerror=x>` bị cắt, onerror lọt.
+  // Inner: ngoài 2 case cũ (giá trị trong nháy giữ nguyên / handler sau dấu cách-slash), THÊM
+  // case "nháy NGAY TRƯỚC handler" (vd src="x"onerror=…) — HTML5 không cần khoảng trắng giữa
+  // value và attr kế → trước đây [\s/] không khớp → onerror lọt. Bắt cả `"value"on…=…`, trả lại
+  // value và bỏ handler. URL trong nháy (href="/page/onload=x") vẫn an toàn vì alt nháy khớp trước.
+  // [FIX review-M6 - wiki 0088] (a) catch-all NGOÀI nháy đổi [^>] → [^"'>]: bỏ nhập nhằng "nháy khớp
+  // cả nhánh nháy lẫn nhánh [^>]" → diệt ReDoS backtracking mũ trên thẻ thiếu '>'. (b) nhóm handler
+  // SAU nháy đổi ? → * : bắt CHUỖI nhiều handler liền (src="x"onerror="y"onmouseover="z") chứ không
+  // chỉ 1 cái.
+  html = html.replace(/<[a-z](?:"[^"]*"|'[^']*'|[^"'>])*>/gi, (tag) =>
     tag.replace(
-      /("[^"]*"|'[^']*')|[\s/]on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+      /("[^"]*"|'[^']*')(?:\s*on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))*|[\s/]on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
       (_m, quoted) => (quoted ? quoted : ' '),
     ),
   );
@@ -47,10 +57,13 @@ export function sanitizeHtml(input?: string | null): string {
   //    action, xlink:href, background, poster (vector bypass trên <button formaction=>,
   //    <form action=>, <use xlink:href=>, <body background=>, <video poster=>).
   const URL_ATTRS = '(?:href|src|formaction|action|xlink:href|background|poster)';
+  // [FIX M6 - wiki 0088] `data:image/...` (ảnh base64 dán từ TipTap) là HỢP LỆ — trước đây bị thay
+  // thành '#' làm vỡ ảnh blog. Giờ chỉ chặn data: KHÔNG phải image/* (data:text/html là XSS).
+  const DANGER_SCHEME = '(?:javascript\\s*:|vbscript\\s*:|data\\s*:(?!\\s*image\\/))';
   //    Chỉ áp dụng cho giá trị nằm trong dấu nháy của thuộc tính.
   html = html.replace(
     new RegExp(
-      `(${URL_ATTRS}\\s*=\\s*)("|')\\s*(?:javascript|vbscript|data)\\s*:[^"']*\\2`,
+      `(${URL_ATTRS}\\s*=\\s*)("|')\\s*${DANGER_SCHEME}[^"']*\\2`,
       'gi',
     ),
     '$1$2#$2',
@@ -58,7 +71,7 @@ export function sanitizeHtml(input?: string | null): string {
   //    Trường hợp giá trị không có dấu nháy.
   html = html.replace(
     new RegExp(
-      `(${URL_ATTRS}\\s*=\\s*)(?:javascript|vbscript|data)\\s*:[^\\s>]*`,
+      `(${URL_ATTRS}\\s*=\\s*)${DANGER_SCHEME}[^\\s>]*`,
       'gi',
     ),
     '$1#',

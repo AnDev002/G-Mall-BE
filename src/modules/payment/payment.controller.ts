@@ -70,8 +70,11 @@ export class PaymentController {
       this.logger.warn(`[Pay2S IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
       return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
     }
+    // [FIX H3 - wiki 0088] KHÔNG mark PAID đơn đã HỦY. cancelOrder set status=CANCELLED nhưng để
+    // paymentStatus=PENDING → IPN hợp lệ về sau vẫn match → đơn thành CANCELLED+PAID (tiền đã thu,
+    // kho/xu/voucher đã hoàn cho buyer, không có đường refund). Thêm guard status != CANCELLED.
     const upd = await this.prisma.order.updateMany({
-      where: { ...groupWhere, paymentStatus: 'PENDING' },
+      where: { ...groupWhere, paymentStatus: 'PENDING', status: { not: 'CANCELLED' } },
       data: { paymentStatus: 'PAID' },
     });
     if (upd.count === 0) this.logger.log(`[Pay2S IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
@@ -118,8 +121,9 @@ export class PaymentController {
         this.logger.warn(`[MoMo IPN] underpayment group=${order.paymentGroupId ?? orderId} paid=${paid} < expected=${expected} (tol=${tolerance})`);
         return res.status(HttpStatus.BAD_REQUEST).send({ message: 'Amount mismatch' });
       }
+      // [FIX H3 - wiki 0088] guard status != CANCELLED (xem giải thích ở Pay2S IPN).
       const upd = await this.prisma.order.updateMany({
-        where: { ...groupWhere, paymentStatus: 'PENDING' },
+        where: { ...groupWhere, paymentStatus: 'PENDING', status: { not: 'CANCELLED' } },
         data: { paymentStatus: 'PAID' },
       });
       if (upd.count === 0) this.logger.log(`[MoMo IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);

@@ -28,10 +28,11 @@ export class PromotionService {
     shopGroups: Record<string, any> // Map: { shopId: { subtotal: number, items: [] } }
   ) {
     if (!voucherIds || voucherIds.length === 0) {
-      return { 
+      return {
         shopDiscounts: {}, // Map<shopId, number>
         systemDiscount: 0,
-        appliedVouchers: [] 
+        freeshipDiscount: 0, // [FIX H2 - wiki 0088] luôn trả field này để OrderService không nhận undefined
+        appliedVouchers: []
       };
     }
 
@@ -88,13 +89,19 @@ export class PromotionService {
     // B7.9: voucher scope CATEGORY có `shopId` (voucher shop giới hạn theo danh mục)
     // trước đây bị exclude khỏi shopVouchers loop nên không được tính → bỏ qua hoặc
     // bị xử lý sai shop. Thêm CATEGORY vào nhóm shopVouchers để loop xử lý.
+    // [FIX H2 - wiki 0088] LOẠI voucher type=FREESHIP khỏi nhóm shop/system. Trước đây
+    // voucher GLOBAL+FREESHIP bị match cả systemVouchers (scope===GLOBAL) LẪN freeshipVouchers
+    // (type===FREESHIP) → push 2 lần vào appliedVouchers → (a) freeship trừ nhầm vào subtotal,
+    // (b) redeem loop đốt voucher 2 lần → throw "đã hết lượt" → FAIL đơn. Giờ FREESHIP CHỈ do
+    // nhánh freeshipVouchers xử lý (push 1 lần, giảm vào phí ship).
     const shopVouchers = vouchers.filter(
       (v) =>
-        v.scope === VoucherScope.SHOP ||
-        v.scope === VoucherScope.PRODUCT ||
-        v.scope === VoucherScope.CATEGORY,
+        v.type !== VoucherType.FREESHIP &&
+        (v.scope === VoucherScope.SHOP ||
+          v.scope === VoucherScope.PRODUCT ||
+          v.scope === VoucherScope.CATEGORY),
     );
-    const systemVouchers = vouchers.filter(v => v.scope === VoucherScope.GLOBAL);
+    const systemVouchers = vouchers.filter(v => v.scope === VoucherScope.GLOBAL && v.type !== VoucherType.FREESHIP);
 
     // 3. Xử lý Voucher Shop
     for (const voucher of shopVouchers) {
@@ -133,6 +140,10 @@ export class PromotionService {
         discount = (eligibleAmount * Number(voucher.amount)) / 100;
         if (voucher.maxDiscount) discount = Math.min(discount, Number(voucher.maxDiscount));
       }
+      // [FIX M2 - wiki 0088] CAP giảm giá ≤ phần tiền hợp lệ của shop. Trước đây FIXED_AMOUNT lớn
+      // (vd 1tr cho đơn 50k) không bị chặn → discount tràn, làm payableBeforeCoins (tổng đơn) bị
+      // trừ lẹm sang shop/ship khác → cổng charge ÍT hơn tổng Order.totalAmount đã lưu (rò tiền).
+      discount = Math.max(0, Math.min(discount, eligibleAmount));
 
       // Cộng dồn giảm giá cho shop đó (đề phòng shop cho dùng nhiều voucher - tùy logic business)
       // Ở đây giả định mỗi loại voucher áp dụng 1 lần, nhưng code hỗ trợ cộng dồn
@@ -330,10 +341,18 @@ export class PromotionService {
         throw new BadRequestException('Vui lòng chọn danh mục');
     }
 
+    // [FIX H1 - wiki 0088] LẤY shopId của seller và GẮN vào voucher. Trước đây create chỉ set
+    // sellerId, để shopId=NULL → calculateMultiShopVouchers (line `targetShopId=voucher.shopId;
+    // if(!targetShopId) continue`) BỎ QUA mọi voucher shop → giảm 0đ, voucher seller vô dụng &
+    // không hiện trong list shop. shopId = Shop.id (KHÁC sellerId/ownerId).
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+    if (!shop) throw new BadRequestException('Bạn chưa có shop nên không thể tạo voucher.');
+
     return await this.prisma.$transaction(async (tx) => {
       const voucher = await tx.voucher.create({
         data: {
           sellerId,
+          shopId: shop.id,
           code: dto.code,
           name: dto.name,
           type: dto.type,

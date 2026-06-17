@@ -95,7 +95,7 @@ export class ChatService {
           }
         };
       }
-      throw new Error("Guest login required");
+      throw new BadRequestException("Cần đăng nhập để nhắn tin cho người dùng này."); // [FIX LOW - wiki 0088] HttpException 400 thay raw Error (trước đây → 500)
     }
 
     // Wiki 0086: chặn tự nhắn cho chính mình. Trước đây receiverId === senderId
@@ -312,7 +312,7 @@ export class ChatService {
       orderBy: { lastMessageAt: 'desc' },
       include: {
         participants: {
-          select: { id: true, name: true, role: true, email: true, avatar: true },
+          select: { id: true, name: true, role: true, avatar: true }, // [FIX H7 - wiki 0088] BỎ email khỏi list hội thoại (nhất quán policy round12)
         },
         messages: {
           take: 1,
@@ -423,7 +423,7 @@ export class ChatService {
         ],
       },
       include: {
-        participants: { select: { id: true, name: true, role: true, email: true } },
+        participants: { select: { id: true, name: true, role: true } }, // [FIX H7 - wiki 0088] BỎ email (IDOR): /chat/open-chat nhận receiverId tuỳ ý → trả email nạn nhân. Sibling đã vá round12, sót hàm này.
         messages: { take: 1, orderBy: { createdAt: 'desc' } },
       },
     });
@@ -442,7 +442,7 @@ export class ChatService {
         where: { id: newConv.id },
         data: { participants: { connect: { id: partnerId } } },
         include: {
-          participants: { select: { id: true, name: true, role: true, email: true } },
+          participants: { select: { id: true, name: true, role: true } }, // [FIX H7 - wiki 0088] BỎ email (IDOR): /chat/open-chat nhận receiverId tuỳ ý → trả email nạn nhân. Sibling đã vá round12, sót hàm này.
           messages: { take: 1, orderBy: { createdAt: 'desc' } },
         },
       });

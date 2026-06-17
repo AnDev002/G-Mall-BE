@@ -45,6 +45,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Tài khoản không tồn tại hoặc đã bị xóa.');
     }
 
+    // [FIX H5 - wiki 0088] CHẶN user bị BAN ngay tại mỗi request. Trước đây validate() chỉ check
+    // tồn tại + tokenVersion, KHÔNG xét isBanned, và toggleBanUser không bump tokenVersion → user
+    // bị ban vẫn gọi mọi API (đặt đơn, rút tiền, chat) tới khi JWT hết hạn (7 ngày) = ban vô tác
+    // dụng trên HTTP (WS đã check). Giờ ban có hiệu lực ở request kế tiếp.
+    if (user.isBanned) {
+      throw new UnauthorizedException('Tài khoản đã bị khóa.');
+    }
+
     // Spec [0018]: tokenVersion check — sau khi đổi password, BE bump
     // user.tokenVersion. JWT cũ có version cũ -> reject -> các thiết bị khác
     // tự logout khi gọi API tiếp theo (token đã invalidate).

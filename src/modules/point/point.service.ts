@@ -136,6 +136,22 @@ export class PointService {
     const isLocked = await this.redis.setNX(lockKey, '1', 5);
     if (!isLocked) throw new BadRequestException('Thao tác quá nhanh.');
 
+    // [FIX H8 - wiki 0088] CHIA SẺ chung khoá-ngày với /events/daily-checkin (DailyService dùng
+    // cùng key `checkin:${userId}:${today}`). Trước đây 2 endpoint điểm danh dedup RIÊNG (DB record
+    // vs Redis) → gọi cả hai cùng ngày = nhận thưởng EARN_DAILY 2 lần. Giờ ai claim trước thì
+    // endpoint kia bị chặn.
+    // [FIX review-H8 - wiki 0088] dùng ngày LOCAL (moment) — khớp với DB check `now.isSame(...,'day')`
+    // dùng moment local. Trước đây dùng toISOString (UTC): server GMT+7 → 1 ngày local trải 2 ngày UTC
+    // → khoá-ngày lệch giữa 2 endpoint quanh nửa đêm UTC (07:00 local) → vẫn double-award. DailyService
+    // cũng đổi sang cùng format để key TRÙNG nhau.
+    const today = moment().format('YYYY-MM-DD');
+    const dayKey = `checkin:${userId}:${today}`;
+    const dayClaim = await this.redis.setNX(dayKey, '1', 86400);
+    if (!dayClaim) {
+      await this.redis.del(lockKey);
+      throw new BadRequestException('Hôm nay bạn đã điểm danh rồi.');
+    }
+
     try {
       return await this.prisma.$transaction(async (tx) => {
         let record = await tx.dailyCheckIn.findUnique({ where: { userId } });
@@ -175,6 +191,15 @@ export class PointService {
 
         return { earned, streak: newStreak, bonusApplied };
       });
+    } catch (e: any) {
+      // [FIX H8] Chỉ NHẢ khoá-ngày khi award LỖI THẬT (tx rollback → chưa cộng điểm) để user thử
+      // lại; nếu lỗi là "đã điểm danh" (DB record đã có hôm nay) thì GIỮ khoá để chặn nhận 2 lần
+      // qua /events/daily-checkin.
+      const msg = String(e?.message || '').toLowerCase();
+      if (!msg.includes('đã điểm danh')) {
+        await this.redis.del(dayKey);
+      }
+      throw e;
     } finally {
       await this.redis.del(lockKey);
     }
@@ -256,11 +281,18 @@ export class PointService {
 
     // [TỐI ƯU 1]: Thực hiện Transaction DB
     const result = await this.prisma.$transaction(async (tx) => {
-        // 1. Trừ tiền người gửi
-        const senderNew = await tx.pointWallet.update({
-            where: { userId: senderId },
-            data: { balance: { decrement: amount } }
+        // [FIX C1 - wiki 0088] ATOMIC GUARDED decrement chống TOCTOU.
+        // initiateTransfer chỉ check số dư lúc gửi OTP; giữa init và confirm người
+        // gửi có thể đã tiêu hết xu (đặt đơn dùng xu...). Trước đây decrement VÔ ĐIỀU
+        // KIỆN → ví ÂM + người nhận +amount → ĐÚC xu (POINT_CONVERSION_RATE=1 = tiền thật).
+        // Dùng updateMany có guard balance>=amount + count check (pattern như order path).
+        const claim = await tx.pointWallet.updateMany({
+            where: { userId: senderId, balance: { gte: amount } },
+            data: { balance: { decrement: amount } },
         });
+        if (claim.count === 0) {
+            throw new BadRequestException('Số dư không đủ để thực hiện giao dịch.');
+        }
 
         // 2. Cộng tiền người nhận
         await tx.pointWallet.upsert({
@@ -291,7 +323,8 @@ export class PointService {
           })
         ]);
 
-        return { success: true, newBalance: senderNew.balance };
+        const senderWallet = await tx.pointWallet.findUnique({ where: { userId: senderId } });
+        return { success: true, newBalance: senderWallet?.balance ?? 0 };
     }, {
         // [FIX LỖI]: Tăng thời gian timeout lên 20 giây (Mặc định là 5s)
         timeout: 20000, 

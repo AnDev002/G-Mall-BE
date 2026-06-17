@@ -689,6 +689,7 @@ model OrderItem {
   productId String? // 1. Đổi thành Optional (Thêm dấu ?)
   product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
   variantId String? // Wiki 0083: biến thể đã mua — để hoàn tồn kho variant khi hủy đơn
+  flashSaleProductId String? // Wiki 0088: link FlashSaleProduct để HOÀN sold khi hủy đơn (chống leak suất flash + griefing)
 
   quantity Int
   price    Decimal // Lưu giá tại thời điểm mua (đề phòng giá gốc đổi)

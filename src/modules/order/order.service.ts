@@ -99,10 +99,13 @@ export class OrderService {
 
       if (item.variantId) {
          selectedVariant = product.variants.find(v => v.id === item.variantId);
+         // [FIX M4 - wiki 0088] variantId KHÔNG thuộc product (id biến thể của SP khác / đã xóa / stale)
+         // → trước đây fallback giá gốc + chỉ trừ product.stock → lệch tồn kho biến thể + buyer trả
+         // giá gốc (thường rẻ hơn) cho biến thể đắt. Giờ CHẶN thẳng.
+         if (!selectedVariant) throw new BadRequestException(`Phân loại của sản phẩm ${product.name} không hợp lệ.`);
          // Wiki 0075: tính theo GIÁ BIẾN THỂ. Trước đây dòng này bị comment → đặt
-         // variant vẫn tính theo product.price (giá gốc) → sai tiền (variant đắt/rẻ
-         // hơn đều lệch). Không tìm thấy variant → giữ giá gốc (fallback an toàn).
-         if (selectedVariant) finalPrice = Number(selectedVariant.price);
+         // variant vẫn tính theo product.price (giá gốc) → sai tiền (variant đắt/rẻ hơn đều lệch).
+         finalPrice = Number(selectedVariant.price);
          // Wiki 0084: nếu biến thể đang trong Flash Sale (session ACTIVE + còn flash stock) → áp
          // GIÁ SALE. Trước đây checkout tính giá gốc dù UI hiện giá sale → buyer bị tính dư (overcharge).
          const nowTs = new Date();
@@ -114,7 +117,10 @@ export class OrderService {
            },
            select: { id: true, salePrice: true, stock: true, sold: true },
          });
-         if (fsp && fsp.sold < fsp.stock) {
+         // [FIX flash - wiki 0088] CHỈ áp giá flash khi TOÀN BỘ quantity còn nằm trong suất flash
+         // (sold + qty <= stock). Trước đây `sold < stock` chỉ cần còn 1 suất là áp giá flash cho
+         // CẢ line qty lớn → bán dưới giá vượt cam kết flash của seller.
+         if (fsp && fsp.sold + item.quantity <= fsp.stock) {
            finalPrice = Number(fsp.salePrice);
            flashSaleProductId = fsp.id;
          }
@@ -186,7 +192,7 @@ export class OrderService {
         group.shippingFee = shippingFee;
     }
 
-    const { shopDiscounts, systemDiscount, appliedVouchers } = 
+    const { shopDiscounts, systemDiscount, freeshipDiscount, appliedVouchers } =
         await this.promotionService.calculateMultiShopVouchers(dto.voucherIds || [], shopGroups);
 
     let totalSubtotal = 0;
@@ -213,11 +219,17 @@ export class OrderService {
         giftFee = (GIFT_WRAP_PRICES[dto.giftWrapIndex || 0] || 0) + (CARD_PRICES[dto.cardIndex || 0] || 0);
     }
 
+    // [FIX H2 - wiki 0088] FREESHIP giảm vào PHÍ SHIP (cap ≤ tổng ship), không vào subtotal.
+    // Trước đây OrderService destructure bỏ `freeshipDiscount` → freeship KHÔNG được áp dụng
+    // (buyer trả full ship) dù voucher vẫn bị đốt. Giờ trừ vào ship + báo trong summary để
+    // createOrder phân bổ đúng cho từng đơn (đối soát cổng/COD).
+    const freeship = Math.min(Math.max(0, freeshipDiscount || 0), totalShipping);
+
     // Wiki 0075: cap xu theo số tiền THỰC phải trả (sau ship + voucher). Trước đây
     // coinDiscount = min(balance, 50000) không xét bill → đơn rẻ hơn mức xu dùng thì
     // ví vẫn bị trừ đủ 50000 trong khi total chỉ giảm tới 0 → khách MẤT OAN xu.
     const payableBeforeCoins = Math.max(0,
-        totalSubtotal + totalShipping + giftFee - totalShopDiscount - systemDiscount
+        totalSubtotal + totalShipping + giftFee - totalShopDiscount - systemDiscount - freeship
     );
     let coinDiscount = 0;
     if (dto.useCoins) {
@@ -236,6 +248,7 @@ export class OrderService {
             discounts: {
                 shopVoucher: totalShopDiscount,
                 systemVoucher: systemDiscount,
+                freeship, // [FIX H2 - wiki 0088] để createOrder phân bổ giảm ship cho từng đơn
                 coin: coinDiscount
             },
             total: grandTotal
@@ -310,16 +323,36 @@ export class OrderService {
          }
       }
 
-      for (const group of preview.breakdown) {
-          // ... Logic tính toán discount giữ nguyên ...
-          let ratio = 0;
-          if (totalOrderValue > 0) ratio = group.subtotal / totalOrderValue;
-          const allocatedSystemDisc = Math.floor(preview.summary.discounts.systemVoucher * ratio);
-          const allocatedCoinDisc = Math.floor(preview.summary.discounts.coin * ratio);
+      // [FIX M3/H2/H4 - wiki 0088] Phân bổ giảm hệ thống/xu/freeship theo tỉ lệ subtotal, NHƯNG đơn
+      // CUỐI nhận phần DƯ (total - đã phân bổ) để Σ(phân bổ) == tổng đã trừ ở ví/cổng. Trước đây bare
+      // Math.floor mỗi shop → rơi vài đồng → Σ Order.totalAmount > tiền charge (COD thu dư / xu trừ
+      // nhiều hơn giảm; edge subtotal=0 → mất sạch xu). giftFee gắn vào đơn ĐẦU (trước không lưu →
+      // COD không thu, online lệch sổ). freeship trừ vào phí ship của đơn.
+      const _groups = preview.breakdown;
+      const _totalSystem = preview.summary.discounts.systemVoucher || 0;
+      const _totalCoin = preview.summary.discounts.coin || 0;
+      const _totalFreeship = (preview.summary.discounts as any).freeship || 0;
+      const _giftFee = preview.summary.giftFee || 0;
+      // [FIX review2-H4 - wiki 0088] Phân bổ freeship/system/xu GREEDY từ POOL chung, CLAMP theo khả
+      // năng hấp thụ THỰC của từng đơn (gross = subtotal+effShip+gift-shopDiscount), carry phần dư
+      // sang đơn sau. Bản trước phân bổ system/xu theo tỉ-lệ-subtotal ĐỘC LẬP rồi Math.max(0) → đơn
+      // (không-cuối) có shop-voucher lớn (gross nhỏ) bị FLOOR mất phần system/xu → Σ Order.totalAmount
+      // > grandTotal (thu dư). Vì payableBeforeCoins ≥ coin và Σgross = payableBeforeCoins + system ≥
+      // system+coin nên greedy luôn tiêu hết pool → Σ finalAmount == grandTotal mọi phân bố.
+      let _freeshipPool = _totalFreeship, _sysPool = _totalSystem, _coinPool = _totalCoin;
+      for (let _gi = 0; _gi < _groups.length; _gi++) {
+          const group = _groups[_gi];
+          const _fsForThis = Math.min(group.shippingFee, _freeshipPool);
+          _freeshipPool -= _fsForThis;
+          const _effShipping = group.shippingFee - _fsForThis;
+          const _giftForThis = _gi === 0 ? _giftFee : 0;
+          const _gross = Math.max(0, group.subtotal + _effShipping + _giftForThis - group.shopDiscount);
+          const allocatedSystemDisc = Math.min(_gross, _sysPool);
+          _sysPool -= allocatedSystemDisc;
+          const allocatedCoinDisc = Math.min(_gross - allocatedSystemDisc, _coinPool);
+          _coinPool -= allocatedCoinDisc;
 
-          const finalAmount = Math.max(0, 
-              group.subtotal + group.shippingFee - group.shopDiscount - allocatedSystemDisc - allocatedCoinDisc
-          );
+          const finalAmount = _gross - allocatedSystemDisc - allocatedCoinDisc;
 
           const shopVoucher = preview.appliedVouchers.find((v: any) => v.shopId === group.shopId);
           const systemVoucher = preview.appliedVouchers.find((v: any) => v.isSystem === true);
@@ -341,9 +374,16 @@ export class OrderService {
                 data: { stock: { decrement: item.quantity } }
              });
              if (update.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} vừa hết hàng.`);
-             // Wiki 0084: track flash-sale sold (giá flash tự ngừng áp khi sold >= stock cho đơn sau).
+             // [FIX flash - wiki 0088] tăng sold ATOMIC có guard `sold <= stock - qty` → KHÔNG cho
+             // sold vượt stock (trước đây increment vô điều kiện → 2 đơn đua / qty lớn đẩy sold>stock,
+             // bán dưới giá vượt suất). Thua race → báo hết suất (buyer thử lại).
              if (item.flashSaleProductId) {
-                await tx.flashSaleProduct.updateMany({ where: { id: item.flashSaleProductId }, data: { sold: { increment: item.quantity } } });
+                const fspNow = await tx.flashSaleProduct.findUnique({ where: { id: item.flashSaleProductId }, select: { stock: true } });
+                const incFlash = await tx.flashSaleProduct.updateMany({
+                   where: { id: item.flashSaleProductId, sold: { lte: (fspNow?.stock ?? 0) - item.quantity } },
+                   data: { sold: { increment: item.quantity } },
+                });
+                if (incFlash.count === 0) throw new BadRequestException(`Sản phẩm ${item.name} vừa hết suất Flash Sale.`);
              }
           }
 
@@ -370,6 +410,7 @@ export class OrderService {
                      create: group.items.map((i: any) => ({
                          productId: i.productId,
                          variantId: i.variantId || null, // Wiki 0083: lưu variant để hoàn kho khi hủy
+                         flashSaleProductId: i.flashSaleProductId || null, // Wiki 0088: để hoàn flash sold khi hủy
                          quantity: i.quantity,
                          price: i.price,
                      }))
@@ -588,6 +629,14 @@ export class OrderService {
           await tx.productVariant.updateMany({
             where: { id: (item as any).variantId },
             data: { stock: { increment: item.quantity } },
+          });
+        }
+        // [FIX flash - wiki 0088] HOÀN flashSaleProduct.sold khi hủy (trước đây không hoàn → place+cancel
+        // lặp lại đẩy sold tới stock vĩnh viễn → buyer thật mất giá flash / hiện sold-out dù chưa bán).
+        if ((item as any).flashSaleProductId) {
+          await tx.flashSaleProduct.updateMany({
+            where: { id: (item as any).flashSaleProductId, sold: { gte: item.quantity } },
+            data: { sold: { decrement: item.quantity } },
           });
         }
       }
@@ -816,7 +865,12 @@ export class OrderService {
         data: { userId: shop.ownerId, amount: net, type: 'ORDER_INCOME', status: 'COMPLETED', referenceId: order.id, description: `Doanh thu đơn #${order.id.slice(0, 8)}` },
       });
     } catch (e: any) {
-      this.logger.warn(`[SellerCredit fail] order=${order?.id} err=${e?.message}`);
+      // [FIX review-finance/MEDIUM - wiki 0088] RETHROW để tx CUỐN NGƯỢC (rollback) toàn bộ thao tác
+      // DELIVERED. Trước đây chỉ log + nuốt → đơn vẫn commit DELIVERED nhưng ví seller KHÔNG được
+      // cộng và KHÔNG có job đối soát nào credit lại (DELIVERED là terminal) → seller MẤT doanh thu
+      // đơn đó vĩnh viễn khi gặp lỗi transient (deadlock/lock-wait). Rollback → có thể thử lại.
+      this.logger.error(`[SellerCredit fail → rollback] order=${order?.id} err=${e?.message}`);
+      throw e;
     }
   }
 
@@ -839,6 +893,11 @@ export class OrderService {
     if (order.status === 'DELIVERED' || order.status === 'CANCELLED') {
       throw new BadRequestException('Đơn đã ở trạng thái cuối, không thể đổi trạng thái.');
     }
+
+    // [M1 - wiki 0088] CÂN NHẮC & KHÔNG enforce FSM cứng (PENDING→DELIVERED): mô hình COD cho phép
+    // seller chuyển nhanh; abuse "credit hàng chưa giao" đã được giảm thiểu bằng idempotent
+    // creditSellerOnDelivered (round11) + terminal-guard + luồng khiếu nại. Ép FSM một chiều sẽ phá
+    // luồng FE và bộ test hiện hữu (round7/9/11 cố ý set thẳng DELIVERED). Để mở, ghi nhận accepted-risk.
 
     return this.prisma.$transaction(async (tx) => {
       // 1. Cập nhật trạng thái — chuyển sang DELIVERED phải ATOMIC: claim where status != DELIVERED.
