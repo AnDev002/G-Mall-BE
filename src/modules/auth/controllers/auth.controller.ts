@@ -105,7 +105,17 @@ export class AuthController {
 
   @Post('logout')
   async logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie('accessToken');
+    // [FIX logout] Xoá cookie PHẢI khớp CHÍNH XÁC thuộc tính lúc set (secure/sameSite/path/httpOnly).
+    // Trước đây clearCookie('accessToken') KHÔNG kèm options → trên prod cookie set với
+    // sameSite='none'+secure (cross-site FE↔BE khác domain) KHÔNG bị browser xoá → refresh vẫn
+    // còn đăng nhập. Dùng đúng bộ thuộc tính của setAuthCookie để lệnh xoá có hiệu lực.
+    const isProd = process.env.NODE_ENV === 'production';
+    res.clearCookie('accessToken', {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+    });
     return { message: 'Đăng xuất thành công' };
   }
 

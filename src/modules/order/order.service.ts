@@ -4,6 +4,7 @@
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { RedisService } from 'src/database/redis/redis.service'; // [round14 final-FIX] lock hủy đơn theo nhóm
 import { getPagination } from 'src/common/utils/pagination.util';
 import { CartService } from '../../modules/cart/cart.service';
 import { PromotionService } from '../../modules/promotion/promotion.service';
@@ -40,7 +41,37 @@ export class OrderService {
     private charityService: CharityService,
     private systemSetting: SystemSettingService,
     private notificationService: NotificationService,
+    private redis: RedisService,
   ) {}
+
+  /**
+   * [round14 final-FIX] Serialize các lần HỦY cùng 1 paymentGroup (đơn multi-shop) để vá race nhả
+   * voucher SHARED (system/freeship): 2 đơn anh-em hủy ĐỒNG THỜI đều đếm otherActive trên snapshot cũ
+   * → cùng skip (kẹt voucher) hoặc cùng nhả (drift). Lock theo group → lần sau thấy trạng thái đã commit
+   * của lần trước → đếm đúng → nhả ĐÚNG 1 lần. FAIL-OPEN: Redis lỗi / không lấy được trong ~500ms →
+   * chạy tiếp KHÔNG lock (về đúng hành vi cũ, không bao giờ chặn việc hủy). Đơn lẻ (không group) vô hại.
+   */
+  private async withCancelLock<T>(order: any, fn: () => Promise<T>): Promise<T> {
+    const key = `order-cancel-lock:${order?.paymentGroupId || order?.id}`;
+    let locked = false;
+    try {
+      for (let i = 0; i < 10; i++) {
+        try {
+          locked = await this.redis.setNX(key, '1', 15);
+        } catch {
+          locked = false;
+          break; // Redis lỗi → fail-open
+        }
+        if (locked) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return await fn();
+    } finally {
+      if (locked) {
+        try { await this.redis.del(key); } catch { /* TTL tự dọn */ }
+      }
+    }
+  }
 
   // --- HELPER: Lấy items, Validate tồn kho, Group theo Shop ---
   private async resolveItemsAndGroup(userId: string, dto: CreateOrderDto) {
@@ -294,7 +325,12 @@ export class OrderService {
          // Trước đây increment vô điều kiện + tạo userVoucher cho voucher chưa claim → 1 user
          // dùng lại 1 voucher vô hạn + vượt tổng usageLimit (lỗ tiền). calculateMultiShopVouchers
          // KHÔNG check ownership/limit nên phải chặn ở đây.
-         const perUserLimit = Number((voucher as any).userUsageLimit ?? 1) || 1;
+         // [round14 final-FIX] UserVoucher (@@unique[userId,voucherId] + isUsed boolean) chỉ theo dõi
+         // ĐƯỢC 1 lượt/user/voucher. Multi-use per-user (userUsageLimit>1) cần bảng redemption-ledger
+         // riêng → CỐ Ý chưa hỗ trợ. CAP perUserLimit về 1 để KHÔNG BAO GIỜ rò rỉ (nếu admin set >1 thẳng
+         // DB, vẫn chỉ cho 1 lượt = an toàn hướng under-grant). Mọi voucher tạo qua DTO đã =1 sẵn (DTO
+         // không expose userUsageLimit). Bỏ cap này khi có ledger thật hỗ trợ N lượt.
+         const perUserLimit = 1;
          const globalLimit = Number((voucher as any).usageLimit ?? 0);
          // [FIX round15 #9 - wiki 0088] re-validate isActive + thời hạn ATOMIC lúc redeem (TOCTOU: admin
          // tắt/hết hạn voucher giữa preview và create) + global usageLimit. where không khớp → count=0 → reject.
@@ -627,7 +663,7 @@ export class OrderService {
       throw new BadRequestException('Đơn đã thanh toán, vui lòng liên hệ hỗ trợ để được hoàn tiền thay vì hủy.');
     }
 
-    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+    const updatedOrder = await this.withCancelLock(order, () => this.prisma.$transaction(async (tx) => {
       // Wiki 0086: ATOMIC claim PENDING→CANCELLED. Trước đây check status NGOÀI tx rồi update
       // vô điều kiện TRONG tx → 2 request hủy đồng thời cùng pass check, cùng chạy khối hoàn
       // kho/xu/voucher → DOUBLE refund (xu free, kho/voucher sai). Thua race thì bail.
@@ -706,7 +742,7 @@ export class OrderService {
         link: `/user/purchase`,
       }, tx).catch(() => {/* best-effort, không fail order */});
       return await tx.order.findUnique({ where: { id: orderId } });
-    });
+    }));
     return updatedOrder;
   }
   async confirmOrderReceived(userId: string, orderId: string) {
@@ -972,7 +1008,7 @@ export class OrderService {
     // (tx.order.update) → KHÔNG hoàn kho/variant/flash-sold/xu/voucher → leak tồn kho + buyer mất
     // xu/voucher. Nay bồi hoàn đầy đủ giống buyer-cancel, ATOMIC claim chống double-restore.
     if (status === 'CANCELLED') {
-      return this.prisma.$transaction(async (tx) => {
+      return this.withCancelLock(order, () => this.prisma.$transaction(async (tx) => {
         const claim = await tx.order.updateMany({
           // [round14 review3-FIX MEDIUM] +paymentStatus != PAID → đóng TOCTOU (IPN set PAID xen giữa
           // gate ngoài-tx và claim) để không hủy đơn đã thanh toán mà thiếu hoàn tiền cổng.
@@ -1021,7 +1057,7 @@ export class OrderService {
         }
         await this.notificationService.create({ userId: order.userId, type: 'ORDER', title: 'Đơn hàng đã hủy', content: `Đơn hàng #${orderId.slice(0, 8)} đã bị shop hủy. Tồn kho/xu/voucher đã được hoàn lại.`, link: `/user/purchase` }, tx).catch(() => {/* best-effort */});
         return await tx.order.findUnique({ where: { id: orderId } });
-      });
+      }));
     }
 
     // [M1 - wiki 0088] CÂN NHẮC & KHÔNG enforce FSM cứng (PENDING→DELIVERED): mô hình COD cho phép

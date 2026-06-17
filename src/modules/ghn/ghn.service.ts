@@ -240,6 +240,24 @@ export class GhnService {
     };
   }
 
+  /**
+   * [round14 final-FIX] Hủy 1 vận đơn GHN đã tạo (POST /v2/switch-status/cancel).
+   * Dùng để void vận đơn MỒ CÔI khi đơn đổi trạng thái giữa lúc tạo phiếu. Best-effort:
+   * lỗi/mock/không-cấu-hình → bỏ qua (chỉ log), KHÔNG ném để không phá flow gọi.
+   */
+  async cancelShippingOrder(orderCode: string): Promise<void> {
+    if (!this.hasRealCredentials() || !orderCode || orderCode.startsWith('MOCK_GHN_')) return;
+    try {
+      const url = `${this.apiUrl}/v2/switch-status/cancel`;
+      await firstValueFrom(
+        this.httpService.post(url, { order_codes: [orderCode] }, { headers: this.getHeaders() }),
+      );
+      this.logger.warn(`[GHN] đã HỦY vận đơn mồ côi ${orderCode} (đơn đổi trạng thái giữa chừng).`);
+    } catch (e: any) {
+      this.logger.error(`[GHN] hủy vận đơn ${orderCode} thất bại: ${JSON.stringify(e.response?.data) || e.message}`);
+    }
+  }
+
   async getProvinces() {
     try {
       const url = `${this.apiUrl}/master-data/province`;
@@ -470,10 +488,13 @@ export class GhnService {
             data: { shippingOrderCode: code, status: 'CONFIRMED' },
           });
           if (persisted.count === 0) {
+            // [round14 final-FIX] Vận đơn GHN ĐÃ tạo thật nhưng đơn đổi trạng thái (vd buyer hủy)
+            // giữa lúc gọi GHN → HỦY vận đơn mồ côi để không có shipment thật chạy cho đơn đã hủy.
+            await this.cancelShippingOrder(code);
             results.push({
               orderId: order.id,
               ok: false,
-              message: 'Đơn đã đổi trạng thái — không thể gán phiếu GHN',
+              message: 'Đơn đã đổi trạng thái — đã hủy phiếu GHN vừa tạo',
             });
           } else {
             results.push({ orderId: order.id, ok: true, shippingOrderCode: code });

@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import axios from 'axios';
 import { createHash } from 'crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { ClipClientService } from './clip-client.service';
 import { QdrantClientService } from './qdrant-client.service';
@@ -58,7 +59,7 @@ export class IndexerProcessor extends WorkerHost {
 
     // [round14 FIX M7] chặn SSRF: chỉ fetch URL http/https tới host public.
     // Seller kiểm soát URL này nên phải reject loopback/private/reserved trước khi axios.get.
-    if (!isAllowedImageUrl(firstImageUrl)) {
+    if (!(await isAllowedImageUrl(firstImageUrl))) {
       await this.markEmbedding(productId, 'SKIPPED', null, 'image url rejected');
       return { status: 'SKIPPED' };
     }
@@ -146,52 +147,68 @@ function pickFirstImageUrl(images: unknown): string | null {
   return null;
 }
 
-// [round14 FIX M7] SSRF guard: chỉ cho phép http/https tới host public.
-// Reject loopback/private/link-local/reserved (IPv4 + IPv6) để worker không bị
-// lừa gọi vào dịch vụ nội bộ (metadata endpoint, DB admin, v.v.).
-function isAllowedImageUrl(raw: string): boolean {
+// [round14 FIX M7] SSRF guard: reject loopback/private/link-local/reserved (IPv4 + IPv6).
+// Trả true nếu IP THUỘC dải nội bộ/cấm (→ chặn). Dùng cho CẢ IP literal lẫn IP đã resolve từ DNS.
+function isBlockedIp(host: string): boolean {
+  // IPv6 loopback / unique-local (fc00::/7) / link-local (fe80::) / IPv4-mapped
+  if (host === '::1' || host === '::') return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(host)) return true;
+  if (/^fe[89ab][0-9a-f]:/i.test(host)) return true;
+  if (host.startsWith('::ffff:')) return true; // IPv4-mapped IPv6
+  // IPv4 a.b.c.d
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const o = m.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return true; // malformed → chặn
+    const [a, b] = o;
+    if (a === 127) return true; // loopback 127/8
+    if (a === 10) return true; // private 10/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // private 172.16/12
+    if (a === 192 && b === 168) return true; // private 192.168/16
+    if (a === 169 && b === 254) return true; // link-local 169.254/16 (metadata)
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+    if (a === 0) return true; // 0/8
+    if (a >= 224) return true; // multicast/reserved 224.0.0.0+
+  }
+  return false;
+}
+
+// [round14 FIX M7 + final-FIX] SSRF guard: chỉ cho phép http/https tới host PUBLIC. Seller kiểm soát URL
+// này nên (1) chặn scheme khác, (2) chặn localhost/host đơn-nhãn nội bộ, (3) IP literal nội bộ, và
+// (4) RESOLVE DNS rồi kiểm tra MỌI IP trả về → chặn DNS-rebinding (host public nhưng A-record trỏ IP
+// nội bộ). Fail-closed nếu resolve lỗi. (Dư địa còn lại: rebind-race giữa lần resolve này và lần axios
+// tự resolve — cần pin IP vào connection; chấp nhận với worker nền vì cửa sổ ~ms + cần DNS TTL=0.)
+async function isAllowedImageUrl(raw: string): Promise<boolean> {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     return false;
   }
-
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
 
-  // Bỏ dấu ngoặc IPv6 literal (vd: [::1]) + bỏ dấu chấm cuối FQDN (localhost. → localhost)
+  // Bỏ ngoặc IPv6 literal ([::1]) + dấu chấm cuối FQDN (localhost. → localhost)
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (!host) return false;
-
-  // Tên host nội bộ
   if (host === 'localhost' || host.endsWith('.localhost')) return false;
 
-  // [round14 review-FIX MEDIUM] CHẶN hostname đơn-nhãn (không dấu chấm, không phải IP) = tên dịch vụ nội
-  // bộ docker (qdrant/redis/mysql/clip...) mà allowlist host-string không bắt. Host công khai luôn có TLD
-  // (≥1 dấu chấm). IPv6 chứa ':', IPv4 khớp regex → loại trừ để không chặn nhầm IP literal hợp lệ.
-  const _isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
-  const _isV6 = host.includes(':');
-  if (!_isV4 && !_isV6 && !host.includes('.')) return false;
+  const isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  const isV6 = host.includes(':');
+  // host đơn-nhãn (không dấu chấm, không phải IP) = tên dịch vụ nội bộ docker → chặn
+  if (!isV4 && !isV6 && !host.includes('.')) return false;
 
-  // IPv6 loopback / unique-local (fc00::/7 → bắt đầu fc/fd) / link-local (fe80::)
-  if (host === '::1' || host === '::') return false;
-  if (/^f[cd][0-9a-f]{2}:/i.test(host)) return false;
-  if (/^fe[89ab][0-9a-f]:/i.test(host)) return false;
-  if (host.startsWith('::ffff:')) return false; // IPv4-mapped IPv6
+  // IP literal → kiểm tra trực tiếp
+  if (isV4 || isV6) return !isBlockedIp(host);
 
-  // IPv4 dạng a.b.c.d
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const o = m.slice(1).map(Number);
-    if (o.some((n) => n > 255)) return false;
-    const [a, b] = o;
-    if (a === 127) return false; // loopback 127.0.0.0/8
-    if (a === 10) return false; // private 10.0.0.0/8
-    if (a === 172 && b >= 16 && b <= 31) return false; // private 172.16.0.0/12
-    if (a === 192 && b === 168) return false; // private 192.168.0.0/16
-    if (a === 169 && b === 254) return false; // link-local 169.254.0.0/16
-    if (a === 0) return false; // 0.0.0.0/8
+  // Tên DNS → resolve + kiểm tra MỌI địa chỉ (chống rebinding)
+  try {
+    const addrs = await dnsLookup(host, { all: true });
+    if (!addrs.length) return false;
+    for (const a of addrs) {
+      if (isBlockedIp(String(a.address).toLowerCase())) return false;
+    }
+    return true;
+  } catch {
+    return false; // không resolve được → fail-closed
   }
-
-  return true;
 }
