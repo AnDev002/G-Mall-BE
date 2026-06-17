@@ -148,9 +148,9 @@ export class ReviewService {
         
         await tx.product.update({
             where: { id: item.productId },
-            data: { 
+            data: {
                 rating: pStats._avg.rating || 0,
-                reviewCount: pStats._count.rating 
+                reviewCount: { increment: 1 }, // [FIX #34 - wiki 0088] delta ATOMIC thay set tuyệt-đối-từ-aggregate → chống lost-update khi 2 review đồng thời (REPEATABLE READ undercount)
             }
         });
       }
@@ -165,9 +165,9 @@ export class ReviewService {
       // Kiểm tra xem model Shop có trường reviewCount không, nếu chưa có trong schema thì bỏ dòng reviewCount đi
       await tx.shop.update({
           where: { id: shopId },
-          data: { 
+          data: {
               rating: sStats._avg.rating || 0,
-              reviewCount: sStats._count.rating // Cần đảm bảo đã chạy prisma db push có field này
+              reviewCount: { increment: 1 } // [FIX #34 - wiki 0088] delta ATOMIC (xem product ở trên)
           }
       });
 

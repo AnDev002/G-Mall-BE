@@ -643,8 +643,9 @@ model Order {
   totalAmount Decimal
   shippingFee Decimal     @default(0)
 
-  voucherId         String? // Có thể null nếu không dùng voucher
+  voucherId         String? // Có thể null nếu không dùng voucher (giữ để hiển thị; release dùng appliedVoucherIds)
   voucher           Voucher?        @relation(fields: [voucherId], references: [id], onDelete: SetNull)
+  appliedVoucherIds Json? // Wiki 0088 (#10/#10b): TẤT CẢ voucher id đã redeem cho checkout (shop+system+freeship) — để hoàn ĐỦ khi hủy (voucherId đơn không lưu hết → leak)
   shippingOrderCode String? // Mã đơn GHN (ví dụ: L8CC23)
   shippingProvider  String?         @default("GHN")
   productReviews    ProductReview[]

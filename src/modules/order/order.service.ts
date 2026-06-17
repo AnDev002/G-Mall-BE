@@ -398,6 +398,7 @@ export class OrderService {
                  coinUsed: allocatedCoinDisc, // Wiki 0083: xu phân bổ cho đơn này (để hoàn khi hủy)
                  paymentGroupId, // Wiki 0083: nhóm thanh toán (multi-shop)
                  voucherId: voucherIdToSave,
+                 appliedVoucherIds: preview.appliedVouchers.map((v: any) => v.id), // [FIX #10/#10b - wiki 0088] lưu CẢ list voucher đã redeem (shop+system+freeship) để hoàn đủ khi hủy
                  recipientName: receiver.name || dto.senderInfo?.name,
                  recipientPhone: receiver.phone || dto.senderInfo?.phone,
                  recipientAddress: receiver.fullAddress || receiver.address,
@@ -647,17 +648,24 @@ export class OrderService {
           data: { userId, amount: (order as any).coinUsed, type: PointType.REFUND, source: 'ORDER', description: `Hoàn xu hủy đơn #${orderId.slice(0, 8)}` },
         });
       }
-      if (order.voucherId) {
-        // Wiki 0086: voucher (đặc biệt system/GLOBAL) có thể gắn trên NHIỀU đơn cùng paymentGroup
-        // nhưng usageCount chỉ +1 lúc redeem. Trước đây mỗi lần hủy 1 đơn lại -1 → hủy N đơn = -N
-        // cho 1 lần +1 → drift ÂM = bypass global usageLimit. Chỉ NHẢ voucher khi đây là đơn CUỐI
-        // còn tham chiếu voucher trong group (không còn đơn anh em nào active). +guard usageCount>0.
-        const siblingUsing = (order as any).paymentGroupId
-          ? await tx.order.count({ where: { paymentGroupId: (order as any).paymentGroupId, voucherId: order.voucherId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
+      // [FIX #10/#10b - wiki 0088] NHẢ TẤT CẢ voucher đã redeem cho checkout (shop+system+freeship),
+      // không chỉ order.voucherId. Trước đây order chỉ lưu 1 voucherId (shop ?? system) → voucher còn
+      // lại (system/freeship) bị BURN lúc redeem nhưng KHÔNG bao giờ được nhả khi hủy → usageCount kẹt
+      // + userVoucher.isUsed=true vĩnh viễn. Giờ dùng appliedVoucherIds (list đầy đủ). Vẫn giữ guard:
+      // voucher redeem 1 lần/checkout nên chỉ nhả khi đây là đơn CUỐI active của group (tránh nhả N lần).
+      // Fallback order.voucherId cho đơn CŨ (pre-round14, appliedVoucherIds null).
+      const _releaseIds: string[] = Array.isArray((order as any).appliedVoucherIds) && (order as any).appliedVoucherIds.length
+        ? (order as any).appliedVoucherIds
+        : (order.voucherId ? [order.voucherId] : []);
+      if (_releaseIds.length) {
+        const otherActive = (order as any).paymentGroupId
+          ? await tx.order.count({ where: { paymentGroupId: (order as any).paymentGroupId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
           : 0;
-        if (siblingUsing === 0) {
-          await tx.voucher.updateMany({ where: { id: order.voucherId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
-          await tx.userVoucher.updateMany({ where: { userId, voucherId: order.voucherId }, data: { isUsed: false, usedAt: null } });
+        if (otherActive === 0) {
+          for (const vId of _releaseIds) {
+            await tx.voucher.updateMany({ where: { id: vId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
+            await tx.userVoucher.updateMany({ where: { userId, voucherId: vId }, data: { isUsed: false, usedAt: null } });
+          }
         }
       }
       // Notification trigger (wiki 0046 hookup point #1)

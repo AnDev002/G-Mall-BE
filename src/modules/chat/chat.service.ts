@@ -1,15 +1,33 @@
-import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { EncryptionUtil } from 'src/common/utils/encryption.util';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { AiService } from './ai.service';
 import { MessageType } from './dto/create-message.dto';
 @Injectable()
-export class ChatService {
+export class ChatService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private aiService: AiService // Inject AI Service
   ) {}
+
+  // [FIX #29 - wiki 0088] Seed user sentinel AI_ASSISTANT lúc boot. sendMessageToDb dùng
+  // senderId='AI_ASSISTANT' + connect participant id='AI_ASSISTANT' → FK tới User.id. Nếu row này
+  // KHÔNG tồn tại (DB mới / chưa seed) thì user đăng nhập chat AI bị 500 (P2003/P2025). Upsert
+  // idempotent, try/catch để không chặn boot.
+  async onModuleInit() {
+    try {
+      await this.prisma.user.upsert({
+        where: { id: 'AI_ASSISTANT' },
+        update: {},
+        create: { id: 'AI_ASSISTANT', name: 'Trợ lý GMall', email: 'ai-assistant@gmall.internal', isVerified: true },
+      });
+    } catch (e: any) {
+      // email unique vướng / lỗi khác → log, không crash boot.
+      // eslint-disable-next-line no-console
+      console.warn('[ChatService] seed AI_ASSISTANT skipped:', e?.message);
+    }
+  }
 
   // --- SOCKET LOGIC ---
 
