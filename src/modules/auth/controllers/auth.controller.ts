@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Get, UseGuards, Request, UseInterceptors, UploadedFile, BadRequestException, Put, UploadedFiles, Res, Req } from '@nestjs/common';
+import { Body, Controller, Post, Get, UseGuards, Request, UseInterceptors, UploadedFile, BadRequestException, Put, UploadedFiles, Res, Req, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from '../auth.service';
 import { Public } from 'src/common/decorators/public.decorator';
 import { JwtAuthGuard } from '../guards/jwt.guard';
@@ -103,6 +103,12 @@ export class AuthController {
       return { user: data.user };
   }
 
+  // [round15 NOTE logout-invalidation] CỐ Ý KHÔNG bump tokenVersion ở đây: route logout không có
+  // JwtAuthGuard (cũng không @Public + không global APP_GUARD) → req.user undefined, không lấy được
+  // userId mà KHÔNG tự verify cookie token thủ công (rủi ro phá luồng logout khi token đã hết hạn).
+  // Vô hiệu hoá token server-side là việc FE xử lý (ngừng lưu token JS-readable). Nếu cần teeth phía
+  // BE sau này: ký jti + denylist Redis (TTL = thời gian sống còn lại) thay vì bump tokenVersion (vì
+  // bump sẽ logout mọi thiết bị).
   @Post('logout')
   async logout(@Res({ passthrough: true }) res: Response) {
     // [FIX logout] Xoá cookie PHẢI khớp CHÍNH XÁC thuộc tính lúc set (secure/sameSite/path/httpOnly).
@@ -153,8 +159,16 @@ export class AuthController {
   // riêng nên không spam OTP mới được. Đủ chặn brute-force mà không phá validation.
   @Public()
   @Post('verify-otp')
-  async verifyOtp(@Body() dto: VerifyOtpDto) {
-    return this.authService.verifyOtp(dto);
+  async verifyOtp(
+    @Body() dto: VerifyOtpDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // [round15 FIX verifyotp-cookie] Đồng bộ với /auth/login: set httpOnly cookie để verify-otp
+    // tạo session server-truth thật (cross-site sameSite=none;secure ở prod), thay vì chỉ trả
+    // access_token trong body để FE ghi vào cookie JS-readable / localStorage (không dùng cho auth).
+    const data = await this.authService.verifyOtp(dto);
+    this.setAuthCookie(res, data.access_token);
+    return { user: data.user };
   }
 
   // Wiki 0068 B3: FE hỏi provider nào đã cấu hình để KHÔNG redirect sang BE rồi
@@ -261,11 +275,19 @@ export class AuthController {
     @Req() req: Request & { user: any },
     @Res({ passthrough: true }) res: Response,
   ) {
-    // req.user do GoogleStrategy.validate() trả; có { provider, providerId, email, name, avatar }
-    const data = await this.authService.handleOAuthLogin(req.user);
-    this.setAuthCookie(res, data.access_token);
     const feUrl = (this.configService.get<string>('FE_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
-    res.redirect(`${feUrl}/`);
+    try {
+      // req.user do GoogleStrategy.validate() trả; có { provider, providerId, email, name, avatar }
+      const data = await this.authService.handleOAuthLogin(req.user);
+      this.setAuthCookie(res, data.access_token);
+      res.redirect(`${feUrl}/`);
+    } catch (e) {
+      // [round15 FIX oauth-redirect] Callback là top-level browser navigation (không phải XHR):
+      // nếu handleOAuthLogin ném (user bị ban...) thì Nest render JSON 401/500 thô trên domain BE,
+      // user kẹt lại. Redirect về FE login kèm error param để FE hiện toast thân thiện.
+      const reason = e instanceof UnauthorizedException ? 'account_locked' : 'oauth_failed';
+      res.redirect(`${feUrl}/login?oauth_error=${reason}`);
+    }
   }
 
   @Public()
@@ -281,9 +303,16 @@ export class AuthController {
     @Req() req: Request & { user: any },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const data = await this.authService.handleOAuthLogin(req.user);
-    this.setAuthCookie(res, data.access_token);
     const feUrl = (this.configService.get<string>('FE_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
-    res.redirect(`${feUrl}/`);
+    try {
+      const data = await this.authService.handleOAuthLogin(req.user);
+      this.setAuthCookie(res, data.access_token);
+      res.redirect(`${feUrl}/`);
+    } catch (e) {
+      // [round15 FIX oauth-redirect] Xem googleCallback: redirect về FE login kèm error param
+      // thay vì để exception render JSON thô trên domain BE.
+      const reason = e instanceof UnauthorizedException ? 'account_locked' : 'oauth_failed';
+      res.redirect(`${feUrl}/login?oauth_error=${reason}`);
+    }
   }
 }

@@ -128,13 +128,10 @@ export class RateLimitGuard implements CanActivate {
   }
 
   private getIp(req: Request): string {
-    // Lấy IP sau proxy (Render/Nginx). app.set('trust proxy') cần được bật
-    // ở main.ts để req.ip trả IP client thật thay vì IP proxy.
-    return (
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
-      req.ip ||
-      req.socket.remoteAddress ||
-      'unknown'
-    );
+    // [round15 FIX xff-spoof] KHÔNG tự parse raw X-Forwarded-For nữa: token trái nhất của XFF
+    // do attacker tự đặt → mỗi request 1 bucket → bypass rate-limit (đăng ký/seller spam).
+    // main.ts đã set 'trust proxy' nên Express tự suy ra IP client thật theo số hop tin cậy
+    // (không phải token attacker thêm vào). Tin req.ip thay vì re-parse header.
+    return req.ip || req.socket.remoteAddress || 'unknown';
   }
 }

@@ -265,7 +265,13 @@ export class OrderService {
     let coinDiscount = 0;
     if (dto.useCoins) {
         const wallet = await this.prisma.pointWallet.findUnique({ where: { userId } });
-        coinDiscount = Math.min(wallet?.balance || 0, 50000, payableBeforeCoins);
+        // [round15 FIX partial-coin] TÔN TRỌNG số xu user chọn (dto.appliedCoins) thay vì luôn tiêu hết
+        // cap. Nếu không gửi appliedCoins (FE cũ) → fallback dùng tối đa = balance (giữ hành vi cũ).
+        // Vẫn cap cứng theo min(balance,50000,payable) để không bao giờ tiêu quá khả năng/giới hạn.
+        const requested = Number.isFinite(dto.appliedCoins as any)
+            ? Math.max(0, Math.floor(Number(dto.appliedCoins)))
+            : (wallet?.balance || 0);
+        coinDiscount = Math.min(wallet?.balance || 0, 50000, payableBeforeCoins, requested);
     }
 
     const grandTotal = Math.max(0, payableBeforeCoins - coinDiscount);
@@ -450,6 +456,13 @@ export class OrderService {
                  recipientName: receiver.name || dto.senderInfo?.name,
                  recipientPhone: receiver.phone || dto.senderInfo?.phone,
                  recipientAddress: receiver.fullAddress || receiver.address,
+                 // [round15 FIX prepaid-ghn-addr] Lưu 3 khóa địa chỉ GHN ngay lúc tạo đơn. Trước đây chỉ
+                 // đơn COD tạo phiếu GHN inline; đơn online (momo/pay2s) KHÔNG lưu districtId/wardCode →
+                 // bulkRequestPickup luôn reject "thiếu địa chỉ giao" → seller không thể yêu cầu lấy hàng.
+                 // Harmless cho COD (đã tạo phiếu inline). receiver.* là cùng nguồn dùng để tính ship/COD.
+                 districtId: receiver.districtId != null ? Number(receiver.districtId) : null,
+                 wardCode: receiver.wardCode ? String(receiver.wardCode) : null,
+                 provinceId: receiver.provinceId != null ? Number(receiver.provinceId) : null,
                  message: note,
                  isGift: dto.isGift || false,
                  paymentMethod: dto.paymentMethod,
@@ -485,10 +498,15 @@ export class OrderService {
         if (!dto.isBuyNow) {
             if (dto.items && dto.items.length > 0) {
                 // Xóa từng item đã mua (Partial Checkout)
-                // Dùng Promise.all để chạy song song cho nhanh hơn
-                await Promise.all(dto.items.map(item => 
-                    this.cartService.removeItem(userId, item.productId)
-                ));
+                // [round15 review-FIX] Truyền COMPOSITE field (productId:variantId) khi item có variant
+                // để CHỈ xoá đúng dòng variant đã mua. Trước đây truyền bare productId → removeItem (backward
+                // -compat) xoá HẾT mọi variant của SP đó → variant CHƯA mua bị mất khỏi giỏ.
+                await Promise.all(dto.items.map(item => {
+                    const field = (item as any).variantId
+                        ? `${item.productId}:${(item as any).variantId}`
+                        : item.productId;
+                    return this.cartService.removeItem(userId, field);
+                }));
             } else {
                 // Fallback: Xóa hết
                 await this.cartService.clearCart(userId);
@@ -743,6 +761,14 @@ export class OrderService {
       }, tx).catch(() => {/* best-effort, không fail order */});
       return await tx.order.findUnique({ where: { id: orderId } });
     }));
+    // [round15 FIX ghn-void] SAU khi tx hủy commit, best-effort void vận đơn GHN nếu đã tạo (COD tạo
+    // phiếu ngay lúc đặt → shippingOrderCode). Nếu không hủy, carrier vẫn lấy hàng/giao + thu COD cho
+    // đơn đã CANCELLED+hoàn kho. cancelShippingOrder no-throw, tự bỏ qua MOCK_/không-creds → không
+    // bao giờ chặn việc hủy đã commit.
+    if ((order as any).shippingOrderCode) {
+      try { await this.ghnService.cancelShippingOrder((order as any).shippingOrderCode); }
+      catch (e: any) { this.logger.warn(`[GHN void cancel] order=${orderId} err=${e?.message}`); }
+    }
     return updatedOrder;
   }
   async confirmOrderReceived(userId: string, orderId: string) {
@@ -1008,7 +1034,7 @@ export class OrderService {
     // (tx.order.update) → KHÔNG hoàn kho/variant/flash-sold/xu/voucher → leak tồn kho + buyer mất
     // xu/voucher. Nay bồi hoàn đầy đủ giống buyer-cancel, ATOMIC claim chống double-restore.
     if (status === 'CANCELLED') {
-      return this.withCancelLock(order, () => this.prisma.$transaction(async (tx) => {
+      const cancelledOrder = await this.withCancelLock(order, () => this.prisma.$transaction(async (tx) => {
         const claim = await tx.order.updateMany({
           // [round14 review3-FIX MEDIUM] +paymentStatus != PAID → đóng TOCTOU (IPN set PAID xen giữa
           // gate ngoài-tx và claim) để không hủy đơn đã thanh toán mà thiếu hoàn tiền cổng.
@@ -1058,6 +1084,14 @@ export class OrderService {
         await this.notificationService.create({ userId: order.userId, type: 'ORDER', title: 'Đơn hàng đã hủy', content: `Đơn hàng #${orderId.slice(0, 8)} đã bị shop hủy. Tồn kho/xu/voucher đã được hoàn lại.`, link: `/user/purchase` }, tx).catch(() => {/* best-effort */});
         return await tx.order.findUnique({ where: { id: orderId } });
       }));
+      // [round15 FIX ghn-void] SAU khi tx hủy commit, best-effort void vận đơn GHN nếu đã tạo (COD lúc
+      // đặt, hoặc bulkRequestPickup khi CONFIRMED set shippingOrderCode). Nếu không hủy, carrier vẫn
+      // giao + thu COD cho đơn đã CANCELLED+hoàn kho. cancelShippingOrder no-throw, bỏ qua MOCK_/no-creds.
+      if ((order as any).shippingOrderCode) {
+        try { await this.ghnService.cancelShippingOrder((order as any).shippingOrderCode); }
+        catch (e: any) { this.logger.warn(`[GHN void cancel] order=${orderId} err=${e?.message}`); }
+      }
+      return cancelledOrder;
     }
 
     // [M1 - wiki 0088] CÂN NHẮC & KHÔNG enforce FSM cứng (PENDING→DELIVERED): mô hình COD cho phép
@@ -1080,15 +1114,28 @@ export class OrderService {
       // 1. Cập nhật trạng thái — chuyển sang DELIVERED phải ATOMIC: claim where status != DELIVERED.
       //    Thua race (buyer confirm nhận hàng / seller bấm 2 lần đồng thời) → bail, KHÔNG reward/credit lần 2.
       if (String(status).toUpperCase() === 'DELIVERED') {
+        // [round15 FIX resurrect] claim phải LOẠI CẢ CANCELLED (không chỉ DELIVERED). `not:'DELIVERED'`
+        // vẫn khớp đơn CANCELLED → buyer hủy xong, seller bấm DELIVERED race lọt vào đây → hồi sinh đơn
+        // → credit ví seller + mint xu trên đơn đã hoàn kho/xu/voucher. Dùng whitelist notIn như
+        // confirmOrderReceived → CANCELLED không bao giờ flip sang DELIVERED.
         const claim = await tx.order.updateMany({
-          where: { id: orderId, status: { not: 'DELIVERED' } },
+          where: { id: orderId, status: { notIn: ['DELIVERED', 'CANCELLED'] } },
           data: { status },
         });
         if (claim.count === 0) {
           return await tx.order.findUnique({ where: { id: orderId } });
         }
       } else {
-        await tx.order.update({ where: { id: orderId }, data: { status } });
+        // [round15 FIX resurrect] write KHÔNG-DELIVERED (CONFIRMED/SHIPPING) cũng phải ATOMIC-guard
+        // notIn [DELIVERED,CANCELLED]. Trước đây update vô điều kiện → SHIPPING/CONFIRMED ghi đè được đơn
+        // buyer vừa CANCELLED (race) → hồi sinh đơn, leak tồn kho/xu/voucher đã hoàn. count=0 → bail.
+        const claim = await tx.order.updateMany({
+          where: { id: orderId, status: { notIn: ['DELIVERED', 'CANCELLED'] } },
+          data: { status },
+        });
+        if (claim.count === 0) {
+          return await tx.order.findUnique({ where: { id: orderId } });
+        }
       }
       const updatedOrder = await tx.order.findUnique({ where: { id: orderId } });
 

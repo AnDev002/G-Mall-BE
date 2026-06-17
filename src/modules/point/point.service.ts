@@ -233,7 +233,7 @@ export class PointService {
 
     // [FIX 1] point -> pointWallet, amount -> balance
     const senderWallet = await this.prisma.pointWallet.findUnique({ where: { userId: senderId } });
-    if (!senderWallet || senderWallet.balance < amount) { 
+    if (!senderWallet || senderWallet.balance < amount) {
       throw new BadRequestException('Số dư không đủ để thực hiện giao dịch.');
     }
 
@@ -243,28 +243,33 @@ export class PointService {
     const sender = await this.prisma.user.findUnique({ where: { id: senderId } });
     if (!sender) throw new BadRequestException('Người gửi không hợp lệ.');
 
+    // [round15 FIX otp-no-email] Guard email lên TOP trước khi lưu OTP. Trước đây nếu
+    // sender không có email thì vẫn set OTP vào Redis nhưng hàm rơi xuống cuối trả về
+    // undefined (không gửi mail, không báo lỗi) → user kẹt: OTP tồn tại nhưng không
+    // bao giờ nhận được, confirm cũng không thể. Chặn sớm để không lưu OTP rác.
+    if (!sender.email) {
+      throw new BadRequestException('Tài khoản chưa có email để nhận mã OTP. Vui lòng cập nhật email.');
+    }
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const transferData = JSON.stringify({ receiverId, amount, otp });
-    
+
     // [FIX 2] redisService -> redis
     await this.redis.set(`transfer_otp:${senderId}`, transferData, 300);
 
-    if(sender.email && sender.email != null && sender.email != undefined && sender.email != "")
-    {
-      // [FIX 3] mailerService đã có
-      await this.mailerService.sendMail({
-        to: sender.email,
-        subject: '[Gmall] Mã xác thực chuyển Xu',
-        html: `
-          <h3>Xác thực chuyển xu</h3>
-          <p>Bạn đang thực hiện chuyển <b>${amount} xu</b> cho tài khoản <b>${receiver.email}</b>.</p>
-          <p>Mã OTP của bạn là: <b style="font-size: 20px; color: red;">${otp}</b></p>
-          <p>Mã có hiệu lực trong 5 phút.</p>
-        `,
-      });
-  
-      return { message: 'Mã OTP đã được gửi về email của bạn.' };
-    }
+    // [FIX 3] mailerService đã có
+    await this.mailerService.sendMail({
+      to: sender.email,
+      subject: '[Gmall] Mã xác thực chuyển Xu',
+      html: `
+        <h3>Xác thực chuyển xu</h3>
+        <p>Bạn đang thực hiện chuyển <b>${amount} xu</b> cho tài khoản <b>${receiver.email}</b>.</p>
+        <p>Mã OTP của bạn là: <b style="font-size: 20px; color: red;">${otp}</b></p>
+        <p>Mã có hiệu lực trong 5 phút.</p>
+      `,
+    });
+
+    return { message: 'Mã OTP đã được gửi về email của bạn.' };
   }
 
   async confirmTransfer(senderId: string, inputOtp: string) {

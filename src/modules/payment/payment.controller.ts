@@ -24,6 +24,38 @@ export class PaymentController {
     return false;
   }
 
+  // [round15 FIX ipn-cancelled-refund] Khi IPN hợp lệ về nhưng updateMany count=0 vì đơn đã CANCELLED,
+  // tiền đã được cổng capture nhưng không có đơn để giao và không có refund tự động. Ghi nhận tường minh
+  // (log ERROR để alert/đối soát) + best-effort đánh dấu order.message để vận hành biết cần hoàn tiền.
+  // No-throw: IPN luôn trả 200, lỗi phụ trợ ở đây KHÔNG được làm fail callback.
+  private async flagMoneyReceivedNoFulfillment(
+    gateway: string,
+    groupWhere: any,
+    groupRef: string,
+    paidAmount: number,
+  ): Promise<void> {
+    try {
+      const cancelled = await this.prisma.order.findMany({
+        where: { ...groupWhere, status: 'CANCELLED' },
+        select: { id: true, paymentStatus: true },
+      });
+      if (cancelled.length === 0) return; // count=0 do idempotent (đã PAID) → không phải case này
+      this.logger.error(
+        `[${gateway} IPN] MONEY-RECEIVED-NO-FULFILLMENT: group=${groupRef} đã CANCELLED nhưng cổng đã thu ` +
+        `paid=${paidAmount}. CẦN HOÀN TIỀN THỦ CÔNG. orders=${cancelled.map((o) => o.id).join(',')}`,
+      );
+      // Best-effort gắn cờ vào message để hiện trong panel vận hành (không đổi schema). Bỏ qua nếu lỗi.
+      try {
+        await this.prisma.order.updateMany({
+          where: { ...groupWhere, status: 'CANCELLED' },
+          data: { message: `[REFUND-NEEDED] ${gateway} đã thu ${paidAmount}đ trên đơn đã hủy` },
+        });
+      } catch { /* best-effort, không chặn IPN */ }
+    } catch (e: any) {
+      this.logger.warn(`[${gateway} IPN] flagMoneyReceivedNoFulfillment lỗi: ${e?.message}`);
+    }
+  }
+
   // Cổng IPN của Pay2S (server-to-server callback). Đổi từ GET sang POST để
   // tránh trigger qua `<img src>` từ trang phishing — IPN không bao giờ
   // visible từ browser. Public để bypass JWT (Pay2S không có session user).
@@ -77,7 +109,14 @@ export class PaymentController {
       where: { ...groupWhere, paymentStatus: 'PENDING', status: { not: 'CANCELLED' } },
       data: { paymentStatus: 'PAID' },
     });
-    if (upd.count === 0) this.logger.log(`[Pay2S IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
+    if (upd.count === 0) {
+      this.logger.log(`[Pay2S IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
+      // [round15 FIX ipn-cancelled-refund] count=0 có thể vì đơn đã CANCELLED (buyer hủy đơn online chưa
+      // trả rồi vẫn thanh toán trên link còn sống) → tiền ĐÃ vào nhưng không có đơn để fulfill và không
+      // có refund tự động. Ghi nhận tường minh (money-received-no-fulfillment) để đối soát/hoàn tiền thủ
+      // công thay vì âm thầm bỏ qua. Vẫn trả 200 OK để cổng ngừng retry.
+      await this.flagMoneyReceivedNoFulfillment('Pay2S', groupWhere, order.paymentGroupId ?? orderId, paid);
+    }
     return res.status(HttpStatus.OK).send({ success: true });
   }
 
@@ -126,7 +165,12 @@ export class PaymentController {
         where: { ...groupWhere, paymentStatus: 'PENDING', status: { not: 'CANCELLED' } },
         data: { paymentStatus: 'PAID' },
       });
-      if (upd.count === 0) this.logger.log(`[MoMo IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
+      if (upd.count === 0) {
+        this.logger.log(`[MoMo IPN] group=${order.paymentGroupId ?? orderId} đã xử lý`);
+        // [round15 FIX ipn-cancelled-refund] count=0 có thể vì đơn đã CANCELLED → tiền vào không có
+        // fulfillment & không refund tự động. Ghi nhận để đối soát/hoàn tiền thủ công (xem Pay2S).
+        await this.flagMoneyReceivedNoFulfillment('MoMo', groupWhere, order.paymentGroupId ?? orderId, paid);
+      }
     } else {
       this.logger.log(`[MoMo IPN] orderId=${orderId} resultCode=${body.resultCode} message=${body.message}`);
     }

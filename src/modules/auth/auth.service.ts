@@ -175,7 +175,9 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({ where: {OR: [{ email: dto.email }, { username: dto.email }]} });
     if (!user) throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
     if (user.isBanned) {
-      throw new UnauthorizedException(`Tài khoản đã bị khóa. Lý do: ${user.banReason}`);
+      // [round15 FIX ban-reason] Không nội suy banReason raw (null → 'Lý do: null'; rò note nội bộ).
+      // Đồng bộ với jwt.strategy.ts (FIX H5/wiki 0088): chỉ trả message chung.
+      throw new UnauthorizedException('Tài khoản đã bị khóa.');
     }
     // 1. Check Password
     if (!user.password) {
@@ -297,7 +299,9 @@ export class AuthService {
 
     return {
       access_token: this.jwtService.sign(payload),
-      user: userInfo 
+      // [round15 FIX point-alias] FE đọc user.point (số ít) trong khi DB/BE trả points.
+      // Trả CẢ hai alias để cả FE cũ (point) lẫn chỗ dùng points đều hoạt động.
+      user: { ...userInfo, point: (userInfo as any).points },
     };
   }
 
@@ -400,7 +404,8 @@ export class AuthService {
 
     // Sau khi check null, TypeScript sẽ hiểu user là object hợp lệ
     const { password, ...result } = user;
-    return result;
+    // [round15 FIX point-alias] /auth/me cũng trả alias point (số ít) cạnh points để khớp FE.
+    return { ...result, point: (result as any).points };
   }
 
   // ===========================================================================
@@ -558,9 +563,8 @@ export class AuthService {
 
     if (user) {
       if (user.isBanned) {
-        throw new UnauthorizedException(
-          `Tài khoản đã bị khóa. Lý do: ${user.banReason}`,
-        );
+        // [round15 FIX ban-reason] Xem login(): message chung, không nội suy banReason nullable.
+        throw new UnauthorizedException('Tài khoản đã bị khóa.');
       }
       // User đã verify vì provider đã xác minh email; nếu trước đó chưa
       // verify (đăng ký email/pass rồi chưa nhập OTP) thì promote lên verified.

@@ -43,6 +43,14 @@ export class CreateOrderDto {
   @IsBoolean()
   useCoins?: boolean;
 
+  // [round15 FIX partial-coin] Số xu user CHỌN tiêu. Trước đây DTO không có field này → ValidationPipe
+  // (whitelist:true) strip mất → BE luôn tiêu min(balance,50000,payable) bất kể user gõ bao nhiêu →
+  // buyer mất xu không đồng ý. previewOrder cap lại theo min(balance,50000,payable) nên vẫn an toàn.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  appliedCoins?: number;
+
   @IsOptional()
   @IsBoolean()
   isGift?: boolean;
