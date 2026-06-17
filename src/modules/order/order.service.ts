@@ -356,7 +356,10 @@ export class OrderService {
 
           const shopVoucher = preview.appliedVouchers.find((v: any) => v.shopId === group.shopId);
           const systemVoucher = preview.appliedVouchers.find((v: any) => v.isSystem === true);
-          const voucherIdToSave = shopVoucher ? shopVoucher.id : (systemVoucher ? systemVoucher.id : null);
+          // [FIX review-round14b - wiki 0088] order.voucherId = CHỈ voucher SHOP của đơn này (per-shop)
+          // → nhả NGAY khi đơn này hủy. System/freeship (shared) lưu riêng ở appliedVoucherIds, nhả khi
+          // group hủy hết. Trước đây fallback systemVoucher vào voucherId làm lẫn per-shop với shared.
+          const voucherIdToSave = shopVoucher ? shopVoucher.id : null;
 
           // Trừ tồn kho
           for (const item of group.items) {
@@ -398,7 +401,7 @@ export class OrderService {
                  coinUsed: allocatedCoinDisc, // Wiki 0083: xu phân bổ cho đơn này (để hoàn khi hủy)
                  paymentGroupId, // Wiki 0083: nhóm thanh toán (multi-shop)
                  voucherId: voucherIdToSave,
-                 appliedVoucherIds: preview.appliedVouchers.map((v: any) => v.id), // [FIX #10/#10b - wiki 0088] lưu CẢ list voucher đã redeem (shop+system+freeship) để hoàn đủ khi hủy
+                 appliedVoucherIds: preview.appliedVouchers.filter((v: any) => v.isSystem || v.isFreeship).map((v: any) => v.id), // [FIX #10b/review-round14b] CHỈ voucher SHARED (system/freeship) — nhả khi group hủy hết; shop voucher đã ở order.voucherId (nhả per-đơn)
                  recipientName: receiver.name || dto.senderInfo?.name,
                  recipientPhone: receiver.phone || dto.senderInfo?.phone,
                  recipientAddress: receiver.fullAddress || receiver.address,
@@ -648,21 +651,29 @@ export class OrderService {
           data: { userId, amount: (order as any).coinUsed, type: PointType.REFUND, source: 'ORDER', description: `Hoàn xu hủy đơn #${orderId.slice(0, 8)}` },
         });
       }
-      // [FIX #10/#10b - wiki 0088] NHẢ TẤT CẢ voucher đã redeem cho checkout (shop+system+freeship),
-      // không chỉ order.voucherId. Trước đây order chỉ lưu 1 voucherId (shop ?? system) → voucher còn
-      // lại (system/freeship) bị BURN lúc redeem nhưng KHÔNG bao giờ được nhả khi hủy → usageCount kẹt
-      // + userVoucher.isUsed=true vĩnh viễn. Giờ dùng appliedVoucherIds (list đầy đủ). Vẫn giữ guard:
-      // voucher redeem 1 lần/checkout nên chỉ nhả khi đây là đơn CUỐI active của group (tránh nhả N lần).
-      // Fallback order.voucherId cho đơn CŨ (pre-round14, appliedVoucherIds null).
-      const _releaseIds: string[] = Array.isArray((order as any).appliedVoucherIds) && (order as any).appliedVoucherIds.length
-        ? (order as any).appliedVoucherIds
-        : (order.voucherId ? [order.voucherId] : []);
-      if (_releaseIds.length) {
+      // [FIX #10/#10b + review-round14b - wiki 0088] Nhả voucher đúng phạm vi:
+      // (1) PER-SHOP (order.voucherId): voucher shop chỉ gắn 1 đơn → nhả NGAY khi đơn này hủy (như
+      //     round13). Guard siblingUsing phòng hiếm 2 đơn cùng voucherId.
+      // (2) SHARED (system/freeship trong appliedVoucherIds): redeem 1 lần/checkout → CHỈ nhả khi đơn
+      //     CUỐI active của group bị hủy (otherActive===0) tránh nhả N lần (drift âm).
+      // Trước round14 chỉ nhả order.voucherId (1 cái) → system/freeship kẹt. Round14 blanket otherActive
+      // làm shop-voucher kẹt khi partial-cancel. Tách 2 nhánh sửa cả hai.
+      if (order.voucherId) {
+        const siblingUsing = (order as any).paymentGroupId
+          ? await tx.order.count({ where: { paymentGroupId: (order as any).paymentGroupId, voucherId: order.voucherId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
+          : 0;
+        if (siblingUsing === 0) {
+          await tx.voucher.updateMany({ where: { id: order.voucherId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
+          await tx.userVoucher.updateMany({ where: { userId, voucherId: order.voucherId }, data: { isUsed: false, usedAt: null } });
+        }
+      }
+      const _sharedIds: string[] = Array.isArray((order as any).appliedVoucherIds) ? (order as any).appliedVoucherIds : [];
+      if (_sharedIds.length) {
         const otherActive = (order as any).paymentGroupId
           ? await tx.order.count({ where: { paymentGroupId: (order as any).paymentGroupId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
           : 0;
         if (otherActive === 0) {
-          for (const vId of _releaseIds) {
+          for (const vId of _sharedIds) {
             await tx.voucher.updateMany({ where: { id: vId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
             await tx.userVoucher.updateMany({ where: { userId, voucherId: vId }, data: { isUsed: false, usedAt: null } });
           }
