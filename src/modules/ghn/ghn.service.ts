@@ -54,6 +54,11 @@ export class GhnService {
         wardCode: true,
         provinceId: true,
         totalAmount: true,
+        // [round14 FIX C1/H8] cần paymentMethod/paymentStatus để quyết định cod_amount
+        // và status để chặn tạo đơn GHN cho đơn đã CANCELLED/DELIVERED.
+        paymentMethod: true,
+        paymentStatus: true,
+        status: true,
         items: {
           select: {
             quantity: true,
@@ -411,6 +416,17 @@ export class GhnService {
           });
           continue;
         }
+        // [round14 FIX H8] Chỉ tạo phiếu GHN cho đơn còn ở trạng thái lấy hàng được
+        // (PENDING/CONFIRMED). Đơn CANCELLED/DELIVERED... bị bỏ qua để tránh
+        // "hồi sinh" đơn + tạo shipment thật ngoài ý muốn.
+        if (!['PENDING', 'CONFIRMED'].includes(String(order.status))) {
+          results.push({
+            orderId: order.id,
+            ok: false,
+            message: `Đơn ở trạng thái ${order.status} — không thể yêu cầu lấy hàng`,
+          });
+          continue;
+        }
 
         const weight = order.items.reduce(
           (acc, it) => acc + (Number(it.product?.weight) || 200) * it.quantity,
@@ -423,7 +439,13 @@ export class GhnService {
           to_address: order.recipientAddress,
           to_district_id: order.districtId,
           to_ward_code: order.wardCode,
-          cod_amount: Math.floor(Number(order.totalAmount)),
+          // [round14 FIX C1] Chỉ thu COD với đơn COD CHƯA thanh toán. Đơn trả trước
+          // (MoMo/Pay2S, paymentStatus PAID hoặc paymentMethod != cod) cod_amount = 0,
+          // nếu không buyer bị thu tiền 2 lần.
+          cod_amount:
+            String(order.paymentMethod).toLowerCase() === 'cod' && order.paymentStatus !== 'PAID'
+              ? Math.floor(Number(order.totalAmount))
+              : 0,
           weight,
           items: order.items.map(it => ({
             name: it.product?.name || 'SP',
@@ -436,11 +458,26 @@ export class GhnService {
         const ghnResp = await this.createShippingOrder(ghnPayload);
         const code = ghnResp?.order_code;
         if (code) {
-          await this.prisma.order.update({
-            where: { id: order.id },
+          // [round14 FIX H8] Persist atomic + guarded: chỉ ghi khi đơn vẫn ở
+          // PENDING/CONFIRMED và chưa có shippingOrderCode (chống race + chống
+          // hồi sinh đơn đã đổi trạng thái giữa lúc gọi GHN).
+          const persisted = await this.prisma.order.updateMany({
+            where: {
+              id: order.id,
+              status: { in: ['PENDING', 'CONFIRMED'] },
+              shippingOrderCode: null,
+            },
             data: { shippingOrderCode: code, status: 'CONFIRMED' },
           });
-          results.push({ orderId: order.id, ok: true, shippingOrderCode: code });
+          if (persisted.count === 0) {
+            results.push({
+              orderId: order.id,
+              ok: false,
+              message: 'Đơn đã đổi trạng thái — không thể gán phiếu GHN',
+            });
+          } else {
+            results.push({ orderId: order.id, ok: true, shippingOrderCode: code });
+          }
         } else {
           results.push({ orderId: order.id, ok: false, message: 'GHN không trả về mã đơn' });
         }

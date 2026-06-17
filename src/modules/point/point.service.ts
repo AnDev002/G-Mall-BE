@@ -268,7 +268,22 @@ export class PointService {
   }
 
   async confirmTransfer(senderId: string, inputOtp: string) {
-    const dataStr = await this.redis.get(`transfer_otp:${senderId}`);
+    // [round14 FIX H6] Khoá mỗi-sender NGAY ĐẦU để chỉ 1 confirm chạy cùng lúc.
+    // Trước đây 2 request confirm song song cùng OTP có thể cùng qua verify (đọc OTP
+    // trước khi nhau xoá) → chuyển 2× xu cho 1 OTP. setNX (SET ... EX 30 NX) → chỉ 1
+    // request giành được khoá; request còn lại bị chặn. try/finally để luôn nhả khoá.
+    const lockKey = `lock:transfer:${senderId}`;
+    const locked = await this.redis.setNX(lockKey, '1', 30);
+    if (!locked) {
+      throw new BadRequestException('Đang xử lý, thử lại');
+    }
+
+    try {
+    // [round14 FIX H6] CONSUME OTP ATOMIC bằng GETDEL: fetch + delete trong 1 lệnh TRƯỚC khi
+    // chạy transfer → loại bỏ cửa sổ TOCTOU giữa get rồi mới del. Lấy về value để validate;
+    // nếu key đã biến mất (null) → OTP đã dùng/hết hạn → reject. OTP SAI cũng đã bị xoá ở đây,
+    // nhưng đó là hành vi an toàn (1 OTP = 1 lần thử confirm; sai thì phải xin OTP mới).
+    const dataStr = await this.redis.getClient().getdel(`transfer_otp:${senderId}`);
     if (!dataStr) {
       throw new BadRequestException('Giao dịch hết hạn hoặc không tồn tại.');
     }
@@ -327,15 +342,15 @@ export class PointService {
         return { success: true, newBalance: senderWallet?.balance ?? 0 };
     }, {
         // [FIX LỖI]: Tăng thời gian timeout lên 20 giây (Mặc định là 5s)
-        timeout: 20000, 
-        maxWait: 5000 
+        timeout: 20000,
+        maxWait: 5000
     });
 
-    // [TỐI ƯU 2]: Đưa Redis ra ngoài Transaction
-    // Lý do: Redis không liên quan đến tính toàn vẹn của SQL Transaction.
-    // Nếu DB thành công mà xóa Redis lỗi thì cũng không sao (key sẽ tự hết hạn).
-    await this.redis.del(`transfer_otp:${senderId}`);
-
+    // OTP đã được consume (GETDEL) ATOMIC ở trên trước khi vào tx → không cần xoá lại ở đây.
     return result;
+    } finally {
+      // [round14 FIX H6] Luôn nhả khoá mỗi-sender dù thành công hay lỗi.
+      await this.redis.del(lockKey);
+    }
   }
 }

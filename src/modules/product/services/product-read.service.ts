@@ -563,12 +563,13 @@ export class ProductReadService implements OnModuleInit {
     
     if (!keyword) return { data: [] };
 
+    // [round14 FIX M5] Product không có cột isDeleted/sku; mode:'insensitive' lỗi trên MySQL.
+    // Bỏ isDeleted, bỏ mode, đẩy sku xuống quan hệ variants (MySQL collation đã case-insensitive).
     const where: any = {
       status: 'ACTIVE',
-      isDeleted: false,
       OR: [
-        { name: { contains: keyword, mode: 'insensitive' } },
-        { sku: { contains: keyword, mode: 'insensitive' } }, // Search cả SKU
+        { name: { contains: keyword } },
+        { variants: { some: { sku: { contains: keyword } } } }, // Search cả SKU qua variant
       ],
     };
 
@@ -577,20 +578,25 @@ export class ProductReadService implements OnModuleInit {
       where.shopId = query.shopId;
     }
 
-    const products = await this.prisma.product.findMany({
-      where,
-      take: limit,
-      select: {
-        id: true,
-        name: true,
-        price: true,
-        images: true,
-        shop: { select: { name: true } }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
+    try {
+      const products = await this.prisma.product.findMany({
+        where,
+        take: limit,
+        select: {
+          id: true,
+          name: true,
+          price: true,
+          images: true,
+          shop: { select: { name: true } }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
 
-    return { data: products };
+      return { data: products };
+    } catch (error) {
+      console.error('Error in searchPublic:', error);
+      return { data: [] };
+    }
   }
   // ... (Giữ nguyên các hàm removeProductFromRedis, escapeTagValue, searchSuggestions, findOnePublic, findRelated, findMoreFromShop, searchProductsForAdmin, findAllForSeller, findShopProducts, findBoughtTogether, getPersonalizedFeed)
   async removeProductFromRedis(id: string, name: string) {

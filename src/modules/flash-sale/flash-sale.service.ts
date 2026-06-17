@@ -75,9 +75,12 @@ export class FlashSaleService {
           where: {
             status: FlashSaleProductStatus.APPROVED,
             // ⚠️ MỞ COMMENT DÒNG DƯỚI NẾU MUỐN HIỆN CẢ HÀNG HẾT KHO ĐỂ TEST
-            // stock: { gt: 0 }, 
+            // stock: { gt: 0 },
           },
-          take: 12,
+          // [FIX round15 #6 - wiki 0088] BỎ take:12 ở DB. Trước đây take:12 orderBy sold DESC chạy
+          // TRƯỚC bộ lọc remaining>0 (JS) → nếu 12 SP bán-chạy-nhất đã hết suất flash (sold==stock) thì
+          // query trả 12 row sold-out, JS lọc sạch → SP còn hàng (xếp sau) bị BỎ → feed trống oan.
+          // Lấy hết APPROVED rồi lọc remaining>0 + cắt 12 ở JS.
           orderBy: { sold: 'desc' },
           include: {
             product: {
@@ -122,8 +125,8 @@ export class FlashSaleService {
             return isProductActive && hasStock;
         });
 
-        // Gán lại products đã lọc sạch
-        s.products = validProducts;
+        // Gán lại products đã lọc sạch, cắt 12 SP còn hàng (sau khi lọc remaining>0) — [FIX round15 #6]
+        s.products = validProducts.slice(0, 12);
         return validProducts.length > 0;
     });
 

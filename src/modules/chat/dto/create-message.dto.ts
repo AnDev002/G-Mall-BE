@@ -6,6 +6,8 @@ import {
   IsEnum,
   IsArray,
   ValidateNested,
+  MaxLength,
+  ArrayMaxSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MessageType } from '@prisma/client';
@@ -23,12 +25,14 @@ export class AiHistoryMessageDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(5000) // [round14 FIX H2] clamp content lịch sử để chống DoS chi phí OpenAI/bộ nhớ
   content?: string;
 }
 
 export class CreateMessageDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(5000) // [round14 FIX H2] giới hạn độ dài tin nhắn để chống DoS chi phí OpenAI/bộ nhớ
   content: string;
 
   @IsString()
@@ -44,6 +48,7 @@ export class CreateMessageDto {
   // Optional + validate-nested để không phá happy-path các tin nhắn người-người.
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20) // [round14 FIX H2] cap số message lịch sử để chống DoS bộ nhớ/chi phí
   @ValidateNested({ each: true })
   @Type(() => AiHistoryMessageDto)
   history?: AiHistoryMessageDto[];

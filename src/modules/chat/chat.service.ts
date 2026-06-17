@@ -4,11 +4,13 @@ import { EncryptionUtil } from 'src/common/utils/encryption.util';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { AiService } from './ai.service';
 import { MessageType } from './dto/create-message.dto';
+import { RedisService } from 'src/database/redis/redis.service'; // [round14 FIX M2] lock chống tạo trùng conversation
 @Injectable()
 export class ChatService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
-    private aiService: AiService // Inject AI Service
+    private aiService: AiService, // Inject AI Service
+    private redis: RedisService, // [round14 FIX M2] short lock cho find-or-create conversation
   ) {}
 
   // [FIX #29 - wiki 0088] Seed user sentinel AI_ASSISTANT lúc boot. sendMessageToDb dùng
@@ -181,40 +183,69 @@ export class ChatService implements OnModuleInit {
   }
 
   private async sendMessageToDb(senderId: string, dto: CreateMessageDto) {
-     let conversationId = '';
+     // [round14 FIX M2] REST find-or-create không có lock → 2 tin nhắn đầu tiên
+     // gửi song song tạo 2 conversation trùng + tách lịch sử. Khoá Redis ngắn
+     // (NX EX 10) theo cặp participant đã sort để chỉ 1 request chạy find-or-create;
+     // request còn lại đợi rồi refetch. Bọc create trong $transaction (mirror path WS)
+     // để conversation rỗng không lọt vào DB khi message fail.
+     const lockKey = 'chat:conv-lock:' + [senderId, dto.receiverId].sort().join(':');
+     let acquired = false;
+     try {
+        // Thử lấy lock; nếu kẹt, đợi ngắn rồi tiếp tục (best-effort, không chặn lâu).
+        // [round14 review3-FIX LOW] FAIL-OPEN: Redis lỗi/không kết nối → KHÔNG được làm hỏng việc gửi
+        // tin nhắn (DB vẫn khoẻ). Bắt lỗi, bỏ lock, chạy tiếp $transaction (chỉ mất dedup best-effort).
+        try {
+           for (let i = 0; i < 5; i++) {
+              acquired = await this.redis.setNX(lockKey, '1', 10);
+              if (acquired) break;
+              await new Promise((r) => setTimeout(r, 100));
+           }
+        } catch {
+           acquired = false;
+        }
 
-     const existingConv = await this.prisma.conversation.findFirst({
-        where: { AND: [{ participants: { some: { id: senderId } } }, { participants: { some: { id: dto.receiverId } } }] }
-     });
-     
-     if (existingConv) {
-         conversationId = existingConv.id;
-         await this.prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } });
-     } else {
-         // Prisma 5 implicit M2M không nhận `connect: [...]` ở MySQL — tách 2 step.
-         const newConv = await this.prisma.conversation.create({ data: {} });
-         await this.prisma.conversation.update({
-             where: { id: newConv.id },
-             data: { participants: { connect: { id: senderId } } },
-         });
-         await this.prisma.conversation.update({
-             where: { id: newConv.id },
-             data: { participants: { connect: { id: dto.receiverId } } },
-         });
-         conversationId = newConv.id;
+        const message = await this.prisma.$transaction(async (tx) => {
+           let conversationId = '';
+
+           const existingConv = await tx.conversation.findFirst({
+              where: { AND: [{ participants: { some: { id: senderId } } }, { participants: { some: { id: dto.receiverId } } }] }
+           });
+
+           if (existingConv) {
+               conversationId = existingConv.id;
+               await tx.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: new Date() } });
+           } else {
+               // Prisma 5 implicit M2M không nhận `connect: [...]` ở MySQL — tách 2 step.
+               const newConv = await tx.conversation.create({ data: {} });
+               await tx.conversation.update({
+                   where: { id: newConv.id },
+                   data: { participants: { connect: { id: senderId } } },
+               });
+               await tx.conversation.update({
+                   where: { id: newConv.id },
+                   data: { participants: { connect: { id: dto.receiverId } } },
+               });
+               conversationId = newConv.id;
+           }
+
+           return tx.message.create({
+              data: {
+                  senderId, conversationId,
+                  content: EncryptionUtil.encrypt(dto.content),
+                  // FIX LỖI TYPE Ở ĐÂY:
+                  type: dto.type || MessageType.TEXT
+              },
+              include: { sender: { select: { id: true, name: true, role: true } } }
+           });
+        });
+
+        return { ...message, content: EncryptionUtil.decrypt(message.content) };
+     } finally {
+        // Chỉ giải phóng lock nếu chính ta lấy được (tránh xoá lock của request khác).
+        if (acquired) {
+           try { await this.redis.del(lockKey); } catch { /* TTL sẽ tự dọn */ }
+        }
      }
-
-     const message = await this.prisma.message.create({
-        data: {
-            senderId, conversationId,
-            content: EncryptionUtil.encrypt(dto.content),
-            // FIX LỖI TYPE Ở ĐÂY:
-            type: dto.type || MessageType.TEXT 
-        },
-        include: { sender: { select: { id: true, name: true, role: true } } }
-     });
-
-     return { ...message, content: EncryptionUtil.decrypt(message.content) };
   }
   async sendMessage(senderId: string, dto: CreateMessageDto) {
     // Wiki 0086: chặn tự nhắn cho chính mình ngay tại get-or-create-conversation
@@ -283,21 +314,30 @@ export class ChatService implements OnModuleInit {
   // --- API LOGIC ---
 
   async searchUsers(query: string, currentUserId: string) {
+  // [round14 FIX M8] Trước đây `email: { contains: query }` cho phép bất kỳ user
+  // đăng nhập nào enumerate toàn bộ user qua substring email (ví dụ "@gmail" liệt
+  // kê mọi tài khoản Gmail). FIX: tìm theo TÊN; chỉ cho phép match email khi query
+  // là một địa chỉ email ĐẦY ĐỦ hợp lệ (exact match, không substring). Đồng thời
+  // bắt buộc query >= 2 ký tự để tránh quét rộng.
+  const trimmed = (query || '').trim();
+  if (trimmed.length < 2) return [];
+
+  // Email hợp lệ → cho exact-match email; còn lại chỉ search theo tên.
+  const isFullEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+  const orConditions: any[] = [{ name: { contains: trimmed } }];
+  if (isFullEmail) {
+    orConditions.push({ email: trimmed });
+  }
+
   return this.prisma.user.findMany({
     where: {
       AND: [
         { id: { not: currentUserId } },
-        {
-          OR: [
-            // <--- Xóa dòng mode: 'insensitive' để tránh lỗi type
-            { email: { contains: query } },
-            { name: { contains: query } },
-          ],
-        },
+        { OR: orConditions },
       ],
     },
     // Không trả email ra ngoài — chỉ id/name/avatar/role để tránh lộ email
-    // của người dùng khác qua API tìm kiếm (vẫn cho phép search theo email).
+    // của người dùng khác qua API tìm kiếm.
     select: { id: true, name: true, avatar: true, role: true },
     take: 5,
   });

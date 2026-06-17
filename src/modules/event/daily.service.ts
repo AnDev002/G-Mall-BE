@@ -59,7 +59,11 @@ export class DailyService {
     const dayLabel = currentStreak + 1; // Ngày hiển thị (1-7)
 
     const refId = `DAILY_${userId}_${today}`;
-    
+
+    // [round14 FIX M6] cờ đánh dấu xu ĐÃ cộng (tx commit). Trước đây catch nhả khoá-ngày
+    // (del redisKey) KỂ CẢ khi lỗi xảy ra SAU khi award đã commit (lỗi ghi Redis post-commit)
+    // → user retry được → cộng xu LẦN 2 (double-credit). Chỉ nhả khoá khi CHƯA award.
+    let awarded = false;
     try {
         const result = await this.pointService.processTransaction(
             userId,
@@ -68,23 +72,33 @@ export class DailyService {
             refId,
             `Điểm danh Ngày ${dayLabel}`
         );
-        
-        // 3. Lưu trạng thái
-        await this.redisService.set(redisKey, '1', 86400); // Đánh dấu hôm nay xong
-        await this.redisService.set(`last_checkin_date:${userId}`, today, 86400 * 2); // Lưu ngày checkin cuối
-        await this.redisService.set(streakKey, (currentStreak + 1).toString(), 86400 * 2); // Lưu streak mới
+        // [round14 FIX M6] tx đã commit → xu đã thực cộng. Từ đây tuyệt đối KHÔNG nhả khoá-ngày.
+        awarded = true;
 
-        return { 
+        // 3. Lưu trạng thái (redisKey đã được setNX ở đầu hàm → bỏ set lặp lại).
+        // [round14 FIX M6] bọc các ghi Redis post-award trong try/catch RIÊNG, KHÔNG nhả khoá:
+        // nếu ghi Redis lỗi sau khi đã cộng xu, vẫn coi như điểm danh thành công, tránh double-credit.
+        try {
+            await this.redisService.set(`last_checkin_date:${userId}`, today, 86400 * 2); // Lưu ngày checkin cuối
+            await this.redisService.set(streakKey, (currentStreak + 1).toString(), 86400 * 2); // Lưu streak mới
+        } catch (postErr) {
+            // Nuốt lỗi ghi Redis phụ — xu đã cộng, không được nhả khoá-ngày.
+        }
+
+        return {
             message: `Điểm danh Ngày ${dayLabel} thành công!`,
             reward: rewardPoints,
             streak: currentStreak + 1,
-            currentPoints: result.newBalance 
+            currentPoints: result.newBalance
         };
 
     } catch (e) {
         // Wiki 0077: award lỗi → nhả claim ngày (đã setNX ở đầu hàm) để user còn
         // thử lại, tránh khoá nhầm cả ngày khi chưa thực nhận điểm.
-        await this.redisService.del(redisKey);
+        // [round14 FIX M6] CHỈ nhả khoá khi xu CHƯA cộng (awarded=false); nếu đã cộng thì giữ khoá.
+        if (!awarded) {
+            await this.redisService.del(redisKey);
+        }
         if (e instanceof ConflictException) {
              throw new BadRequestException('Hôm nay bạn đã điểm danh rồi!');
         }

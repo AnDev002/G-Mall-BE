@@ -155,10 +155,23 @@ export class FinanceService {
         data: { status: PayoutStatus.APPROVED, processedAt: new Date() },
       });
       if (upd.count === 0) throw new BadRequestException('Yêu cầu không hợp lệ hoặc đã xử lý');
-      const request = await tx.payoutRequest.findUnique({ where: { id } });
-      await tx.walletTransaction.create({
-        data: { userId: request!.userId, amount: -Number(request!.amount), type: WalletTransactionType.PAYOUT, status: 'COMPLETED', referenceId: id, description: `Approved payout #${id}` },
+      // [round14 FIX L3] KHÔNG tạo WalletTransaction mới (double-debit trong ledger).
+      // Tiền đã trừ ví + ghi 1 dòng PAYOUT PENDING lúc seller tạo request → approve
+      // chỉ chuyển dòng đó sang COMPLETED để ledger sum khớp walletBalance.
+      const _txUpd = await tx.walletTransaction.updateMany({
+        where: { referenceId: id, type: WalletTransactionType.PAYOUT, status: 'PENDING' },
+        data: { status: 'COMPLETED', description: `Approved payout #${id}` },
       });
+      // [round14 review-FIX] Legacy: request tạo TRƯỚC round14 không có dòng PAYOUT/PENDING đối ứng →
+      // count===0 → ghi 1 dòng PAYOUT COMPLETED (amount ÂM) để debit được ghi nhận, ledger khớp ví.
+      if (_txUpd.count === 0) {
+        const _req = await tx.payoutRequest.findUnique({ where: { id } });
+        if (_req) {
+          await tx.walletTransaction.create({
+            data: { userId: _req.userId, amount: -Number(_req.amount), type: WalletTransactionType.PAYOUT, status: 'COMPLETED', referenceId: id, description: `Payout #${id}` },
+          });
+        }
+      }
       return { success: true };
     });
   }
@@ -174,6 +187,12 @@ export class FinanceService {
       if (upd.count === 0) throw new BadRequestException('Yêu cầu không hợp lệ hoặc đã xử lý');
       const request = await tx.payoutRequest.findUnique({ where: { id } });
       await tx.user.update({ where: { id: request!.userId }, data: { walletBalance: { increment: Number(request!.amount) } } });
+      // [round14 review-FIX] Đóng dòng PAYOUT/PENDING escrow → FAILED (trước đây để PENDING vĩnh viễn
+      // khiến tổng ledger lệch). REFUND +amt bên dưới đối ứng -amt PAYOUT đã FAILED → ledger cân.
+      await tx.walletTransaction.updateMany({
+        where: { referenceId: id, type: WalletTransactionType.PAYOUT, status: 'PENDING' },
+        data: { status: 'FAILED', description: `Rejected payout #${id}` },
+      });
       await tx.walletTransaction.create({
         data: { userId: request!.userId, amount: Number(request!.amount), type: WalletTransactionType.REFUND, status: 'COMPLETED', referenceId: id, description: `Refund rejected payout #${id}: ${reason}` },
       });

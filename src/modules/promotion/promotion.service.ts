@@ -374,8 +374,8 @@ export class PromotionService {
         }
       });
       
-      const stockKey = `voucher:${dto.code}:stock`;
-      await this.redisService.set(stockKey, dto.usageLimit.toString());
+      // [round14 review-FIX] Bỏ ghi `voucher:CODE:stock` — sau M9 key này KHÔNG còn được đọc/DECR
+      // (ngân sách lượt dùng do DB usageCount lo ở redeem). Tránh để lại dead key trong Redis.
 
       return voucher;
     });
@@ -428,8 +428,8 @@ export class PromotionService {
         }
       });
 
-      const stockKey = `voucher:${dto.code}:stock`;
-      await this.redisService.set(stockKey, dto.usageLimit.toString());
+      // [round14 review-FIX] Bỏ ghi `voucher:CODE:stock` — sau M9 key này KHÔNG còn được đọc/DECR
+      // (ngân sách lượt dùng do DB usageCount lo ở redeem). Tránh để lại dead key trong Redis.
 
       return voucher;
     });
@@ -453,25 +453,23 @@ export class PromotionService {
       throw new BadRequestException('Voucher đã bị tạm dừng');
     }
 
-    const stockKey = `voucher:${code}:stock`;
     const usersKey = `voucher:${code}:users`;
 
+    // [round14 FIX M9] CLAIM giờ là "lưu vào ví" thuần — KHÔNG còn trừ budget riêng
+    // `voucher:CODE:stock`. Trước đây Lua DECR stock này như một ngân sách lượt dùng,
+    // nhưng redeem (order.service.ts) chỉ trừ DB usageCount và stock Redis KHÔNG BAO GIỜ
+    // được hoàn lại khi cancel/un-save → budget claim tụt vĩnh viễn & lệch với usageLimit
+    // thật. Giới hạn lượt dùng global+per-user ĐÃ được DB usageCount enforce đúng ở redeem.
+    // Ở đây chỉ giữ set dedup per-user (SISMEMBER/SADD) để 1 user không claim trùng voucher.
     const script = `
-      local stock = tonumber(redis.call('GET', KEYS[1]))
-      if stock == nil then return -1 end
-      if stock <= 0 then return 0 end
-      if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end
-
-      redis.call('DECR', KEYS[1])
-      redis.call('SADD', KEYS[2], ARGV[1])
+      if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return -2 end
+      redis.call('SADD', KEYS[1], ARGV[1])
       return 1
     `;
 
     const client = this.redisService.getClient();
-    const result = await client.eval(script, 2, stockKey, usersKey, userId);
+    const result = await client.eval(script, 1, usersKey, userId);
 
-    if (result === -1) throw new BadRequestException('Voucher không tồn tại hoặc chưa bắt đầu');
-    if (result === 0) throw new BadRequestException('Voucher đã hết lượt sử dụng');
     if (result === -2) throw new BadRequestException('Bạn đã lưu voucher này rồi');
 
     await this.prisma.userVoucher.create({

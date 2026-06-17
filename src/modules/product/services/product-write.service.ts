@@ -240,6 +240,10 @@ export class ProductWriteService {
         await this.productReadService.syncProductToRedis(updatedProduct);
     }
 
+    // [round14 FIX M1] Re-enqueue image-search index để Qdrant payload.status không bị stale
+    // (ACTIVE phải hiện trong search, REJECTED phải biến mất). Fire-and-forget.
+    this.safeEnqueueIndex(productId);
+
     return updatedProduct;
   }
 
@@ -271,6 +275,9 @@ export class ProductWriteService {
         
         // Sync sang Redis Search
         await this.productReadService.syncProductToRedis(product);
+
+        // [round14 FIX M1] Re-enqueue image-search index để Qdrant payload.status không bị stale.
+        this.safeEnqueueIndex(product.id);
     }));
 
     return { count: ids.length };
@@ -300,6 +307,12 @@ export class ProductWriteService {
           await tx.product.deleteMany({ where: { id: { in: ids } } });
 
       }, { maxWait: 10000, timeout: 20000 });
+
+      // [round14 FIX M3] Sau khi hard-delete commit, xoá luôn vector trong Qdrant
+      // tránh ghost vectors (mirror safeEnqueueIndex, fire-and-forget).
+      for (const p of productsToDelete) {
+        this.imageSearch.enqueueDelete(p.id).catch(() => undefined);
+      }
 
       this.clearCacheBackground(productsToDelete);
       return { count: ids.length, message: `Đã xoá ${ids.length} sản phẩm` };
@@ -690,7 +703,8 @@ export class ProductWriteService {
 
     const baseWhere: any = { shopId: shop.id };
     if (search) {
-      baseWhere.name = { contains: search, mode: 'insensitive' };
+      // [round14 FIX M11] mode:'insensitive' lỗi 500 trên MySQL; collation đã case-insensitive.
+      baseWhere.name = { contains: search };
     }
 
     const statusWhere: any = { ...baseWhere };

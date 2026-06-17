@@ -81,10 +81,13 @@ export class AiService implements OnModuleInit {
 
     this.logger.debug(`🔍 Searching DB for keywords: [${keywords.join(', ')}]`);
 
+    // [round14 FIX M-EXTRA] bỏ mode:'insensitive' — MySQL connector của Prisma
+    // không hỗ trợ → throw 500 khi AI tìm sản phẩm. Collation mặc định của MySQL
+    // vốn đã case-insensitive nên plain `contains` vẫn match đúng.
     const conditions = keywords.map(term => ({
         OR: [
-            { name: { contains: term, mode: 'insensitive' as const } }, 
-            { description: { contains: term, mode: 'insensitive' as const } }
+            { name: { contains: term } },
+            { description: { contains: term } }
         ]
     }));
 
@@ -168,13 +171,17 @@ export class AiService implements OnModuleInit {
       `;
 
       try {
+          // [round14 FIX H2] phòng thủ tại lớp service: cắt lịch sử về tối đa 20
+          // message và clamp mỗi content còn 5000 ký tự trước khi build payload
+          // OpenAI — chống DoS chi phí kể cả khi caller bỏ qua DTO validation.
+          const safeHistory = (Array.isArray(history) ? history : []).slice(-20);
           const messages: any[] = [
               { role: "system", content: systemPrompt },
-              ...history.map(m => ({
+              ...safeHistory.map(m => ({
                   role: m.senderId === 'AI_ASSISTANT' ? 'assistant' : 'user',
-                  content: m.content
+                  content: String(m.content ?? '').slice(0, 5000)
               })),
-              { role: "user", content: msg }
+              { role: "user", content: String(msg ?? '').slice(0, 5000) }
           ];
 
           const completion = await this.openai.chat.completions.create({

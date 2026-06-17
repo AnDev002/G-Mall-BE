@@ -295,31 +295,36 @@ export class OrderService {
          // dùng lại 1 voucher vô hạn + vượt tổng usageLimit (lỗ tiền). calculateMultiShopVouchers
          // KHÔNG check ownership/limit nên phải chặn ở đây.
          const perUserLimit = Number((voucher as any).userUsageLimit ?? 1) || 1;
-         const usedByUser = await tx.userVoucher.count({
-            where: { userId, voucherId: voucher.id, isUsed: true },
-         });
-         if (usedByUser >= perUserLimit) {
-            throw new BadRequestException(`Bạn đã dùng hết lượt voucher ${(voucher as any).code || ''}.`);
-         }
          const globalLimit = Number((voucher as any).usageLimit ?? 0);
-         if (globalLimit > 0) {
-            const inc = await tx.voucher.updateMany({
-               where: { id: voucher.id, usageCount: { lt: globalLimit } },
-               data: { usageCount: { increment: 1 } },
-            });
-            if (inc.count === 0) throw new BadRequestException(`Voucher ${(voucher as any).code || ''} đã hết lượt sử dụng.`);
-         } else {
-            await tx.voucher.update({ where: { id: voucher.id }, data: { usageCount: { increment: 1 } } });
-         }
-         const existing = await tx.userVoucher.findUnique({
-             where: { userId_voucherId: { userId, voucherId: voucher.id } },
+         // [FIX round15 #9 - wiki 0088] re-validate isActive + thời hạn ATOMIC lúc redeem (TOCTOU: admin
+         // tắt/hết hạn voucher giữa preview và create) + global usageLimit. where không khớp → count=0 → reject.
+         const _vNow = new Date();
+         const _vWhere: any = { id: voucher.id, isActive: true, startDate: { lte: _vNow }, endDate: { gte: _vNow } };
+         if (globalLimit > 0) _vWhere.usageCount = { lt: globalLimit };
+         const inc = await tx.voucher.updateMany({ where: _vWhere, data: { usageCount: { increment: 1 } } });
+         if (inc.count === 0) throw new BadRequestException(`Voucher ${(voucher as any).code || ''} không còn hiệu lực hoặc đã hết lượt.`);
+         // [FIX round15 #2 - wiki 0088] CLAIM per-user ATOMIC chống race 2 checkout đồng thời cùng user
+         // vượt userUsageLimit. Trước đây count()→update/create KHÔNG atomic (cả 2 đọc count=0 → cùng
+         // dùng). Thử claim 1 userVoucher CHƯA dùng (isUsed false→true atomic). Không có row chưa-dùng →
+         // đếm đã-dùng: nếu < limit thì tạo mới (unique(userId,voucherId) serialize concurrent create,
+         // tx thua sẽ abort); >= limit thì reject.
+         const claimUsed = await tx.userVoucher.updateMany({
+            where: { userId, voucherId: voucher.id, isUsed: false },
+            data: { isUsed: true, usedAt: new Date() },
          });
-         if (existing) {
-             if (!existing.isUsed) {
-                await tx.userVoucher.update({ where: { id: existing.id }, data: { isUsed: true, usedAt: new Date() } });
-             }
-         } else {
-             await tx.userVoucher.create({ data: { userId, voucherId: voucher.id, isUsed: true, usedAt: new Date() } });
+         if (claimUsed.count === 0) {
+            const usedByUser = await tx.userVoucher.count({ where: { userId, voucherId: voucher.id, isUsed: true } });
+            if (usedByUser >= perUserLimit) {
+               throw new BadRequestException(`Bạn đã dùng hết lượt voucher ${(voucher as any).code || ''}.`);
+            }
+            // [round14 review3-FIX MEDIUM] create có thể đụng @@unique(userId,voucherId) khi userUsageLimit>1
+            // (đã có 1 row isUsed) hoặc race → P2002 làm vỡ cả checkout. Bắt P2002 = coi như đã giữ slot
+            // (row tồn tại) → không nhân đôi, không crash. Lỗi khác vẫn ném.
+            try {
+               await tx.userVoucher.create({ data: { userId, voucherId: voucher.id, isUsed: true, usedAt: new Date() } });
+            } catch (e: any) {
+               if (e?.code !== 'P2002') throw e;
+            }
          }
       }
 
@@ -354,7 +359,11 @@ export class OrderService {
 
           const finalAmount = _gross - allocatedSystemDisc - allocatedCoinDisc;
 
-          const shopVoucher = preview.appliedVouchers.find((v: any) => v.shopId === group.shopId);
+          // [FIX round15 #1 - wiki 0088] LOẠI freeship khỏi shopVoucher (per-shop). Voucher SHOP-scope
+          // type=FREESHIP có CẢ shopId LẪN isFreeship → vừa rơi vào order.voucherId vừa vào appliedVoucherIds
+          // → cancel nhả 2 LẦN (per-shop + shared) → usageCount under-count → over-issuance. Freeship luôn
+          // đi nhánh shared (appliedVoucherIds) → nhả 1 lần.
+          const shopVoucher = preview.appliedVouchers.find((v: any) => v.shopId === group.shopId && !v.isFreeship);
           const systemVoucher = preview.appliedVouchers.find((v: any) => v.isSystem === true);
           // [FIX review-round14b - wiki 0088] order.voucherId = CHỈ voucher SHOP của đơn này (per-shop)
           // → nhả NGAY khi đơn này hủy. System/freeship (shared) lưu riêng ở appliedVoucherIds, nhả khi
@@ -611,13 +620,22 @@ export class OrderService {
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
     if (order.status !== 'PENDING') throw new BadRequestException('Không thể hủy đơn hàng này.');
+    // [FIX round15 #4 - wiki 0088] CHẶN tự hủy đơn ĐÃ THANH TOÁN (online PAID nhưng status còn PENDING
+    // do IPN về trước khi giao). cancelOrder hoàn kho/xu/voucher nhưng KHÔNG hoàn tiền cổng → buyer
+    // vừa được hoàn hàng vừa giữ tiền đã trả. Đơn PAID phải đi luồng hoàn tiền/khiếu nại, không tự hủy.
+    if ((order as any).paymentStatus === 'PAID') {
+      throw new BadRequestException('Đơn đã thanh toán, vui lòng liên hệ hỗ trợ để được hoàn tiền thay vì hủy.');
+    }
 
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
       // Wiki 0086: ATOMIC claim PENDING→CANCELLED. Trước đây check status NGOÀI tx rồi update
       // vô điều kiện TRONG tx → 2 request hủy đồng thời cùng pass check, cùng chạy khối hoàn
       // kho/xu/voucher → DOUBLE refund (xu free, kho/voucher sai). Thua race thì bail.
       const claim = await tx.order.updateMany({
-        where: { id: orderId, status: 'PENDING' },
+        // [round14 review3-FIX MEDIUM] thêm paymentStatus != PAID vào claim ATOMIC → đóng cửa sổ TOCTOU
+        // (IPN set PAID giữa lúc đọc order ngoài-tx và claim) → không hủy + hoàn kho/xu/voucher đơn đã
+        // thanh toán mà KHÔNG hoàn tiền cổng. count=0 → bail như đơn đã xử lý.
+        where: { id: orderId, status: 'PENDING', paymentStatus: { not: 'PAID' } },
         data: { status: 'CANCELLED' },
       });
       if (claim.count === 0) throw new BadRequestException('Đơn hàng đã được xử lý.');
@@ -710,6 +728,14 @@ export class OrderService {
       throw new BadRequestException('Trạng thái đơn hàng không hợp lệ để xác nhận.');
     }
 
+    // [round14 review-FIX HIGH] Đơn ONLINE CHƯA thanh toán KHÔNG được confirm-nhận → DELIVERED (terminal),
+    // vì nếu IPN trả tiền về SAU thì creditSellerOnDelivered không chạy lại được (DELIVERED là terminal)
+    // → seller MẤT doanh thu vĩnh viễn. Đối xứng với gate seller-path updateOrderStatus (round15 #3).
+    // COD vẫn cho xác nhận (trả tiền khi nhận hàng).
+    if (order.paymentStatus !== 'PAID' && String(order.paymentMethod).toLowerCase() !== 'cod') {
+      throw new BadRequestException('Đơn thanh toán online chưa được thanh toán, không thể xác nhận đã nhận.');
+    }
+
     // 2. TRANSACTION: Cập nhật trạng thái + Cộng xu + Ghi lịch sử
     return this.prisma.$transaction(async (tx) => {
       // A. Cập nhật trạng thái sang DELIVERED — ATOMIC guard (Wiki 0082): chỉ 1 request thắng
@@ -722,11 +748,18 @@ export class OrderService {
       const updatedOrder = await tx.order.findUnique({ where: { id: orderId } });
       if (!updatedOrder) throw new NotFoundException('Đơn hàng không tồn tại');
 
+      // [round14 FIX H1] Payment-gate phần thưởng trên LUỒNG BUYER confirm nhận hàng — trước đây
+      // confirmOrderReceived mint xu + charity + referral VÔ ĐIỀU KIỆN cho đơn ONLINE chưa PAID
+      // (seller có thể set SHIPPING cho đơn online chưa trả → buyer confirm → đúc xu free). Gate
+      // giống seller-path updateOrderStatus (line ~960): chỉ thưởng khi PAID hoặc COD.
+      // creditSellerOnDelivered tự gate (line ~879) nên để nguyên.
+      const isPaidForReward = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+
       // B. Tính toán xu thưởng (Ví dụ: 1% giá trị đơn hàng, làm tròn xuống)
       // Logic: 100.000đ = 10 xu (Tùy logic dự án của bạn)
-      const conversionRate = await this.pointService.getConversionRate(); 
+      const conversionRate = await this.pointService.getConversionRate();
       const rawPoints = Number(order.totalAmount) / conversionRate;
-      const pointsToEarn = Math.floor(rawPoints);
+      const pointsToEarn = isPaidForReward ? Math.floor(rawPoints) : 0;
 
       let newBalance = 0;
 
@@ -748,25 +781,29 @@ export class OrderService {
          newBalance = wallet?.balance || 0;
       }
 
-      // D. Spec [0018]: trích 1% phí hoa hồng vào quỹ từ thiện. Idempotent qua
-      // Donation.orderId @unique, an toàn nếu user spam confirm.
-      try {
-        await this.charityService.processOrderDelivered(tx, {
-          orderId: updatedOrder.id,
-          orderTotal: Number(order.totalAmount),
-        });
-      } catch (e: any) {
-        // Không fail order vì lỗi charity — log và tiếp tục
-        this.logger.warn(`[Charity hook fail] order=${updatedOrder.id} err=${e?.message}`);
-      }
+      // [round14 FIX H1] charity + referral CHỈ chạy cho đơn đã thanh toán (PAID/COD) — không trích
+      // hoa hồng từ thiện / không trả thưởng giới thiệu cho đơn online chưa trả tiền.
+      if (isPaidForReward) {
+        // D. Spec [0018]: trích 1% phí hoa hồng vào quỹ từ thiện. Idempotent qua
+        // Donation.orderId @unique, an toàn nếu user spam confirm.
+        try {
+          await this.charityService.processOrderDelivered(tx, {
+            orderId: updatedOrder.id,
+            orderTotal: Number(order.totalAmount),
+          });
+        } catch (e: any) {
+          // Không fail order vì lỗi charity — log và tiếp tục
+          this.logger.warn(`[Charity hook fail] order=${updatedOrder.id} err=${e?.message}`);
+        }
 
-      // E. Spec [0018]: thưởng người giới thiệu nếu đơn này là đơn ĐẦU của
-      // người được giới thiệu, giá trị ≥ REFERRAL_MIN_ORDER, và chưa từng được
-      // tính (referralRewardPaid=false).
-      try {
-        await this.processReferralReward(tx, userId, Number(order.totalAmount));
-      } catch (e: any) {
-        this.logger.warn(`[Referral hook fail] order=${updatedOrder.id} err=${e?.message}`);
+        // E. Spec [0018]: thưởng người giới thiệu nếu đơn này là đơn ĐẦU của
+        // người được giới thiệu, giá trị ≥ REFERRAL_MIN_ORDER, và chưa từng được
+        // tính (referralRewardPaid=false).
+        try {
+          await this.processReferralReward(tx, userId, Number(order.totalAmount));
+        } catch (e: any) {
+          this.logger.warn(`[Referral hook fail] order=${updatedOrder.id} err=${e?.message}`);
+        }
       }
 
       // Wiki 0084: cộng doanh thu vào ví seller (mảnh ghép để payout chạy E2E).
@@ -903,6 +940,11 @@ export class OrderService {
 
     if (!order) throw new NotFoundException('Đơn hàng không tồn tại hoặc không thuộc quyền quản lý');
 
+    // [round14 review-FIX MEDIUM] Chuẩn hoá status về UPPERCASE NGAY đầu vào. Trước đây check dùng
+    // String(status).toUpperCase() nhưng nhánh write KHÔNG-DELIVERED ghi status THÔ → client gửi
+    // 'confirmed' (thường) lọt guard rồi ghi enum sai → Prisma 500. Gán lại 1 lần, dùng xuyên suốt.
+    status = String(status).toUpperCase() as OrderStatus;
+
     // [DEBUG] Log trạng thái ban đầu và input
     this.logger.log(`[OrderUpdate] Start update Order #${orderId}. Input Status: "${status}". Order Total: ${order.totalAmount}`);
 
@@ -913,10 +955,90 @@ export class OrderService {
       throw new BadRequestException('Đơn đã ở trạng thái cuối, không thể đổi trạng thái.');
     }
 
+    // [round14 FIX H3] Chặn status rác (không thuộc enum) → tránh tx.order.update ném Prisma 500.
+    const _validStatuses = ['PENDING', 'CONFIRMED', 'SHIPPING', 'DELIVERED', 'CANCELLED'];
+    if (!_validStatuses.includes(String(status).toUpperCase())) {
+      throw new BadRequestException('Trạng thái đơn hàng không hợp lệ.');
+    }
+
+    // [round14 review-FIX HIGH] Seller KHÔNG được hủy đơn ĐÃ THANH TOÁN online (paymentStatus=PAID):
+    // hoàn kho/xu/voucher mà KHÔNG hoàn tiền cổng = buyer mất tiền. Đối xứng buyer cancelOrder (round15 #4)
+    // — đơn PAID phải đi luồng hoàn tiền/khiếu nại.
+    if (status === 'CANCELLED' && (order as any).paymentStatus === 'PAID') {
+      throw new BadRequestException('Đơn đã thanh toán, không thể hủy trực tiếp — cần luồng hoàn tiền/khiếu nại.');
+    }
+
+    // [round14 FIX H3] Seller chuyển đơn sang CANCELLED qua /status: TRƯỚC ĐÂY ghi status trống
+    // (tx.order.update) → KHÔNG hoàn kho/variant/flash-sold/xu/voucher → leak tồn kho + buyer mất
+    // xu/voucher. Nay bồi hoàn đầy đủ giống buyer-cancel, ATOMIC claim chống double-restore.
+    if (status === 'CANCELLED') {
+      return this.prisma.$transaction(async (tx) => {
+        const claim = await tx.order.updateMany({
+          // [round14 review3-FIX MEDIUM] +paymentStatus != PAID → đóng TOCTOU (IPN set PAID xen giữa
+          // gate ngoài-tx và claim) để không hủy đơn đã thanh toán mà thiếu hoàn tiền cổng.
+          where: { id: orderId, status: { notIn: ['DELIVERED', 'CANCELLED'] }, paymentStatus: { not: 'PAID' } },
+          data: { status: 'CANCELLED' },
+        });
+        if (claim.count === 0) throw new BadRequestException('Đơn đã được xử lý, không thể hủy.');
+        const full = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+        if (full) {
+          for (const item of (full as any).items) {
+            if (item.productId) {
+              await tx.product.update({ where: { id: item.productId }, data: { stock: { increment: item.quantity } } });
+            }
+            if (item.variantId) {
+              await tx.productVariant.updateMany({ where: { id: item.variantId }, data: { stock: { increment: item.quantity } } });
+            }
+            if (item.flashSaleProductId) {
+              await tx.flashSaleProduct.updateMany({ where: { id: item.flashSaleProductId, sold: { gte: item.quantity } }, data: { sold: { decrement: item.quantity } } });
+            }
+          }
+          if ((full as any).coinUsed && (full as any).coinUsed > 0) {
+            await tx.pointWallet.update({ where: { userId: full.userId }, data: { balance: { increment: (full as any).coinUsed } } });
+            await tx.pointHistory.create({ data: { userId: full.userId, amount: (full as any).coinUsed, type: PointType.REFUND, source: 'ORDER', description: `Hoàn xu shop hủy đơn #${orderId.slice(0, 8)}` } });
+          }
+          if (full.voucherId) {
+            const siblingUsing = (full as any).paymentGroupId
+              ? await tx.order.count({ where: { paymentGroupId: (full as any).paymentGroupId, voucherId: full.voucherId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
+              : 0;
+            if (siblingUsing === 0) {
+              await tx.voucher.updateMany({ where: { id: full.voucherId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
+              await tx.userVoucher.updateMany({ where: { userId: full.userId, voucherId: full.voucherId }, data: { isUsed: false, usedAt: null } });
+            }
+          }
+          const _shared: string[] = Array.isArray((full as any).appliedVoucherIds) ? (full as any).appliedVoucherIds : [];
+          if (_shared.length) {
+            const otherActive = (full as any).paymentGroupId
+              ? await tx.order.count({ where: { paymentGroupId: (full as any).paymentGroupId, id: { not: orderId }, status: { not: 'CANCELLED' } } })
+              : 0;
+            if (otherActive === 0) {
+              for (const vId of _shared) {
+                await tx.voucher.updateMany({ where: { id: vId, usageCount: { gt: 0 } }, data: { usageCount: { decrement: 1 } } });
+                await tx.userVoucher.updateMany({ where: { userId: full.userId, voucherId: vId }, data: { isUsed: false, usedAt: null } });
+              }
+            }
+          }
+        }
+        await this.notificationService.create({ userId: order.userId, type: 'ORDER', title: 'Đơn hàng đã hủy', content: `Đơn hàng #${orderId.slice(0, 8)} đã bị shop hủy. Tồn kho/xu/voucher đã được hoàn lại.`, link: `/user/purchase` }, tx).catch(() => {/* best-effort */});
+        return await tx.order.findUnique({ where: { id: orderId } });
+      });
+    }
+
     // [M1 - wiki 0088] CÂN NHẮC & KHÔNG enforce FSM cứng (PENDING→DELIVERED): mô hình COD cho phép
     // seller chuyển nhanh; abuse "credit hàng chưa giao" đã được giảm thiểu bằng idempotent
     // creditSellerOnDelivered (round11) + terminal-guard + luồng khiếu nại. Ép FSM một chiều sẽ phá
     // luồng FE và bộ test hiện hữu (round7/9/11 cố ý set thẳng DELIVERED). Để mở, ghi nhận accepted-risk.
+
+    // [FIX round15 #3 - wiki 0088] CHẶN DELIVERED cho đơn ONLINE CHƯA THANH TOÁN. Trước đây cho phép
+    // (chỉ skip reward) → nếu IPN về SAU khi đã DELIVERED thì set PAID nhưng creditSeller KHÔNG chạy
+    // lại (DELIVERED là terminal) → seller MẤT doanh thu đơn đó vĩnh viễn. Bắt buộc đơn online phải
+    // PAID trước khi giao; IPN set PAID xong, seller giao → creditSeller chạy đúng.
+    if (String(status).toUpperCase() === 'DELIVERED') {
+      const isPaidOrCod = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+      if (!isPaidOrCod) {
+        throw new BadRequestException('Đơn thanh toán online chưa được thanh toán, không thể đánh dấu đã giao.');
+      }
+    }
 
     return this.prisma.$transaction(async (tx) => {
       // 1. Cập nhật trạng thái — chuyển sang DELIVERED phải ATOMIC: claim where status != DELIVERED.

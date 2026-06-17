@@ -59,8 +59,26 @@ export class RateLimitGuard implements CanActivate {
     );
     if (!options) return true; // Route không đánh @RateLimit → skip
 
+    // [round14 FIX] Throttle theo IP (ip / ip+path) BẤT KHẢ THI với test/CI suite: mọi request đến từ
+    // CÙNG localhost → 1 bucket cạn ngay (hàng nghìn register/login cùng IP → 429 → vỡ suite, và chặn
+    // oan user thật sau NAT/proxy chung). Chỉ bật IP-throttle ở PRODUCTION. Limit theo EMAIL
+    // (body.email+path) vẫn bật mọi môi trường → test được + per-account brute-force vẫn được chặn.
+    // FAIL-CLOSED: chỉ skip ở môi trường test/dev đã BIẾT. NODE_ENV unset/khác → VẪN throttle
+    // (tránh lỗ hổng: prod cấu hình thiếu NODE_ENV=production sẽ tắt mất chống-flood register/chat).
+    const _strat = options.keyBy ?? 'ip+path';
+    const _env = process.env.NODE_ENV || '';
+    if ((_strat === 'ip' || _strat === 'ip+path') && (_env === 'test' || _env === 'development')) {
+      return true;
+    }
+
     const req = ctx.switchToHttp().getRequest<Request>();
     const key = this.buildKey(req, options);
+
+    // [round14 FIX BUG-1] key===null nghĩa là request không có email dùng được
+    // (keyBy='body.email+path' nhưng body thiếu email) → SKIP rate limit để
+    // ValidationPipe trả 400 thật, không gộp mọi request malformed vào 1 bucket
+    // 'anon' rồi trả 429 che lỗi 400.
+    if (key === null) return true;
 
     // INCR atomic; TTL chỉ set lần đầu (khi count == 1) để window trôi đúng
     // từ lần request đầu tiên chứ không reset mỗi lần hit.
@@ -84,7 +102,7 @@ export class RateLimitGuard implements CanActivate {
     return true;
   }
 
-  private buildKey(req: Request, options: RateLimitOptions): string {
+  private buildKey(req: Request, options: RateLimitOptions): string | null {
     const strategy = options.keyBy ?? 'ip+path';
     const ip = this.getIp(req);
     const path = `${req.method}:${req.route?.path ?? req.path}`;
@@ -93,7 +111,14 @@ export class RateLimitGuard implements CanActivate {
       case 'ip':
         return `rl:ip:${ip}`;
       case 'body.email+path': {
-        const email = String((req.body as any)?.email ?? 'anon').toLowerCase();
+        // [round14 FIX BUG-1] Thiếu email (rỗng/không phải string) → trả null để
+        // canActivate skip rate limit, tránh dồn mọi request malformed vào bucket
+        // 'anon'. Brute-force per-email thật vẫn được bảo vệ (request thật có email).
+        const rawEmail = (req.body as any)?.email;
+        if (typeof rawEmail !== 'string' || rawEmail.trim() === '') {
+          return null;
+        }
+        const email = rawEmail.toLowerCase();
         return `rl:email:${email}:${path}`;
       }
       case 'ip+path':

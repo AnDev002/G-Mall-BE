@@ -2,8 +2,9 @@ import { Controller, Get, Patch, Param, Query, UseGuards, Request, Post, Body, R
 import { ChatService } from '../chat.service';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { OpenChatDto } from '../dto/chat.dto';
-import { CreateMessageDto } from '../dto/create-message.dto'; 
+import { CreateMessageDto } from '../dto/create-message.dto';
 import { Public } from 'src/common/decorators/public.decorator';
+import { RateLimitGuard, RateLimit } from '../../../common/guards/rate-limit.guard';
 
 @Controller('chat')
 // @UseGuards(JwtAuthGuard) // Bạn đang comment global guard, nên phải gắn lẻ từng cái
@@ -12,6 +13,10 @@ export class ChatController {
 
   @Post('send')
   @Public()
+  // [round14 FIX H2] endpoint public không giới hạn → spam OpenAI/bộ nhớ. Rate
+  // limit theo IP+path (20 req/60s) để chống lạm dụng chi phí AI.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 20, windowSeconds: 60, keyBy: 'ip+path' })
   async sendMessage(@Request() req, @Body() dto: CreateMessageDto) {
     const userId = req.user?.userId || null;
     return this.chatService.processUserMessage(userId, dto);

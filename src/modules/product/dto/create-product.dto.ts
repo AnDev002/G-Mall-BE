@@ -96,6 +96,11 @@ export class CreateProductDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  // [round14 review-FIX] BỎ @IsUrl ở DTO (review MEDIUM): R2_PUBLIC_DOMAIN có thể cấu hình KHÔNG kèm
+  // scheme → fileUrl schemeless → @IsUrl 400 chặn oan tạo/sửa sản phẩm. Hơn nữa @IsUrl KHÔNG thật sự
+  // chặn SSRF (IP literal vẫn pass). Phòng SSRF THẬT nằm ở indexer.processor isAllowedImageUrl (validate
+  // scheme http/https + chặn private/loopback/link-local IP + hostname đơn-nhãn nội bộ) — giữ ở đó,
+  // DTO chỉ cần @IsString. (Lưu ý: chưa resolve DNS → DNS-rebinding là hardening tách riêng.)
   images?: string[];
 
   @IsOptional()

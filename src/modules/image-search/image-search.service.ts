@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import axios from 'axios';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { ClipClientService } from './clip-client.service';
 import { QdrantClientService } from './qdrant-client.service';
@@ -53,13 +54,15 @@ export class ImageSearchService {
 
   /** Main query path: ảnh bytes → vector → Qdrant kNN → hydrate from DB. */
   async searchByImageBuffer(buffer: Buffer, limit = 20, minSimilarity = 0): Promise<ImageSearchHit[]> {
-    const vector = await this.clip.embedImageBuffer(buffer);
+    // [round14 FIX M4] CLIP/Qdrant không deploy → map lỗi network thành 503 thay vì 500.
+    const vector = await this.callDependency(() => this.clip.embedImageBuffer(buffer));
     return this.runVectorSearch(vector, limit, minSimilarity);
   }
 
   /** Text-to-image search: caption -> CLIP text encoder -> same vector space. */
   async searchByText(text: string, limit = 20, minSimilarity = 0): Promise<ImageSearchHit[]> {
-    const vector = await this.clip.embedText(text);
+    // [round14 FIX M4]
+    const vector = await this.callDependency(() => this.clip.embedText(text));
     return this.runVectorSearch(vector, limit, minSimilarity);
   }
 
@@ -69,9 +72,12 @@ export class ImageSearchService {
     minSimilarity: number,
   ): Promise<ImageSearchHit[]> {
     // Only return public products. Qdrant filter avoids a second DB pass.
-    const hits = await this.qdrant.search(vector, limit, {
-      must: [{ key: 'status', match: { value: 'ACTIVE' } }],
-    });
+    // [round14 FIX M4] bọc call Qdrant để lỗi network → 503.
+    const hits = await this.callDependency(() =>
+      this.qdrant.search(vector, limit, {
+        must: [{ key: 'status', match: { value: 'ACTIVE' } }],
+      }),
+    );
     if (!hits.length) return [];
 
     const ids = hits.map((h) => String(h.id));
@@ -107,10 +113,39 @@ export class ImageSearchService {
       this.prisma.productEmbedding.count({ where: { status: 'INDEXED' } }),
       this.prisma.productEmbedding.count({ where: { status: 'FAILED' } }),
       this.prisma.productEmbedding.count({ where: { status: 'SKIPPED' } }),
-      this.qdrant.count(),
+      // [round14 FIX M4] qdrant.count() đã tự nuốt lỗi → 0; bọc thêm phòng khi đổi behavior.
+      this.callDependency(() => this.qdrant.count()),
     ]);
     return { pending, indexed, failed, skipped, qdrantCount };
   }
+
+  /**
+   * [round14 FIX M4] Chạy 1 call tới CLIP/Qdrant; nếu lỗi là network/unreachable
+   * (axios ECONNREFUSED/ETIMEDOUT/ENOTFOUND hoặc không có response) thì rethrow
+   * ServiceUnavailableException (HTTP 503) theo contract. Lỗi lập trình thật vẫn nổi lên.
+   */
+  private async callDependency<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (isUpstreamUnavailable(err)) {
+        this.logger.warn(
+          `image-search dependency unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException('Image search temporarily unavailable');
+      }
+      throw err;
+    }
+  }
+}
+
+/** True khi lỗi đến từ việc CLIP/Qdrant không reachable (network), không phải bug logic. */
+function isUpstreamUnavailable(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false;
+  // Không có response = không kết nối được tới upstream (DNS/refused/timeout/abort).
+  if (!err.response) return true;
+  const code = err.code;
+  return code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND';
 }
 
 function pickFirstImageUrl(images: unknown): string | null {

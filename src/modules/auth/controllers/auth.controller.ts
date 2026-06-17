@@ -45,12 +45,20 @@ export class AuthController {
   }
 
   @Public()
+  // [round14 FIX M10] Chống spam đăng ký / flood mail; keyBy='ip+path' vì attacker
+  // random hoá email nên không limit theo email; +path để /register và /register/seller
+  // có bucket RIÊNG (không dùng chung budget 5/60s).
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 5, windowSeconds: 60, keyBy: 'ip+path' })
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
   @Public()
+  // [round14 FIX M10] Chống spam đăng ký seller / flood mail; keyBy='ip+path' (bucket riêng).
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 5, windowSeconds: 60, keyBy: 'ip+path' })
   @Post('register/seller')
   async registerSeller(
     @Body() body: RegisterSellerDto // Lúc này RegisterSellerDto đã có đủ field
@@ -78,6 +86,9 @@ export class AuthController {
 
   // 2. Đăng nhập dành riêng cho Seller Dashboard
   @Public()
+  // [round14 FIX H5] Trang login/seller cũng cần chống brute-force như /auth/login.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('login/seller')
   async loginSeller(
     @Body() dto: LoginDto, 
@@ -100,6 +111,9 @@ export class AuthController {
 
   // 3. Đăng nhập dành riêng cho Admin Portal
   @Public()
+  // [round14 FIX H5] Trang login/admin cũng cần chống brute-force như /auth/login.
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ points: 10, windowSeconds: 60, keyBy: 'body.email+path' })
   @Post('login/admin')
   async loginAdmin(
     @Body() dto: LoginDto,

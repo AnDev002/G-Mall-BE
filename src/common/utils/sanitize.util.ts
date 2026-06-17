@@ -18,7 +18,10 @@ const DANGEROUS_TAGS = ['script', 'iframe', 'object', 'embed', 'noscript'];
 export function sanitizeHtml(input?: string | null): string {
   if (!input || typeof input !== 'string') return input ?? '';
 
-  let html = input;
+  // [round14 review3-FIX LOW] Loại bỏ NUL (\x00) NGAY đầu vào: NUL không hợp lệ trong HTML/text nhưng
+  // browser BỎ QUA khi parse → `href="\x00javascript:"` lọt vì regex \s* không khớp \x00. Strip trước
+  // mọi bước (giữ \t\n\r vì chúng hợp lệ trong nội dung) → đóng mọi bypass scheme bằng NUL.
+  let html = input.replace(/\x00/g, '');
 
   // 1. Xóa các thẻ nguy hiểm kèm nội dung: <script>...</script>, <iframe ...>...</iframe>
   for (const tag of DANGEROUS_TAGS) {
@@ -59,7 +62,12 @@ export function sanitizeHtml(input?: string | null): string {
   const URL_ATTRS = '(?:href|src|formaction|action|xlink:href|background|poster)';
   // [FIX M6 - wiki 0088] `data:image/...` (ảnh base64 dán từ TipTap) là HỢP LỆ — trước đây bị thay
   // thành '#' làm vỡ ảnh blog. Giờ chỉ chặn data: KHÔNG phải image/* (data:text/html là XSS).
-  const DANGER_SCHEME = '(?:javascript\\s*:|vbscript\\s*:|data\\s*:(?!\\s*image\\/))';
+  // [FIX round15 #8 - wiki 0088] CHÈN dung sai ký tự điều khiển GIỮA các chữ của scheme. Browser BỎ
+  // QUA tab/newline/CR/NUL khi parse scheme → `java\tscript:` vẫn chạy như javascript:. Trước đây
+  // regex khớp literal "javascript" nên bị bypass. `_w()` chèn `[\t\n\r\0]*` giữa mỗi chữ.
+  const _ctrl = '[\\t\\n\\r\\x00]*';
+  const _w = (s: string) => s.split('').join(_ctrl);
+  const DANGER_SCHEME = `(?:${_w('javascript')}${_ctrl}:|${_w('vbscript')}${_ctrl}:|${_w('data')}${_ctrl}:(?!${_ctrl}\\s*image\\/))`;
   //    Chỉ áp dụng cho giá trị nằm trong dấu nháy của thuộc tính.
   html = html.replace(
     new RegExp(
@@ -100,7 +108,9 @@ export function sanitizeHtml(input?: string | null): string {
  */
 export function sanitizeUrl(input?: string | null): string {
   if (!input || typeof input !== 'string') return input ?? '';
-  const trimmed = input.trim();
-  if (/^(?:javascript|vbscript|data)\s*:/i.test(trimmed)) return '';
+  // [FIX round15 #8 - wiki 0088] bỏ ký tự điều khiển browser strip (tab/newline/CR/NUL) trước khi
+  // check scheme → chặn bypass `java\tscript:` / `\nvbscript:`.
+  const norm = input.replace(/[\t\n\r\x00]/g, '').trim();
+  if (/^(?:javascript|vbscript|data)\s*:/i.test(norm)) return '';
   return input;
 }
