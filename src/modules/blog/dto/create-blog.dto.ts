@@ -8,8 +8,12 @@ export class CreateBlogDto {
   @IsString()
   content: string;
 
+  // [FIX wiki 0092] thumbnail OPTIONAL — schema là `thumbnail String?` (nullable) và FE/UI xử lý thiếu
+  // ảnh (BlogCard có nhánh no-thumbnail). Trước đây @IsString() bắt buộc → đăng bài không có ảnh bị 400
+  // → "đăng bài không hiện". Khớp lại contract với schema.
+  @IsOptional()
   @IsString()
-  thumbnail: string;
+  thumbnail?: string;
 
   @IsOptional() @IsString()
   slug?: string; // Nếu không gửi, BE tự generate từ title
