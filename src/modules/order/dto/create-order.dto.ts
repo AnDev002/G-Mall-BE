@@ -1,6 +1,6 @@
 // BE-110/modules/order/dto/create-order.dto.ts
 
-import { IsBoolean, IsOptional, IsString, IsArray, ValidateNested, IsNumber, IsInt, Min, IsObject, IsNotEmpty } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, IsArray, ValidateNested, IsNumber, IsInt, Min, IsObject, IsNotEmpty, IsIn } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export class CartItemDto {
@@ -55,9 +55,13 @@ export class CreateOrderDto {
   @IsBoolean()
   isGift?: boolean;
 
+  // [FIX P-KEY - wiki 0091] Trước đây chỉ @IsString → nhận mọi chuỗi; createOrder so sánh case-sensitive
+  // ('cod'/'momo'/'pay2s') → method HOA/lạ ('MOMO','banking'...) lọt validation nhưng không khớp nhánh nào
+  // → đơn PENDING không paymentUrl, không vận đơn, treated online-unpaid vĩnh viễn (đơn kẹt). Nay chuẩn hoá
+  // chữ thường + whitelist: method hợp lệ bất kể HOA/thường, method lạ → 400 ngay (fail loud, không kẹt đơn).
   @IsOptional()
-  @IsString()
-  @IsNotEmpty()
+  @Transform(({ value }) => (typeof value === 'string' ? value.toLowerCase() : value))
+  @IsIn(['cod', 'momo', 'pay2s'], { message: 'Phương thức thanh toán không hợp lệ' })
   paymentMethod: string;
 
   @IsOptional()

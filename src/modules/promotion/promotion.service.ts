@@ -348,6 +348,18 @@ export class PromotionService {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new BadRequestException('Bạn chưa có shop nên không thể tạo voucher.');
 
+    // [FIX V1 - wiki 0091] IDOR: trước đây connect dto.productIds mà KHÔNG kiểm sản phẩm thuộc shop của
+    // seller → seller A gắn voucher vào sản phẩm shop B (ô nhiễm _ProductToVoucher + griefing trang SP shop B).
+    // Bắt buộc mọi productId thuộc shop.id. (categoryIds là taxonomy toàn sàn nên KHÔNG cần check.)
+    if (dto.scope === VoucherScope.PRODUCT && dto.productIds?.length) {
+      const ownedCount = await this.prisma.product.count({
+        where: { id: { in: dto.productIds }, shopId: shop.id },
+      });
+      if (ownedCount !== new Set(dto.productIds).size) {
+        throw new BadRequestException('Voucher chỉ được áp cho sản phẩm thuộc shop của bạn.');
+      }
+    }
+
     return await this.prisma.$transaction(async (tx) => {
       const voucher = await tx.voucher.create({
         data: {

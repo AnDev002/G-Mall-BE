@@ -519,7 +519,9 @@ export class OrderService {
 
     // --- PAY2S Logic (Giữ nguyên) ---
     let paymentUrl: string | null = null;
-    if (dto.paymentMethod === 'pay2s') {
+    // [FIX P-KEY - wiki 0091] so sánh chữ thường (DTO đã chuẩn hoá; lớp này phòng caller nội bộ gọi service trực tiếp).
+    const _pm = String(dto.paymentMethod || '').toLowerCase();
+    if (_pm === 'pay2s') {
         try {
             const masterOrderId = result[0].id;
             const totalPay = preview.summary.total;
@@ -541,7 +543,7 @@ export class OrderService {
         }
     }
 
-    if (dto.paymentMethod === 'momo') {
+    if (_pm === 'momo') {
         const masterOrderId = result[0].id;
         const totalPay = preview.summary.total;
         const desc = `Thanh toan ${result.length} don hang Gmall`;
@@ -554,7 +556,7 @@ export class OrderService {
     }
 
     // --- GHN Logic (Giữ nguyên) ---
-    if (dto.paymentMethod === 'cod') {
+    if (_pm === 'cod') {
          // ... (Logic GHN cũ giữ nguyên)
          for (const order of result) {
             const groupInfo = preview.breakdown.find((g: any) => g.shopId === order.shopId);
@@ -1021,6 +1023,15 @@ export class OrderService {
     const _validStatuses = ['PENDING', 'CONFIRMED', 'SHIPPING', 'DELIVERED', 'CANCELLED'];
     if (!_validStatuses.includes(String(status).toUpperCase())) {
       throw new BadRequestException('Trạng thái đơn hàng không hợp lệ.');
+    }
+
+    // [FIX S2 - wiki 0091] Chặn LÙI trạng thái (CONFIRMED→PENDING, SHIPPING→CONFIRMED...). Trước đây nhánh
+    // chuyển sang PENDING/CONFIRMED/SHIPPING không check thứ tự → seller kéo lùi đơn (sai logic, có thể
+    // desync vận đơn GHN của đơn đã SHIPPING). VẪN giữ nhảy-TIẾN (M1 wiki 0088: COD cho PENDING→DELIVERED).
+    // CANCELLED là nhánh riêng (bồi hoàn) nên loại khỏi check rank.
+    const _rank: Record<string, number> = { PENDING: 0, CONFIRMED: 1, SHIPPING: 2, DELIVERED: 3 };
+    if (status !== 'CANCELLED' && _rank[status] < _rank[order.status]) {
+      throw new BadRequestException('Không thể lùi trạng thái đơn hàng.');
     }
 
     // [round14 review-FIX HIGH] Seller KHÔNG được hủy đơn ĐÃ THANH TOÁN online (paymentStatus=PAID):
