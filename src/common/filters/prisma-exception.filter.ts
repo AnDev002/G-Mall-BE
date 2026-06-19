@@ -59,6 +59,24 @@ export class PrismaExceptionFilter implements ExceptionFilter {
           status = HttpStatus.BAD_REQUEST;
           message = 'Vi phạm quan hệ bắt buộc';
           break;
+        case 'P2021': // Table does not exist
+        case 'P2022': {
+          // [FIX wiki 0092] SCHEMA DRIFT — prod DB thiếu cột/bảng so với Prisma schema (do ALTER thủ công
+          // bỏ sót, vd BlogCategory.sortOrder → /blog-categories 500). GIỮ 500 (đây là lỗi cấu hình SERVER,
+          // KHÔNG phải lỗi client) nhưng LOG thật to + đúng tên cột/bảng để chẩn đoán tức thì. Trước đây rơi
+          // default → log chỉ dòng đầu "Invalid prisma.X.findMany() invocation" (mất tên cột).
+          status = HttpStatus.INTERNAL_SERVER_ERROR;
+          message = 'Lỗi cấu hình dữ liệu máy chủ';
+          const meta = (exception.meta ?? {}) as any;
+          const missing = meta.column ?? meta.table ?? meta.modelName ?? '?';
+          const kind = exception.code === 'P2022' ? 'CỘT' : 'BẢNG';
+          this.logger.error(
+            `🔴 SCHEMA DRIFT (${exception.code}): ${kind} "${missing}" không tồn tại trong DB prod. ` +
+              `Fix: chạy trên VPS \`npx prisma migrate diff --from-schema-datasource prisma/schema.prisma ` +
+              `--to-schema-datamodel prisma/schema.prisma --script\` rồi apply phần ADD COLUMN/CREATE.`,
+          );
+          break;
+        }
         default:
           // Code khác — log warn để có dữ liệu cải thiện filter, vẫn trả 500 default
           this.logger.warn(
