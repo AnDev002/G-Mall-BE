@@ -518,6 +518,9 @@ export class OrderService {
     }
 
     // --- PAY2S Logic (Giữ nguyên) ---
+    // [wiki 0093] CHÚ Ý: momo + pay2s ĐÃ TẮT tại DTO (@IsIn(['cod'])) → 2 nhánh dưới hiện
+    // KHÔNG bao giờ chạy qua HTTP (DTO chặn 400 trước). Giữ nguyên làm dormant; bật lại = mở
+    // whitelist trong create-order.dto.ts. (Để đây cho caller nội bộ + để dễ re-enable.)
     let paymentUrl: string | null = null;
     // [FIX P-KEY - wiki 0091] so sánh chữ thường (DTO đã chuẩn hoá; lớp này phòng caller nội bộ gọi service trực tiếp).
     const _pm = String(dto.paymentMethod || '').toLowerCase();

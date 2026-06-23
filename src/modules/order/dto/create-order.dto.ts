@@ -59,9 +59,12 @@ export class CreateOrderDto {
   // ('cod'/'momo'/'pay2s') → method HOA/lạ ('MOMO','banking'...) lọt validation nhưng không khớp nhánh nào
   // → đơn PENDING không paymentUrl, không vận đơn, treated online-unpaid vĩnh viễn (đơn kẹt). Nay chuẩn hoá
   // chữ thường + whitelist: method hợp lệ bất kể HOA/thường, method lạ → 400 ngay (fail loud, không kẹt đơn).
+  // [wiki 0093] TẮT momo + pay2s: whitelist còn ['cod'] → đây là CỔNG CHÍNH (single source of truth).
+  // momo/pay2s gửi lên → 400 ngay tại DTO, không chạm nhánh thanh toán online. Code service/IPN giữ
+  // nguyên (dormant, bật lại = thêm 'momo'/'pay2s' vào đây). FE cũng ẩn 2 option (defense-in-depth).
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.toLowerCase() : value))
-  @IsIn(['cod', 'momo', 'pay2s'], { message: 'Phương thức thanh toán không hợp lệ' })
+  @IsIn(['cod'], { message: 'Phương thức thanh toán không hợp lệ' })
   paymentMethod: string;
 
   @IsOptional()
