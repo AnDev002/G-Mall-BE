@@ -21,21 +21,21 @@ export class RedisIoAdapter extends IoAdapter {
   async connectToRedis(): Promise<void> {
     const isLocal = process.env.REDIS_HOST === 'localhost' || process.env.REDIS_HOST === '127.0.0.1';
     const socketOptions = isLocal
-      ? { 
-          tls: false, 
-          connectTimeout: 10000 
-        }
-      : { 
-          tls: true, 
-          rejectUnauthorized: false, 
-          connectTimeout: 10000 
-        };
+      ? {
+        tls: false,
+        connectTimeout: 10000
+      }
+      : {
+        tls: true,
+        rejectUnauthorized: false,
+        connectTimeout: 10000
+      };
     const pubClient = createClient({
       // URL kết nối cơ bản
       url: `redis://${process.env.REDIS_PASSWORD ? ':' + process.env.REDIS_PASSWORD + '@' : ''}${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
       socket: socketOptions as any,
     });
-    
+
     const subClient = pubClient.duplicate();
 
     // Thêm log lỗi để dễ debug nếu kết nối thất bại
@@ -69,9 +69,18 @@ async function bootstrap() {
   // thì origin:true (reflect) là lỗ hổng CSRF — BẮT BUỘC chỉ định danh sách cụ thể.
   // Format env: CORS_ORIGINS=http://localhost:3000,https://gmall.onrender.com
   const corsOriginsEnv = process.env.CORS_ORIGINS?.trim();
-  const corsOrigins = corsOriginsEnv
+  const envOrigins = corsOriginsEnv
     ? corsOriginsEnv.split(',').map((s) => s.trim()).filter(Boolean)
-    : ['http://localhost:3000'];
+    : [];
+
+  // [FIX] Gộp domain lấy từ .env và các domain cố định của dự án
+  const corsOrigins = [
+    ...envOrigins,
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://gmall.vn',
+    'https://www.gmall.vn'
+  ];
 
   app.enableCors({
     origin: (origin, callback) => {
