@@ -46,7 +46,7 @@ export class AuthService {
     private redisService: RedisService,
     private jwtService: JwtService,
     private mailerService: MailerService,
-  ) {}
+  ) { }
 
   private otpKey(email: string) {
     return `${AuthService.OTP_KEY_PREFIX}${email.toLowerCase()}`;
@@ -77,21 +77,21 @@ export class AuthService {
         password: hashedPassword,
         name: dto.name,
         role: 'BUYER',
-        isVerified: false, 
+        isVerified: false,
       },
     });
-    
+
     await this.prisma.cart.create({ data: { userId: user.id } });
 
-    if(user.email) {
+    if (user.email) {
       await this.sendOtp(user.email);
     }
- 
+
     return { message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.' };
   }
 
   async registerSeller(dto: RegisterSellerDto) {
-    const { 
+    const {
       email, password, name, shopName, pickupAddress, phoneNumber,
       provinceId, districtId, wardCode, lat, lng,
       businessType, taxCode, businessLicenseFront, businessLicenseBack, categoryId // Lấy theo DTO mới
@@ -99,7 +99,7 @@ export class AuthService {
 
     const existingPhone = await this.prisma.user.findFirst({ where: { phone: phoneNumber } });
     if (existingPhone) {
-        throw new BadRequestException('Số điện thoại đã được sử dụng');
+      throw new BadRequestException('Số điện thoại đã được sử dụng');
     }
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
@@ -120,33 +120,33 @@ export class AuthService {
     if (existingSlug) throw new BadRequestException('Tên Shop đã tồn tại, vui lòng chọn tên khác');
 
     await this.prisma.$transaction(async (tx) => {
-        const user = await tx.user.create({
-            data: { email, password: hashedPassword, name, role: Role.BUYER, isVerified: false, phone: phoneNumber },
-        });
+      const user = await tx.user.create({
+        data: { email, password: hashedPassword, name, role: Role.BUYER, isVerified: false, phone: phoneNumber },
+      });
 
-        await tx.shop.create({
-            data: {
-                ownerId: user.id, name: shopName, categoryId, slug, address: pickupAddress, pickupAddress,
-                provinceId: Number(provinceId) || 201, districtId: Number(districtId) || 1484,
-                wardCode: wardCode || "1A0104", lat: lat ? Number(lat) : undefined, lng: lng ? Number(lng) : undefined,
-                businessLicenseFront, businessLicenseBack, status: 'PENDING',
-                taxCode // Thêm taxCode nếu cần
-            }
-        });
+      await tx.shop.create({
+        data: {
+          ownerId: user.id, name: shopName, categoryId, slug, address: pickupAddress, pickupAddress,
+          provinceId: Number(provinceId) || 201, districtId: Number(districtId) || 1484,
+          wardCode: wardCode || "1A0104", lat: lat ? Number(lat) : undefined, lng: lng ? Number(lng) : undefined,
+          businessLicenseFront, businessLicenseBack, status: 'PENDING',
+          taxCode // Thêm taxCode nếu cần
+        }
+      });
     });
 
-    if(email) {
-        await this.sendOtp(email); 
+    if (email) {
+      await this.sendOtp(email);
     }
 
     return { message: 'Đăng ký người bán thành công. Vui lòng xác thực OTP.' };
   }
 
-  
+
 
   // --- 2. ĐĂNG NHẬP (Check Password + Check Verified) ---
   async login(dto: LoginDto, allowedRoles?: string[]) {
-    const user = await this.prisma.user.findFirst({ where: {OR: [{ email: dto.email }, { username: dto.email }]} });
+    const user = await this.prisma.user.findFirst({ where: { OR: [{ email: dto.email }, { username: dto.email }] } });
     if (!user) throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
     if (user.isBanned) {
       // [round15 FIX ban-reason] Không nội suy banReason raw (null → 'Lý do: null'; rò note nội bộ).
@@ -155,7 +155,7 @@ export class AuthService {
     }
     // 1. Check Password
     if (!user.password) {
-        throw new UnauthorizedException('Tài khoản chưa thiết lập mật khẩu.');
+      throw new UnauthorizedException('Tài khoản chưa thiết lập mật khẩu.');
     }
     const isMatch = await bcrypt.compare(dto.password, user.password);
     if (!isMatch) throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
@@ -169,7 +169,7 @@ export class AuthService {
     // 3. CRITICAL: Check Role Permission
     // Hệ thống lớn cần check ngay lúc login để chặn Token được tạo ra cho sai portal
     if (allowedRoles && !allowedRoles.includes(user.role)) {
-        throw new UnauthorizedException('Bạn không có quyền truy cập vào khu vực này.');
+      throw new UnauthorizedException('Bạn không có quyền truy cập vào khu vực này.');
     }
 
     // 4. Tạo Token
@@ -222,29 +222,41 @@ export class AuthService {
   // --- HELPER: Gửi OTP (Dùng chung cho Register & Forgot Password) ---
   // Trả { otp, mailConfigured } để caller quyết định có lộ devOtp (non-prod) không.
   async sendOtp(email?: string) {
-    if(email != "" && email != null && email != undefined) {
+    if (email != "" && email != null && email != undefined) {
       const normalizedEmail = email.toLowerCase();
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      
-      this.otpStore.set(normalizedEmail, { 
-        otp, 
-        expires: Date.now() + 5 * 60 * 1000 
-      });
-  
+
+      // [FIX 1] Lưu OTP vào Redis thay vì Map RAM cục bộ
+      await this.redisService.set(
+        this.otpKey(normalizedEmail),
+        otp,
+        AuthService.OTP_TTL_SECONDS
+      );
+
       console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
-  
-      try {
-        await this.mailerService.sendMail({
-          to: normalizedEmail,
-          subject: 'Xác thực tài khoản LoveGifts',
-          html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
-        });
-      } catch (error) {
-        console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
-        // [FIX] Bắt buộc ném lỗi để block tiến trình nếu cấu hình SMTP bị sai
-        throw new BadRequestException('Hệ thống không thể gửi email OTP lúc này. Vui lòng thử lại sau.');
+
+      // Kiểm tra xem đã config Mail trong .env chưa
+      const mailConfigured = this.isMailConfigured();
+
+      if (mailConfigured) {
+        try {
+          await this.mailerService.sendMail({
+            to: normalizedEmail,
+            subject: 'Xác thực tài khoản GMall',
+            html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
+          });
+        } catch (error) {
+          console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
+          throw new BadRequestException('Hệ thống không thể gửi email OTP lúc này. Vui lòng thử lại sau.');
+        }
       }
+
+      // [FIX 2] Trả về đúng format để AuthController có thể đọc r.mailConfigured và r.otp
+      return { otp, mailConfigured };
     }
+
+    // Fallback nếu không có email
+    return { otp: '', mailConfigured: false };
   }
 
   // --- HELPER: Tạo Token ---
@@ -253,10 +265,10 @@ export class AuthService {
   // đổi password, BE bump tokenVersion -> mọi token cũ invalid.
   private generateTokens(user: any) {
     const payload = {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-        tokenVersion: user.tokenVersion ?? 0,
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      tokenVersion: user.tokenVersion ?? 0,
     };
 
     const { password, ...userInfo } = user;
@@ -283,9 +295,9 @@ export class AuthService {
     if (data.shopName && data.shopName !== shop.name) {
       // Logic generate slug mới nếu đổi tên (Optional)
       const existingSlug = await this.prisma.shop.findFirst({
-        where: { 
-            name: data.shopName,
-            id: { not: shop.id } // Loại trừ chính nó
+        where: {
+          name: data.shopName,
+          id: { not: shop.id } // Loại trừ chính nó
         }
       });
       if (existingSlug) {
@@ -301,9 +313,9 @@ export class AuthService {
         name: data.shopName, // Map shopName -> name
         pickupAddress: data.pickupAddress,
         description: data.description,
-        
+
         // Cập nhật URL ảnh
-        avatar: data.avatar,         
+        avatar: data.avatar,
         coverImage: data.cover, // Map cover -> coverImage (theo schema Prisma của bạn)
 
         // Cập nhật Giấy tờ pháp lý
@@ -355,15 +367,15 @@ export class AuthService {
 
   async getUserProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        include: {
-            shop: true // Lấy kèm thông tin Shop (chứa giấy tờ, avatar shop...)
-        }
+      where: { id: userId },
+      include: {
+        shop: true // Lấy kèm thông tin Shop (chứa giấy tờ, avatar shop...)
+      }
     });
 
     // [FIX] Kiểm tra null trước khi dùng
     if (!user) {
-        throw new NotFoundException('Không tìm thấy người dùng'); 
+      throw new NotFoundException('Không tìm thấy người dùng');
     }
 
     // Sau khi check null, TypeScript sẽ hiểu user là object hợp lệ
