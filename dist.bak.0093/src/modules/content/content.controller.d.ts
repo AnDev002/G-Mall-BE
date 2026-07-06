@@ -1,0 +1,103 @@
+import { ContentService } from './content.service';
+import { CreateBannerDto, UpdateBannerDto, ReorderBannersDto, SaveConfigDto } from './dto/content.dto';
+export declare class ContentController {
+    private readonly contentService;
+    constructor(contentService: ContentService);
+    getBanners(location: string): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }[]>;
+    getConfig(key: string): Promise<any>;
+    getAllBannersAdmin(): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }[]>;
+    createBanner(dto: CreateBannerDto): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    reorderBanners(body: ReorderBannersDto): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }[]>;
+    updateBanner(id: string, dto: UpdateBannerDto): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    deleteBanner(id: string): Promise<{
+        id: string;
+        location: string;
+        src: string;
+        alt: string | null;
+        title: string | null;
+        description: string | null;
+        ctaLabel: string | null;
+        ctaLink: string | null;
+        theme: string | null;
+        order: number;
+        isActive: boolean;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    saveConfig(dto: SaveConfigDto): Promise<{
+        key: string;
+        value: import(".prisma/client").Prisma.JsonValue;
+        description: string | null;
+        updatedAt: Date;
+    }>;
+}

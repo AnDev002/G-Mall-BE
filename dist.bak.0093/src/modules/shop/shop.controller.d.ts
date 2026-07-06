@@ -1,0 +1,318 @@
+import { ShopService } from './shop.service';
+import { UpdateShopProfileDto } from '../auth/dto/update-shop.dto';
+import { PrismaService } from 'src/database/prisma/prisma.service';
+import { CreateShopDto } from './dto/create-shop.dto';
+export declare class ShopController {
+    private shopService;
+    private prisma;
+    constructor(shopService: ShopService, prisma: PrismaService);
+    registerShop(req: any, body: CreateShopDto): Promise<{
+        id: string;
+        name: string;
+        slug: string;
+        description: string | null;
+        avatar: string | null;
+        coverImage: string | null;
+        pickupAddress: string | null;
+        provinceId: number | null;
+        districtId: number | null;
+        wardCode: string | null;
+        lat: number | null;
+        lng: number | null;
+        categoryId: string | null;
+        status: import(".prisma/client").$Enums.ShopStatus;
+        banReason: string | null;
+        reviewCount: number;
+        decoration: import(".prisma/client").Prisma.JsonValue | null;
+        pendingDetails: import(".prisma/client").Prisma.JsonValue | null;
+        rating: number;
+        totalSales: number;
+        ownerId: string;
+        address: string | null;
+        licenseImage: string | null;
+        taxCode: string | null;
+        businessLicenseFront: string | null;
+        businessLicenseBack: string | null;
+        salesLicense: string | null;
+        trademarkCert: string | null;
+        distributorCert: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    getShopProfile(id: string): Promise<{
+        totalProducts: number;
+        id: string;
+        name: string;
+        avatar: string | null;
+        createdAt: Date;
+        description: string | null;
+        coverImage: string | null;
+        _count: {
+            products: number;
+        };
+        status: import(".prisma/client").$Enums.ShopStatus;
+        decoration: import(".prisma/client").Prisma.JsonValue;
+        rating: number;
+        totalSales: number;
+    }>;
+    getShops(query: any): Promise<{
+        data: {
+            id: string;
+            name: string;
+            avatar: string | null;
+            slug: string;
+        }[];
+        meta: {
+            total: number;
+            page: number;
+            limit: number;
+            totalPages: number;
+        };
+    }>;
+    getShopCategories(id: string): Promise<{
+        id: string;
+        name: string;
+        slug: string;
+        image: string | null;
+    }[]>;
+    getShopProducts(id: string, query: any): Promise<{
+        data: {
+            id: string;
+            name: string;
+            createdAt: Date;
+            slug: string;
+            rating: number;
+            price: import("@prisma/client/runtime/library").Decimal;
+            originalPrice: import("@prisma/client/runtime/library").Decimal | null;
+            stock: number;
+            images: import(".prisma/client").Prisma.JsonValue;
+            salesCount: number;
+        }[];
+        meta: {
+            total: number;
+            page: number;
+            limit: number;
+            last_page: number;
+        };
+    }>;
+    getShopVouchers(id: string): Promise<{
+        id: string;
+        description: string | null;
+        type: import(".prisma/client").$Enums.VoucherType;
+        code: string;
+        amount: import("@prisma/client/runtime/library").Decimal;
+        endDate: Date;
+        minOrderValue: import("@prisma/client/runtime/library").Decimal;
+    }[]>;
+    getMyShop(req: any): Promise<{
+        id: string;
+        name: string;
+        slug: string;
+        description: string | null;
+        avatar: string | null;
+        coverImage: string | null;
+        pickupAddress: string | null;
+        provinceId: number | null;
+        districtId: number | null;
+        wardCode: string | null;
+        lat: number | null;
+        lng: number | null;
+        categoryId: string | null;
+        status: import(".prisma/client").$Enums.ShopStatus;
+        banReason: string | null;
+        reviewCount: number;
+        decoration: import(".prisma/client").Prisma.JsonValue | null;
+        pendingDetails: import(".prisma/client").Prisma.JsonValue | null;
+        rating: number;
+        totalSales: number;
+        ownerId: string;
+        address: string | null;
+        licenseImage: string | null;
+        taxCode: string | null;
+        businessLicenseFront: string | null;
+        businessLicenseBack: string | null;
+        salesLicense: string | null;
+        trademarkCert: string | null;
+        distributorCert: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    getShopPublic(slug: string): Promise<{
+        products: {
+            id: string;
+            name: string;
+            slug: string;
+            description: string | null;
+            shortDesc: import(".prisma/client").Prisma.JsonValue | null;
+            price: import("@prisma/client/runtime/library").Decimal;
+            originalPrice: import("@prisma/client/runtime/library").Decimal | null;
+            stock: number;
+            reviewCount: number;
+            systemTags: import(".prisma/client").Prisma.JsonValue;
+            images: import(".prisma/client").Prisma.JsonValue;
+            status: import(".prisma/client").$Enums.ProductStatus;
+            rejectReason: string | null;
+            attributes: import(".prisma/client").Prisma.JsonValue | null;
+            tags: string | null;
+            brandId: number | null;
+            shopCategoryId: string | null;
+            salesCount: number;
+            rating: number;
+            shopId: string | null;
+            weight: number;
+            sellerId: string | null;
+            categoryId: string | null;
+            discountType: import(".prisma/client").$Enums.DiscountType | null;
+            discountValue: import("@prisma/client/runtime/library").Decimal | null;
+            discountStartDate: Date | null;
+            discountEndDate: Date | null;
+            isDiscountActive: boolean;
+            createdAt: Date;
+            updatedAt: Date;
+        }[];
+    } & {
+        id: string;
+        name: string;
+        slug: string;
+        description: string | null;
+        avatar: string | null;
+        coverImage: string | null;
+        pickupAddress: string | null;
+        provinceId: number | null;
+        districtId: number | null;
+        wardCode: string | null;
+        lat: number | null;
+        lng: number | null;
+        categoryId: string | null;
+        status: import(".prisma/client").$Enums.ShopStatus;
+        banReason: string | null;
+        reviewCount: number;
+        decoration: import(".prisma/client").Prisma.JsonValue | null;
+        pendingDetails: import(".prisma/client").Prisma.JsonValue | null;
+        rating: number;
+        totalSales: number;
+        ownerId: string;
+        address: string | null;
+        licenseImage: string | null;
+        taxCode: string | null;
+        businessLicenseFront: string | null;
+        businessLicenseBack: string | null;
+        salesLicense: string | null;
+        trademarkCert: string | null;
+        distributorCert: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    getMyDecoration(req: any): Promise<{
+        decoration: string | number | true | import(".prisma/client").Prisma.JsonObject | import(".prisma/client").Prisma.JsonArray;
+    }>;
+    updateDecoration(req: any, body: {
+        decoration: any;
+    }): Promise<{
+        id: string;
+        name: string;
+        slug: string;
+        description: string | null;
+        avatar: string | null;
+        coverImage: string | null;
+        pickupAddress: string | null;
+        provinceId: number | null;
+        districtId: number | null;
+        wardCode: string | null;
+        lat: number | null;
+        lng: number | null;
+        categoryId: string | null;
+        status: import(".prisma/client").$Enums.ShopStatus;
+        banReason: string | null;
+        reviewCount: number;
+        decoration: import(".prisma/client").Prisma.JsonValue | null;
+        pendingDetails: import(".prisma/client").Prisma.JsonValue | null;
+        rating: number;
+        totalSales: number;
+        ownerId: string;
+        address: string | null;
+        licenseImage: string | null;
+        taxCode: string | null;
+        businessLicenseFront: string | null;
+        businessLicenseBack: string | null;
+        salesLicense: string | null;
+        trademarkCert: string | null;
+        distributorCert: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    getShopCustomCategories(id: string): Promise<({
+        _count: {
+            products: number;
+        };
+    } & {
+        id: string;
+        name: string;
+        isActive: boolean;
+        shopId: string;
+        createdAt: Date;
+        updatedAt: Date;
+    })[]>;
+    updateMyShopProfile(req: any, body: UpdateShopProfileDto): Promise<{
+        id: string;
+        name: string;
+        slug: string;
+        description: string | null;
+        avatar: string | null;
+        coverImage: string | null;
+        pickupAddress: string | null;
+        provinceId: number | null;
+        districtId: number | null;
+        wardCode: string | null;
+        lat: number | null;
+        lng: number | null;
+        categoryId: string | null;
+        status: import(".prisma/client").$Enums.ShopStatus;
+        banReason: string | null;
+        reviewCount: number;
+        decoration: import(".prisma/client").Prisma.JsonValue | null;
+        pendingDetails: import(".prisma/client").Prisma.JsonValue | null;
+        rating: number;
+        totalSales: number;
+        ownerId: string;
+        address: string | null;
+        licenseImage: string | null;
+        taxCode: string | null;
+        businessLicenseFront: string | null;
+        businessLicenseBack: string | null;
+        salesLicense: string | null;
+        trademarkCert: string | null;
+        distributorCert: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+    }>;
+    getShopReviews(shopId: string, page: number, limit: number): Promise<{
+        data: ({
+            user: {
+                name: string | null;
+                avatar: string | null;
+            };
+        } & {
+            id: string;
+            content: string | null;
+            rating: number;
+            userId: string;
+            shopId: string;
+            orderId: string;
+            createdAt: Date;
+            updatedAt: Date;
+        })[];
+        meta: {
+            total: number;
+            page: number;
+            limit: number;
+            totalPages: number;
+        };
+        stats: {
+            avgRating: number;
+            totalReviews: number;
+            responseRate: number;
+            joinDate: Date | undefined;
+        };
+    }>;
+}
