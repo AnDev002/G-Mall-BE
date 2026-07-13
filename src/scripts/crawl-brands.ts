@@ -17,12 +17,10 @@ function generateSlug(name: string) {
 }
 
 /**
- * CRAWL TIKI
- * Cập nhật: Lấy thương hiệu trực tiếp từ thông tin của từng sản phẩm thay vì bộ lọc
+ * CRAWL TIKI + LOGO
  */
 async function crawlTikiBrands() {
-  logger.info('[Tiki] Bắt đầu crawl thương hiệu...');
-  // Các Category ID lớn trên Tiki
+  logger.info('[Tiki] Bắt đầu crawl thương hiệu và logo...');
   const targetCategories = ['1815', '8322', '1520', '4384']; 
   
   for (const catId of targetCategories) {
@@ -33,18 +31,20 @@ async function crawlTikiBrands() {
         timeout: 10000,
       });
 
-      // Lấy mảng sản phẩm từ response
       const products = res.data?.data || [];
       const uniqueBrands = new Map();
 
-      // Bóc tách brand từ từng sản phẩm
       for (const product of products) {
-        // Tiki có thể lưu tên brand ở product.brand_name hoặc product.brand.name
         const brandName = product?.brand_name || product?.brand?.name;
-        const logoUrl = product?.brand?.logo_url || '';
+        
+        // Logic lấy logo: Ưu tiên logo của hãng -> Nếu không có thì lấy ảnh thumbnail của sản phẩm
+        const logoUrl = product?.brand?.logo_url || product?.brand?.logo || product?.thumbnail_url || '';
 
         if (brandName && brandName.toLowerCase() !== 'no brand' && brandName.toLowerCase() !== 'oem') {
-          uniqueBrands.set(brandName, { name: brandName, logoUrl });
+          // Lưu vào Map để lọc trùng lặp (lấy logo của sản phẩm đầu tiên tìm thấy)
+          if (!uniqueBrands.has(brandName)) {
+            uniqueBrands.set(brandName, { name: brandName, logoUrl });
+          }
         }
       }
 
@@ -53,14 +53,17 @@ async function crawlTikiBrands() {
       for (const [brandName, brandInfo] of uniqueBrands.entries()) {
         const slug = generateSlug(brandName);
 
-        // Upsert vào Database
+        // Upsert vào Database (Cập nhật logo nếu thương hiệu đã tồn tại)
         await prisma.brand.upsert({
           where: { slug: slug },
-          update: {}, 
+          update: {
+            // Chỉ update logoUrl nếu brandInfo có logo và khác rỗng
+            ...(brandInfo.logoUrl ? { logoUrl: brandInfo.logoUrl } : {})
+          }, 
           create: {
             name: brandName,
             slug: slug,
-            logoUrl: brandInfo.logoUrl, // Lấy luôn được logo xịn từ Tiki
+            logoUrl: brandInfo.logoUrl,
             status: 'active',
             description: 'Crawled from Tiki',
           },
@@ -69,16 +72,15 @@ async function crawlTikiBrands() {
     } catch (error: any) {
       logger.error(`[Tiki Error] Lỗi crawl category ${catId}:`, error.message);
     }
-    // Nghỉ 2s giữa các request
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
 
 /**
- * CRAWL SHOPEE
+ * CRAWL SHOPEE + LOGO (Dùng ảnh sản phẩm làm đại diện)
  */
 async function crawlShopeeBrands() {
-  logger.info('[Shopee] Bắt đầu crawl thương hiệu...');
+  logger.info('[Shopee] Bắt đầu crawl thương hiệu và logo...');
   const keywords = ['điện thoại', 'mỹ phẩm', 'thời trang'];
 
   for (const kw of keywords) {
@@ -95,20 +97,27 @@ async function crawlShopeeBrands() {
       items.forEach((itemWrapper: any) => {
         const item = itemWrapper.item_basic;
         if (item?.brand && item.brand !== 'No Brand' && item.brand !== 'OEM') {
-          uniqueBrands.set(item.brand, item);
+          if (!uniqueBrands.has(item.brand)) {
+            // Shopee list không trả về brand logo, ta lấy ảnh sản phẩm map với CDN Shopee làm đại diện
+            const logoUrl = item.image ? `https://cf.shopee.vn/file/${item.image}` : '';
+            uniqueBrands.set(item.brand, { name: item.brand, logoUrl });
+          }
         }
       });
 
       logger.info(`[Shopee] Tìm thấy ${uniqueBrands.size} brands cho từ khóa "${kw}"`);
 
-      for (const [brandName, item] of uniqueBrands.entries()) {
+      for (const [brandName, brandInfo] of uniqueBrands.entries()) {
         const slug = generateSlug(brandName);
         await prisma.brand.upsert({
           where: { slug: slug },
-          update: {},
+          update: {
+            ...(brandInfo.logoUrl ? { logoUrl: brandInfo.logoUrl } : {})
+          },
           create: {
             name: brandName,
             slug: slug,
+            logoUrl: brandInfo.logoUrl,
             status: 'active',
             description: 'Crawled from Shopee',
           },
@@ -124,10 +133,10 @@ async function crawlShopeeBrands() {
 async function main() {
   logger.info('=== START BULK CRAWL BRANDS ===');
   
-  // Chạy Tiki (sẽ thành công và có data)
   await crawlTikiBrands();
   
-  // TẠM ẨN SHOPEE để tránh lỗi 403 do bị chặn IP VPS
+  // Lưu ý: Đã bỏ comment Shopee. Nhưng nếu chạy trên VPS bị lỗi 403 Forbidden 
+  // thì bạn lại thêm // vào trước dòng dưới đây nhé!
   // await crawlShopeeBrands();
   
   logger.info('=== CRAWL COMPLETE ===');
