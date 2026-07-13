@@ -19,7 +19,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "image-search:reindex": "ts-node -r tsconfig-paths/register scripts/reindex-all-products.ts",
-    "crawl:brands": "ts-node -r tsconfig-paths/register scripts/crawl-brands.ts",
+    "crawl:brands": "ts-node -r tsconfig-paths/register src/scripts/crawl-brands.ts",
     "image-search:reindex:all": "ts-node -r tsconfig-paths/register scripts/reindex-all-products.ts --status ALL"
   },
   "dependencies": {
