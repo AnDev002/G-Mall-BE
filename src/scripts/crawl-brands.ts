@@ -18,41 +18,49 @@ function generateSlug(name: string) {
 
 /**
  * CRAWL TIKI
- * Chiến thuật: Quét qua API danh sách sản phẩm theo Category phổ biến để bóc tách Brand
+ * Cập nhật: Lấy thương hiệu trực tiếp từ thông tin của từng sản phẩm thay vì bộ lọc
  */
 async function crawlTikiBrands() {
   logger.info('[Tiki] Bắt đầu crawl thương hiệu...');
-  // Các Category ID lớn trên Tiki (VD: 1815 là Thiết bị số, 8322 là Nhà cửa, 1520 là Làm đẹp...)
+  // Các Category ID lớn trên Tiki
   const targetCategories = ['1815', '8322', '1520', '4384']; 
   
   for (const catId of targetCategories) {
     try {
-      // Gọi API danh sách sản phẩm của Tiki để lấy bộ lọc Brands
       const res = await axios.get(`https://tiki.vn/api/v2/products`, {
         params: { limit: 50, category: catId },
         headers: { 'User-Agent': UA, 'Accept': 'application/json' },
         timeout: 10000,
       });
 
-      // Tiki thường trả về danh sách brands trong filters
-      const brandFilter = res.data?.filters?.find((f: any) => f.query_name === 'brand');
-      if (!brandFilter || !brandFilter.values) continue;
+      // Lấy mảng sản phẩm từ response
+      const products = res.data?.data || [];
+      const uniqueBrands = new Map();
 
-      logger.info(`[Tiki] Tìm thấy ${brandFilter.values.length} brands trong category ${catId}`);
+      // Bóc tách brand từ từng sản phẩm
+      for (const product of products) {
+        // Tiki có thể lưu tên brand ở product.brand_name hoặc product.brand.name
+        const brandName = product?.brand_name || product?.brand?.name;
+        const logoUrl = product?.brand?.logo_url || '';
 
-      for (const b of brandFilter.values) {
-        if (!b.display_value) continue;
-        const brandName = b.display_value;
+        if (brandName && brandName.toLowerCase() !== 'no brand' && brandName.toLowerCase() !== 'oem') {
+          uniqueBrands.set(brandName, { name: brandName, logoUrl });
+        }
+      }
+
+      logger.info(`[Tiki] Tìm thấy ${uniqueBrands.size} brands trong category ${catId}`);
+
+      for (const [brandName, brandInfo] of uniqueBrands.entries()) {
         const slug = generateSlug(brandName);
 
         // Upsert vào Database
         await prisma.brand.upsert({
           where: { slug: slug },
-          update: {}, // Nếu có rồi thì bỏ qua (hoặc cập nhật productCount nếu muốn)
+          update: {}, 
           create: {
             name: brandName,
             slug: slug,
-            logoUrl: '', // Tiki list api thường không kèm logo, có thể crawl chi tiết sau
+            logoUrl: brandInfo.logoUrl, // Lấy luôn được logo xịn từ Tiki
             status: 'active',
             description: 'Crawled from Tiki',
           },
@@ -61,15 +69,13 @@ async function crawlTikiBrands() {
     } catch (error: any) {
       logger.error(`[Tiki Error] Lỗi crawl category ${catId}:`, error.message);
     }
-    // Nghỉ 2s giữa các request để tránh rate limit
+    // Nghỉ 2s giữa các request
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }
 
 /**
  * CRAWL SHOPEE
- * Lưu ý: Như bạn đã ghi chú trong code, Shopee chặn rất rát (af-ac-enc-dat header).
- * Ở quy mô script, ta dùng Search API nhưng set rate limit thật chậm.
  */
 async function crawlShopeeBrands() {
   logger.info('[Shopee] Bắt đầu crawl thương hiệu...');
@@ -111,15 +117,19 @@ async function crawlShopeeBrands() {
     } catch (error: any) {
       logger.error(`[Shopee Error] Lỗi crawl từ khóa ${kw}:`, error.message);
     }
-    // Nghỉ 5s để tránh Shopee ban IP Datacenter
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
 
 async function main() {
   logger.info('=== START BULK CRAWL BRANDS ===');
+  
+  // Chạy Tiki (sẽ thành công và có data)
   await crawlTikiBrands();
-  await crawlShopeeBrands();
+  
+  // TẠM ẨN SHOPEE để tránh lỗi 403 do bị chặn IP VPS
+  // await crawlShopeeBrands();
+  
   logger.info('=== CRAWL COMPLETE ===');
 }
 
