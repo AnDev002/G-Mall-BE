@@ -17,7 +17,7 @@ import { UpdateCategoryBatchItemDto } from '../dto/update-category-batch.dto';
 @Controller('categories')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class CategoryController {
-  constructor(private readonly categoryService: CategoryService) {}
+  constructor(private readonly categoryService: CategoryService) { }
 
   @Public()
   @Get()
@@ -32,7 +32,11 @@ export class CategoryController {
   async search(@Query('q') q: string) {
     return this.categoryService.searchCategories(q);
   }
-
+  @Public()
+  @Get('slug/:slug')
+  async getCategoryBySlug(@Param('slug') slug: string) {
+    return this.categoryService.getCategoryBySlugWithChildren(slug);
+  }
   @Public()
   @Get('tree')
   async getCategoryTree() {
@@ -75,7 +79,7 @@ export class CategoryController {
     @Body(new ParseArrayPipe({ items: UpdateCategoryBatchItemDto }))
     items: UpdateCategoryBatchItemDto[],
   ) {
-      return this.categoryService.updateBatch(items);
+    return this.categoryService.updateBatch(items);
   }
 
   @Public()
