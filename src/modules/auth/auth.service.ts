@@ -62,11 +62,21 @@ export class AuthService {
     if (existing) {
       if (existing.isVerified) {
         throw new BadRequestException('Email đã tồn tại');
-      } else {
-        // [FIX] Xóa tài khoản chưa verify và giỏ hàng để đăng ký lại từ đầu
-        await this.prisma.cart.deleteMany({ where: { userId: existing.id } });
-        await this.prisma.user.delete({ where: { id: existing.id } });
       }
+      // Wiki 0094: KHÔNG xoá / KHÔNG ghi đè tài khoản chưa verify.
+      // Bản 07/07 xoá user cũ rồi tạo lại bằng password của người GỬI REQUEST → người lạ
+      // ghi đè được tài khoản đang chờ OTP: nạn nhân bấm "gửi lại mã", verify xong thì
+      // password lại là của attacker (chiếm tài khoản). Ngoài ra `user.delete()` còn có thể
+      // vỡ FK (PointWallet/PointHistory/Address/Order... không khai onDelete: Cascade) → 500.
+      // Hành vi đúng: GIỮ NGUYÊN 400 như contract gốc (FE + 4250 test dựa vào), nhưng
+      // gửi lại OTP để user thật không bị kẹt — thứ mà bản 07/07 cố giải quyết bằng cách xoá.
+      // Quên mật khẩu đã nhập lúc đăng ký → dùng /auth/forgot-password (flow này KHÔNG
+      // yêu cầu isVerified nên tài khoản pending vẫn đặt lại mật khẩu được).
+      await this.sendOtp(existing.email ?? dto.email);
+      throw new BadRequestException(
+        'Email này đã đăng ký nhưng chưa xác thực. Mã OTP mới đã được gửi lại, vui lòng kiểm tra email. ' +
+        'Nếu bạn quên mật khẩu đã đặt, hãy dùng chức năng "Quên mật khẩu".',
+      );
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
@@ -83,11 +93,18 @@ export class AuthService {
 
     await this.prisma.cart.create({ data: { userId: user.id } });
 
-    if (user.email) {
-      await this.sendOtp(user.email);
-    }
+    // Wiki 0068 B2: await để LẤY otp + biết mail có cấu hình hay không (việc gửi mail vẫn
+    // fire-and-forget BÊN TRONG sendOtp nên không block response — xem wiki 0021/0094).
+    const otpResult = await this.sendOtp(user.email ?? undefined);
 
-    return { message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.' };
+    // Wiki 0068 B2 (khôi phục ở 0094): MAIL_USER/PASS trống → mail fail im lặng → user kẹt
+    // không verify được. Non-production + chưa cấu hình mail → trả devOtp để hoàn tất đăng ký.
+    // Production có mail → KHÔNG trả (bảo mật).
+    const includeDevOtp = !otpResult.mailConfigured && process.env.NODE_ENV !== 'production';
+    return {
+      message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.',
+      ...(includeDevOtp ? { devOtp: otpResult.otp } : {}),
+    };
   }
 
   async registerSeller(dto: RegisterSellerDto) {
@@ -97,21 +114,27 @@ export class AuthService {
       businessType, taxCode, businessLicenseFront, businessLicenseBack, categoryId // Lấy theo DTO mới
     } = dto;
 
-    const existingPhone = await this.prisma.user.findFirst({ where: { phone: phoneNumber } });
-    if (existingPhone) {
-      throw new BadRequestException('Số điện thoại đã được sử dụng');
-    }
-
+    // Wiki 0094: check EMAIL trước PHONE. Trước đây phone check chạy trước nên seller
+    // pending đăng ký lại luôn đụng "Số điện thoại đã được sử dụng" (chính SĐT của mình)
+    // và không bao giờ tới được nhánh xử lý email → kẹt hoàn toàn.
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
       if (existing.isVerified) {
         throw new BadRequestException('Email đã tồn tại');
-      } else {
-        // [FIX] Dọn dẹp tài khoản Seller chưa verify (bao gồm Shop, Cart và User)
-        await this.prisma.shop.deleteMany({ where: { ownerId: existing.id } });
-        await this.prisma.cart.deleteMany({ where: { userId: existing.id } });
-        await this.prisma.user.delete({ where: { id: existing.id } });
       }
+      // Wiki 0094: KHÔNG xoá tài khoản + shop chưa verify (xem giải thích ở register()).
+      // Ở nhánh seller còn nguy hiểm hơn: shop.deleteMany + user.delete xoá luôn hồ sơ
+      // pháp lý (giấy phép KD) đã upload.
+      await this.sendOtp(existing.email ?? email);
+      throw new BadRequestException(
+        'Email này đã đăng ký người bán nhưng chưa xác thực. Mã OTP mới đã được gửi lại, vui lòng kiểm tra email. ' +
+        'Nếu bạn quên mật khẩu đã đặt, hãy dùng chức năng "Quên mật khẩu".',
+      );
+    }
+
+    const existingPhone = await this.prisma.user.findFirst({ where: { phone: phoneNumber } });
+    if (existingPhone) {
+      throw new BadRequestException('Số điện thoại đã được sử dụng');
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -129,17 +152,23 @@ export class AuthService {
           ownerId: user.id, name: shopName, categoryId, slug, address: pickupAddress, pickupAddress,
           provinceId: Number(provinceId) || 201, districtId: Number(districtId) || 1484,
           wardCode: wardCode || "1A0104", lat: lat ? Number(lat) : undefined, lng: lng ? Number(lng) : undefined,
-          businessLicenseFront, businessLicenseBack, status: 'PENDING',
-          taxCode // Thêm taxCode nếu cần
+          businessLicenseFront, businessLicenseBack, status: ShopStatus.PENDING,
+          taxCode,
+          // Wiki 0094: businessType ('personal' | 'company') được lấy ra từ DTO nhưng KHÔNG
+          // được lưu → admin duyệt hồ sơ không thấy loại hình KD. Cột mới thêm ở migration
+          // 20260808_add_shop_business_type.
+          businessType,
         }
       });
     });
 
-    if (email) {
-      await this.sendOtp(email);
-    }
-
-    return { message: 'Đăng ký người bán thành công. Vui lòng xác thực OTP.' };
+    // Wiki 0068 B2 / 0094: xem giải thích ở register().
+    const otpResult = await this.sendOtp(email);
+    const includeDevOtp = !otpResult.mailConfigured && process.env.NODE_ENV !== 'production';
+    return {
+      message: 'Đăng ký người bán thành công. Vui lòng xác thực OTP.',
+      ...(includeDevOtp ? { devOtp: otpResult.otp } : {}),
+    };
   }
 
 
@@ -221,42 +250,50 @@ export class AuthService {
 
   // --- HELPER: Gửi OTP (Dùng chung cho Register & Forgot Password) ---
   // Trả { otp, mailConfigured } để caller quyết định có lộ devOtp (non-prod) không.
-  async sendOtp(email?: string) {
-    if (email != "" && email != null && email != undefined) {
-      const normalizedEmail = email.toLowerCase();
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  async sendOtp(email?: string): Promise<{ otp: string | null; mailConfigured: boolean }> {
+    const mailConfigured = this.isMailConfigured();
+    // Trả mailConfigured THẬT kể cả khi thiếu email — caller (resend-otp) dựa vào cờ này
+    // để quyết định có lộ devOtp hay không.
+    if (!email) return { otp: null, mailConfigured };
 
-      // [FIX 1] Lưu OTP vào Redis thay vì Map RAM cục bộ
-      await this.redisService.set(
-        this.otpKey(normalizedEmail),
-        otp,
-        AuthService.OTP_TTL_SECONDS
-      );
+    const normalizedEmail = email.toLowerCase();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
+    await this.redisService.set(
+      this.otpKey(normalizedEmail),
+      otp,
+      AuthService.OTP_TTL_SECONDS,
+    );
+
+    // Wiki 0094: CHỈ log OTP ở non-production. Trước đây log thẳng ra PM2 log prod →
+    // ai đọc được log server là đọc được OTP của mọi user.
+    if (process.env.NODE_ENV !== 'production') {
       console.log(`>>> [DEBUG] OTP cho ${normalizedEmail}: ${otp}`);
-
-      // Kiểm tra xem đã config Mail trong .env chưa
-      const mailConfigured = this.isMailConfigured();
-
-      if (mailConfigured) {
-        try {
-          await this.mailerService.sendMail({
-            to: normalizedEmail,
-            subject: 'Xác thực tài khoản GMall',
-            html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
-          });
-        } catch (error) {
-          console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
-          throw new BadRequestException('Hệ thống không thể gửi email OTP lúc này. Vui lòng thử lại sau.');
-        }
-      }
-
-      // [FIX 2] Trả về đúng format để AuthController có thể đọc r.mailConfigured và r.otp
-      return { otp, mailConfigured };
     }
 
-    // Fallback nếu không có email
-    return { otp: '', mailConfigured: false };
+    if (mailConfigured) {
+      // Fix B-NEW-PERF-1 (wiki 0021) — TÁI LẬP ở wiki 0094: fire-and-forget, KHÔNG block response.
+      // Bản 07/07 đổi sang `await sendMail` + `throw BadRequestException` gây 2 hệ quả:
+      //   (1) register/registerSeller/login chờ trọn SMTP round-trip (đo được 10s ở wiki 0021);
+      //   (2) mail lỗi → trả 400 dù user/cart/shop ĐÃ tạo xong → khách tưởng đăng ký hỏng.
+      // Mail rớt thì user vẫn dùng được "Gửi lại mã".
+      void this.mailerService
+        .sendMail({
+          to: normalizedEmail,
+          subject: 'Mã xác thực GMall',
+          html: `<b>Mã OTP của bạn là: ${otp}</b>. Có hiệu lực trong 5 phút.`,
+        })
+        .catch((error) => console.log('>>> [WARNING] Lỗi gửi mail:', error.message));
+    } else {
+      // Wiki 0068 B2: không cấu hình mail → KHÔNG gửi (tránh fail im lặng gây hiểu nhầm
+      // "đã gửi"). Caller sẽ trả devOtp ở non-prod để vẫn verify được.
+      console.log(
+        `>>> [WARNING] MAIL_USER/MAIL_PASS chưa cấu hình — OTP cho ${normalizedEmail} KHÔNG gửi qua email. ` +
+        `Set MAIL_USER/MAIL_PASS (.env) để bật gửi email ở production.`,
+      );
+    }
+
+    return { otp, mailConfigured };
   }
 
   // --- HELPER: Tạo Token ---

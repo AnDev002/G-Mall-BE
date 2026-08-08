@@ -223,6 +223,7 @@ model Shop {
   address      String? // Nơi lưu pickupAddress
   licenseImage String? // Nơi lưu ảnh giấy phép
   taxCode      String? // Mã số thuế
+  businessType String? // Wiki 0094: 'personal' | 'company' — seller chọn ở form đăng ký
 
   businessLicenseFront String? // ĐKKD mặt trước
   businessLicenseBack  String? // ĐKKD mặt sau

@@ -19,11 +19,17 @@ import { CharityService } from '../charity/charity.service';
 import { SystemSettingService } from '../../common/services/system-setting.service';
 import { NotificationService } from '../notification/notification.service';
 
-// Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k. Index 0 (30k) là tùy chọn
-// rẻ nhất, không có "không gói".
-// Thiệp: 5k mặc định. Nếu khách muốn thiệp cao hơn → chuyển sang mục thiệp
-// riêng để chọn (sẽ thêm sau khi có catalog thiệp).
-const GIFT_WRAP_PRICES = [30000, 50000];
+// Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k.
+//
+// Wiki 0094 — SỬA LỖI TIỀN: FE gửi lên INDEX của MẪU trong `giftWrapData.ts`, mà file đó có
+// **6 mẫu** (3 mẫu 30k + 3 mẫu 50k), trong khi mảng này chỉ có 2 phần tử. Hậu quả đo được:
+//   index 0 → 30k  (đúng)
+//   index 1 → thu 50k trong khi thẻ ghi 30k      → khách trả THỪA 20.000đ
+//   index 2..5 → tra ra undefined → `|| 0` → 0đ  → sàn MẤT 30k/50k mỗi đơn
+// => mảng này PHẢI khớp 1-1 theo index với FE `src/modules/gift-payment/data/giftWrapData.ts`.
+// Đổi thứ tự/thêm mẫu ở FE thì phải sửa ở đây cùng lúc.
+const GIFT_WRAP_PRICES = [30000, 30000, 30000, 50000, 50000, 50000];
+// Khớp FE `CARD_OPTIONS` trong GiftPaymentPage.tsx (id 0 = không thiệp, 1 = tiêu chuẩn, 2 = cao cấp).
 const CARD_PRICES = [0, 5000, 15000];
 
 @Injectable()
@@ -247,7 +253,21 @@ export class OrderService {
 
     let giftFee = 0;
     if (dto.isGift) {
-        giftFee = (GIFT_WRAP_PRICES[dto.giftWrapIndex || 0] || 0) + (CARD_PRICES[dto.cardIndex || 0] || 0);
+        // Wiki 0094: 2 lỗi tiền ở công thức cũ `PRICES[idx || 0] || 0`
+        //  (a) idx = null/undefined (khách KHÔNG chọn gói quà — FE gửi `selectedGiftWrap = null`)
+        //      bị `|| 0` biến thành index 0 → thu 30.000đ trong khi FE hiển thị 0đ.
+        //  (b) idx ngoài phạm vi → `|| 0` nuốt lỗi thành 0đ, sàn mất tiền mà không ai biết.
+        // Giờ: null/undefined = không chọn → 0đ; ngoài phạm vi → 400 fail-loud.
+        const pickFee = (idx: number | null | undefined, table: number[], label: string): number => {
+            if (idx === null || idx === undefined) return 0;
+            if (!Number.isInteger(idx) || idx < 0 || idx >= table.length) {
+                throw new BadRequestException(`${label} không hợp lệ`);
+            }
+            return table[idx];
+        };
+        giftFee =
+            pickFee(dto.giftWrapIndex, GIFT_WRAP_PRICES, 'Mẫu gói quà') +
+            pickFee(dto.cardIndex, CARD_PRICES, 'Mẫu thiệp');
     }
 
     // [FIX H2 - wiki 0088] FREESHIP giảm vào PHÍ SHIP (cap ≤ tổng ship), không vào subtotal.
