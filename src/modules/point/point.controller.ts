@@ -25,6 +25,13 @@ export class PointController {
     return this.pointService.getHistory(user.id);
   }
 
+  // wiki 0095 B6: số liệu + luật thưởng cho trang /user/affiliate.
+  // Chỉ đọc dữ liệu của chính mình (user.id từ JWT), không nhận id qua param.
+  @Get('affiliate')
+  async getAffiliateStats(@User() user) {
+    return this.pointService.getAffiliateStats(user.id);
+  }
+
   // API: POST /points/check-in
   @Post('check-in')
   async checkIn(@User() user) {

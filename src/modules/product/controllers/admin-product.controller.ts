@@ -163,7 +163,9 @@ export class AdminProductController {
         where: { id },
         include: { 
             shop: true,
-            options: { include: { values: true } },
+            // wiki 0095 B2: order theo position để admin thấy đúng thứ tự phân loại
+            // seller đã set, và khớp variants[].tierIndex khi duyệt sản phẩm.
+            options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
             variants: true,
             category: true
         }

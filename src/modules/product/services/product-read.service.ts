@@ -636,8 +636,13 @@ export class ProductReadService implements OnModuleInit {
       },
       include: {
         seller: { select: { name: true, id: true, avatar: true } },
+        // wiki 0095 B2: PHẢI orderBy position — KHÔNG được orderBy id.
+        // `ProductOptionValue.id` là uuid() ngẫu nhiên, còn `variants[].tierIndex`
+        // ("0,1") trỏ theo `position` lúc create. Sắp theo id → thứ tự options
+        // lệch khỏi tierIndex → user bấm "512GB" nhưng lấy đúng SKU/giá/tồn của
+        // option khác (bug tiền), và list hiển thị lộn xộn.
         options: {
-          include: { values: { orderBy: { id: 'asc' } } },
+          include: { values: { orderBy: { position: 'asc' } } },
           orderBy: { position: 'asc' },
         },
         variants: true,
@@ -820,7 +825,12 @@ export class ProductReadService implements OnModuleInit {
     if (relatedIds.length > 0) {
         const products = await this.prisma.product.findMany({
             where: { id: { in: relatedIds }, status: 'ACTIVE' },
-            include: { options: { include: { values: true } }, variants: true }
+            // wiki 0095 B2: cùng lý do findOnePublic — values phải theo position
+            // để khớp variants[].tierIndex.
+            include: {
+                options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
+                variants: true,
+            }
         });
         const activeProducts = products.filter(p => p.status === 'ACTIVE' && p.stock > 0);
         await this.redis.set(cacheKey, JSON.stringify(activeProducts), 'EX', 86400);

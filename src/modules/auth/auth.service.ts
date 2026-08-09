@@ -81,6 +81,13 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
+    // wiki 0095 B6: MẮT XÍCH TRƯỚC ĐÂY BỊ ĐỨT — không chỗ nào trong BE ghi
+    // `referredById`. Link affiliate `/register?ref=<id>` vẫn copy được, người
+    // được mời vẫn đăng ký được, nhưng quan hệ giới thiệu KHÔNG BAO GIỜ được lưu
+    // → hook thưởng trong order.service (`user.referredById`) luôn thấy null
+    // → không ai từng nhận được điểm giới thiệu. Nối lại tại đây.
+    const referredById = await this.resolveReferrer(dto.ref, dto.email);
+
     const user = await this.prisma.user.create({
       data: {
         email: dto.email,
@@ -88,6 +95,7 @@ export class AuthService {
         name: dto.name,
         role: 'BUYER',
         isVerified: false,
+        ...(referredById ? { referredById } : {}),
       },
     });
 
@@ -105,6 +113,33 @@ export class AuthService {
       message: 'Đăng ký thành công. Vui lòng kiểm tra email để nhập OTP.',
       ...(includeDevOtp ? { devOtp: otpResult.otp } : {}),
     };
+  }
+
+  /**
+   * wiki 0095 B6 — Xác thực mã giới thiệu từ link affiliate.
+   *
+   * Nguyên tắc: ref SAI thì BỎ QUA, KHÔNG chặn đăng ký. Người được mời không
+   * kiểm soát được link bạn mình gửi; ném 400 vì "mã giới thiệu không hợp lệ"
+   * là chặn một khách hàng thật vì lỗi của người khác.
+   *
+   * Không tự-giới-thiệu: ref trỏ về chính email đang đăng ký thì bỏ. (Chặn
+   * multi-account cùng người thì đã có anti-farm theo IP ở order.service khi
+   * trả thưởng — xem wiki 0044/0045; ở đây chỉ chặn ca hiển nhiên.)
+   */
+  private async resolveReferrer(ref: string | undefined, newEmail: string): Promise<string | null> {
+    const refId = (ref ?? '').trim();
+    if (!refId) return null;
+
+    const referrer = await this.prisma.user.findUnique({
+      where: { id: refId },
+      select: { id: true, email: true },
+    });
+    if (!referrer) return null;
+
+    if ((referrer.email ?? '').toLowerCase().trim() === newEmail.toLowerCase().trim()) {
+      return null;
+    }
+    return referrer.id;
   }
 
   async registerSeller(dto: RegisterSellerDto) {

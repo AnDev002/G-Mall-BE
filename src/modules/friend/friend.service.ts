@@ -1,11 +1,27 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { ChatGateway } from '../chat/chat.gateway'; // Tận dụng Gateway của Chat để bắn noti
 import { FriendshipStatus } from '@prisma/client';
 import { MailerService } from '@nestjs-modules/mailer';
 
+/**
+ * wiki 0095 B4 — escape nội dung người dùng nhập trước khi ghép vào HTML email.
+ * Không dùng thư viện sanitize nặng vì ở đây KHÔNG cần giữ lại thẻ nào cả:
+ * lời nhắn mời bạn là text thuần, escape hết là đủ và không thể bypass.
+ */
+function escapeHtml(input: string): string {
+  return String(input ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 @Injectable()
 export class FriendService {
+  private readonly logger = new Logger(FriendService.name);
+
   constructor(
     private prisma: PrismaService,
     private chatGateway: ChatGateway, // Inject Gateway để real-time
@@ -57,7 +73,12 @@ export class FriendService {
     });
 
     if (!sender) throw new BadRequestException('Người gửi không tồn tại');
-    if (sender.email === normalizedEmail) throw new BadRequestException('Bạn không thể mời chính mình');
+    // wiki 0095 B4: so sánh phải cùng chuẩn hoá. sender.email trong DB có thể
+    // còn hoa/thường lẫn lộn (đăng ký cũ, OAuth) → so thô sẽ lọt, user tự mời
+    // chính mình rồi nhận lỗi khó hiểu ở bước sau.
+    if ((sender.email ?? '').toLowerCase().trim() === normalizedEmail) {
+      throw new BadRequestException('Đây là email của chính bạn. Hãy nhập email của người bạn muốn mời.');
+    }
 
     // 2. Kiểm tra xem Email người được mời đã có tài khoản chưa
     const existingUser = await this.prisma.user.findUnique({
@@ -76,11 +97,33 @@ export class FriendService {
         },
       });
 
+      // wiki 0095 B4/B5 — khách báo: "báo lỗi email gửi đi", nguyên nhân là
+      // "gửi trùng email cũ nhưng chưa thông báo rõ".
+      // Message cũ ("Đã gửi lời mời kết bạn rồi.") không nói MỜI AI, ai gửi cho
+      // ai, và cũng không phân biệt được các trạng thái khác nhau → seller tưởng
+      // hệ thống gửi mail lỗi. Giờ mỗi trạng thái một câu rõ ràng, luôn kèm email.
       if (existingFriendship) {
-        if (existingFriendship.status === 'ACCEPTED') {
-          throw new BadRequestException('Hai bạn đã là bạn bè từ trước.');
+        if (existingFriendship.status === FriendshipStatus.ACCEPTED) {
+          throw new BadRequestException(
+            `${normalizedEmail} đã là bạn bè của bạn trên GMall — không cần mời lại.`,
+          );
         }
-        throw new BadRequestException('Đã gửi lời mời kết bạn rồi.');
+        if (existingFriendship.status === FriendshipStatus.BLOCKED) {
+          throw new BadRequestException(
+            `Không thể gửi lời mời tới ${normalizedEmail} vì tài khoản này đang bị chặn.`,
+          );
+        }
+        // PENDING — phân biệt chiều gửi, vì hành động tiếp theo của user khác nhau.
+        if (existingFriendship.senderId === senderId) {
+          throw new BadRequestException(
+            `Bạn đã mời ${normalizedEmail} trước đó rồi, lời mời đang chờ họ đồng ý. ` +
+              `Không cần gửi lại — nhắc bạn ấy kiểm tra mục "Lời mời kết bạn" nhé.`,
+          );
+        }
+        throw new BadRequestException(
+          `${normalizedEmail} đã gửi lời mời kết bạn cho bạn từ trước. ` +
+            `Vào mục "Lời mời kết bạn" để đồng ý là hai bạn thành bạn bè ngay.`,
+        );
       }
 
       // Tạo lời mời kết bạn (Friendship PENDING)
@@ -99,17 +142,31 @@ export class FriendService {
       return {
         success: true,
         type: 'internal',
-        message: 'Người dùng này đang dùng GMall. Đã gửi lời mời kết bạn!',
+        message: `${normalizedEmail} đang dùng GMall — đã gửi lời mời kết bạn tới họ!`,
       };
     }
 
     // === CASE B: NGƯỜI DÙNG CHƯA TỒN TẠI -> GỬI MAIL ===
-    const registerLink = `https://gmall.com.vn/register?ref=${sender.id}`;
-    
+    // wiki 0095 B4: TRƯỚC ĐÂY hardcode `https://gmall.com.vn` — domain này KHÔNG
+    // phải nơi FE đang chạy (prod chạy trên Render/domain cấu hình qua FE_URL),
+    // nên người được mời bấm vào link là vào trang chết → không ai đăng ký được
+    // qua email mời, và người giới thiệu không bao giờ nhận điểm.
+    // Dùng chung FE_URL với email reset-password (auth.service.ts).
+    const feUrl = (process.env.FE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+    const registerLink = `${feUrl}/register?ref=${encodeURIComponent(sender.id)}`;
+
+    // wiki 0095 B4: `message` và `sender.name` do người dùng nhập tự do và được
+    // nội suy thẳng vào HTML email → có thể chèn thẻ <a> trỏ sang trang lừa đảo
+    // mà email vẫn mang danh GMall. Escape trước khi ghép.
+    const safeSenderName = escapeHtml(sender.name ?? 'Người dùng GMall');
+    const safeMessage = escapeHtml(message);
+
     try {
       await this.mailerService.sendMail({
         to: normalizedEmail,
-        subject: `${sender.name ?? 'Một người bạn'} mời bạn tham gia GMall!`,
+        // Subject là text thuần, không escape HTML (escape sẽ hiện "&amp;" trong
+        // tiêu đề hộp thư), nhưng phải chặn CRLF injection thêm header.
+        subject: `${(sender.name ?? 'Một người bạn').replace(/[\r\n]+/g, ' ')} mời bạn tham gia GMall!`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
             <div style="background-color: #2563eb; padding: 20px; text-align: center;">
@@ -120,11 +177,11 @@ export class FriendService {
               <p style="font-size: 16px; color: #333;">Xin chào,</p>
               
               <p style="font-size: 16px; color: #333; line-height: 1.5;">
-                Bạn của bạn là <strong>${sender.name ?? 'Người dùng GMall'}</strong> đang sử dụng GMall và muốn mời bạn cùng tham gia.
+                Bạn của bạn là <strong>${safeSenderName}</strong> đang sử dụng GMall và muốn mời bạn cùng tham gia.
               </p>
 
               <div style="background-color: #f3f4f6; padding: 15px; border-left: 4px solid #2563eb; margin: 20px 0; border-radius: 4px;">
-                <p style="margin: 0; color: #555; font-style: italic;">"${message}"</p>
+                <p style="margin: 0; color: #555; font-style: italic;">"${safeMessage}"</p>
               </div>
 
               <div style="text-align: center; margin-top: 30px; margin-bottom: 30px;">
@@ -153,8 +210,14 @@ export class FriendService {
       };
       
     } catch (error: any) {
-      console.log('>>> [WARNING] Lỗi gửi mail:', error.message);
-      throw new BadRequestException('Không thể gửi mail lúc này, vui lòng thử lại sau.');
+      // wiki 0095 B4: log kèm email đích + mã lỗi SMTP để còn debug được khi
+      // seller báo "gửi không được" (trước chỉ có message trần, không biết mời ai).
+      this.logger.error(
+        `[inviteByEmail] gửi mail tới ${normalizedEmail} thất bại: ${error?.responseCode ?? ''} ${error?.message}`,
+      );
+      throw new BadRequestException(
+        `Không gửi được thư mời tới ${normalizedEmail}. Vui lòng kiểm tra lại địa chỉ email và thử lại sau ít phút.`,
+      );
     }
   }
   // 2. Chấp nhận / Từ chối

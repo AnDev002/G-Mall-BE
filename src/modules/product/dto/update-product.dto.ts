@@ -55,4 +55,16 @@ export class UpdateProductDiscountDto {
 }
 
 
-export class UpdateProductDto extends PartialType(CreateProductDto) {}
+export class UpdateProductDto extends PartialType(CreateProductDto) {
+  /**
+   * wiki 0095 B3 — cờ opt-in: "tiers/variations trong payload này là ĐẦY ĐỦ và
+   * cố ý, hãy ghi đè phân loại của sản phẩm".
+   *
+   * Bắt buộc phải có cờ vì ValidationPipe chạy `whitelist: true` và vì client CŨ
+   * luôn gửi `tiers: []` (form sửa không prefill được) — không có cờ thì một cú
+   * bấm Lưu từ bản FE cũ sẽ xoá sạch SKU của sản phẩm.
+   */
+  @IsOptional()
+  @IsBoolean()
+  syncVariants?: boolean;
+}

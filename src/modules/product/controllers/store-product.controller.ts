@@ -101,8 +101,10 @@ export class StoreProductController {
               relatedProduct: { 
                   include: {
                       // [FIX] Include values của options
-                      options: { 
-                          include: { values: true },
+                      // wiki 0095 B2: values PHẢI orderBy position (khớp tierIndex),
+                      // mặc định Prisma trả theo thứ tự DB (uuid) → lệch.
+                      options: {
+                          include: { values: { orderBy: { position: 'asc' } } },
                           orderBy: { position: 'asc' }
                       },
                       variants: true

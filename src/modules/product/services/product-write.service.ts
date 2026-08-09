@@ -172,7 +172,8 @@ export class ProductWriteService {
       const finalProduct = await tx.product.findUnique({
           where: { id: product.id },
           include: {
-              options: { include: { values: true } },
+              // wiki 0095 B2: values orderBy position để response create khớp tierIndex.
+              options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
               variants: true
           }
       });
@@ -377,6 +378,7 @@ export class ProductWriteService {
     const {
         images, price, brandId,
         tiers, variations, crossSellIds, systemTags,
+        syncVariants, // wiki 0095 B3: cờ điều khiển, KHÔNG phải cột Product
         categoryId,
         videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
         attributes,
@@ -417,6 +419,26 @@ export class ProductWriteService {
         }
     }
 
+    // wiki 0095 B3: TRƯỚC ĐÂY tiers/variations bị destructure ra rồi VỨT ĐI —
+    // seller sửa phân loại xong bấm "Cập nhật" thì phân loại không bao giờ được
+    // lưu ("ko lưu được" trong report của khách). Giờ đồng bộ lại thật sự.
+    //
+    // Chỉ chạy khi client gửi cờ `syncVariants` (FE bản đã fix prefill mới gửi).
+    // Lý do: client CŨ luôn gửi `tiers: []` vì form không prefill được — nếu BE
+    // cứ thấy `tiers` là sync thì một lần bấm Lưu từ bản FE cũ sẽ XOÁ SẠCH SKU
+    // của sản phẩm. Cờ opt-in giúp BE deploy trước FE vẫn an toàn tuyệt đối.
+    //
+    // Chạy TRƯỚC product.update: sync có thể từ chối (thiếu SKU, variant đang
+    // chạy Flash Sale) và phải fail SỚM. Nếu update tên/giá trước rồi sync mới
+    // ném lỗi thì seller nhận 400 nhưng sản phẩm đã đổi một nửa — không cách nào
+    // biết phần nào đã lưu.
+    if (dto.syncVariants === true) {
+      const totalStock = await this.syncTiersAndVariants(id, tiers ?? [], variations ?? []);
+      // Tồn kho cha do sync tính (tổng tồn các SKU) là nguồn đúng — không để
+      // giá trị `stock` FE gửi kèm ghi đè ngược lại.
+      updateData.stock = totalStock;
+    }
+
     const updated = await this.prisma.product.update({
       where: { id },
       data: updateData,
@@ -441,6 +463,188 @@ export class ProductWriteService {
     return updated;
   }
 
+  /**
+   * wiki 0095 B3 — Đồng bộ lại nhóm phân loại (ProductOption/Value) + biến thể
+   * (ProductVariant) khi seller sửa sản phẩm.
+   *
+   * Vì sao KHÔNG "xoá sạch rồi tạo lại":
+   *  - `FlashSaleProduct.variantId` là quan hệ BẮT BUỘC (Restrict) → xoá variant
+   *    đang chạy flash sale sẽ ném lỗi FK khó hiểu giữa transaction.
+   *  - `OrderItem.variantId` trỏ tới variant để hoàn tồn kho khi huỷ đơn
+   *    (wiki 0083). Đổi ID mỗi lần sửa = mất đường hoàn kho của đơn đang bay.
+   *  - Đổi ID còn làm giỏ hàng / link flash sale của user trỏ vào hư không.
+   *
+   * Nên: đối chiếu theo TỔ HỢP GIÁ TRỊ ("Đen | 512GB") chứ không theo tierIndex
+   * thô. tierIndex chỉ là chỉ số, seller đảo thứ tự option là nó đổi nghĩa;
+   * tổ hợp giá trị mới là danh tính thật của một SKU. Nhờ vậy đảo thứ tự option
+   * vẫn giữ nguyên ID variant, chỉ ghi lại tierIndex mới.
+   *
+   * @returns tổng tồn kho các SKU sau khi đồng bộ (để caller ghi vào Product.stock)
+   */
+  private async syncTiersAndVariants(
+    productId: string,
+    tiers: { name: string; options: string[]; images?: string[] }[],
+    variations: { price: number; stock: number; sku?: string; imageUrl?: string; tierIndex: number[] }[],
+  ): Promise<number> {
+    // Cùng ràng buộc như create(): có nhóm phân loại thì bắt buộc có SKU.
+    if (tiers.length > 0 && variations.length === 0) {
+      throw new BadRequestException('Phải thiết lập biến thể SKU khi có nhóm phân loại');
+    }
+
+    const existing = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: {
+        options: {
+          include: { values: { orderBy: { position: 'asc' } } },
+          orderBy: { position: 'asc' },
+        },
+        variants: true,
+      },
+    });
+    if (!existing) throw new NotFoundException('Sản phẩm không tồn tại');
+
+    /** "0,1" + bảng option cũ  →  "Đen | 512GB". Dùng làm khoá đối chiếu. */
+    const comboOf = (
+      tierIndex: number[],
+      groups: { values: { value: string }[] }[],
+    ): string =>
+      tierIndex
+        .map((valueIdx, groupIdx) => groups[groupIdx]?.values[valueIdx]?.value ?? `#${valueIdx}`)
+        .join(' | ');
+
+    const parseTierIndex = (raw: unknown): number[] => {
+      if (Array.isArray(raw)) return raw as number[];
+      if (typeof raw === 'string' && raw.length > 0) {
+        return raw.split(',').map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+      }
+      return [];
+    };
+
+    // Variant cũ theo combo. Sản phẩm không phân loại có tierIndex '' → combo ''.
+    const oldByCombo = new Map<string, (typeof existing.variants)[number]>();
+    for (const v of existing.variants) {
+      const combo = comboOf(parseTierIndex(v.tierIndex), existing.options);
+      if (!oldByCombo.has(combo)) oldByCombo.set(combo, v);
+    }
+
+    // Không phân loại → quy về đúng 1 SKU mặc định (combo '').
+    const newTargets =
+      tiers.length > 0
+        ? variations.map((v) => ({
+            combo: comboOf(v.tierIndex, tiers.map((t) => ({ values: t.options.map((o) => ({ value: o })) }))),
+            tierIndex: v.tierIndex.join(','),
+            price: Number(v.price),
+            stock: Number(v.stock),
+            sku: v.sku ?? '',
+            image: v.imageUrl || null,
+          }))
+        : [{
+            combo: '',
+            tierIndex: '',
+            price: Number(existing.price),
+            stock: Number(existing.stock ?? 0),
+            sku: '',
+            image: null as string | null,
+          }];
+
+    const keepCombos = new Set(newTargets.map((t) => t.combo));
+    const toDelete = existing.variants.filter(
+      (v) => !keepCombos.has(comboOf(parseTierIndex(v.tierIndex), existing.options)),
+    );
+
+    // Chặn TRƯỚC transaction: variant đang nằm trong flash sale không xoá được
+    // (FK Restrict). Báo rõ để seller tự gỡ khỏi flash sale, thay vì để Prisma
+    // ném lỗi P2003 khó hiểu.
+    if (toDelete.length > 0) {
+      const locked = await this.prisma.flashSaleProduct.findMany({
+        where: { variantId: { in: toDelete.map((v) => v.id) } },
+        select: { variantId: true },
+      });
+      if (locked.length > 0) {
+        const lockedIds = new Set(locked.map((l) => l.variantId));
+        const names = toDelete
+          .filter((v) => lockedIds.has(v.id))
+          .map((v) => comboOf(parseTierIndex(v.tierIndex), existing.options) || v.sku || v.id)
+          .join(', ');
+        throw new BadRequestException(
+          `Không thể xoá phân loại đang chạy Flash Sale: ${names}. ` +
+            `Vui lòng gỡ khỏi chương trình Flash Sale trước khi sửa.`,
+        );
+      }
+    }
+
+    const totalStock = newTargets.reduce((sum, t) => sum + t.stock, 0);
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Dựng lại nhóm phân loại. Xoá thẳng được vì không bảng nào tham chiếu
+      //    ProductOptionValue (cascade từ ProductOption).
+      await tx.productOption.deleteMany({ where: { productId } });
+      for (let i = 0; i < tiers.length; i++) {
+        const tier = tiers[i];
+        if (!tier.options?.length) continue;
+        const images = tier.images || [];
+        await tx.productOption.create({
+          data: {
+            productId,
+            name: tier.name,
+            position: i,
+            values: {
+              create: tier.options.map((val, idx) => ({
+                value: val,
+                image: images[idx] || null,
+                position: idx, // khớp với tierIndex của variant
+              })),
+            },
+          },
+        });
+      }
+
+      // 2. Giữ ID cho SKU còn tồn tại, tạo mới cho SKU vừa thêm.
+      for (const target of newTargets) {
+        const old = oldByCombo.get(target.combo);
+        if (old) {
+          await tx.productVariant.update({
+            where: { id: old.id },
+            data: {
+              price: new Prisma.Decimal(target.price),
+              stock: target.stock,
+              sku: target.sku,
+              tierIndex: target.tierIndex,
+              // Ảnh riêng của SKU: chỉ ghi đè khi FE thực sự gửi ảnh mới.
+              ...(target.image !== null ? { image: target.image } : {}),
+            },
+          });
+        } else {
+          await tx.productVariant.create({
+            data: {
+              productId,
+              price: new Prisma.Decimal(target.price),
+              stock: target.stock,
+              sku: target.sku,
+              image: target.image,
+              tierIndex: target.tierIndex,
+            },
+          });
+        }
+      }
+
+      // 3. Dọn SKU seller đã bỏ.
+      if (toDelete.length > 0) {
+        await tx.productVariant.deleteMany({ where: { id: { in: toDelete.map((v) => v.id) } } });
+      }
+
+      // 4. Tồn kho cha = tổng tồn các SKU (giống create()).
+      //    Vẫn ghi trong transaction này để nếu caller lỗi sau đó thì DB vẫn
+      //    nhất quán; caller ghi lại lần nữa cùng giá trị là vô hại.
+      await tx.product.update({ where: { id: productId }, data: { stock: totalStock } });
+    });
+
+    this.logger.log(
+      `[syncVariants] product=${productId} tiers=${tiers.length} sku=${newTargets.length} xoá=${toDelete.length}`,
+    );
+    return totalStock;
+  }
+
   // --- 3b. Lấy 1 sản phẩm để CHỈNH SỬA (wiki 0068 A1) ---
   // Bug: FE AddProductPage gọi GET /products/:id (route không tồn tại) -> 404 ->
   // toast "Không tải được dữ liệu sản phẩm để chỉnh sửa". Trước đây seller KHÔNG có
@@ -455,7 +659,10 @@ export class ProductWriteService {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, shopId: shop.id },
       include: {
-        options: { include: { values: true }, orderBy: { position: 'asc' } },
+        // wiki 0095 B3: values PHẢI orderBy position. Thiếu dòng này thì form sửa
+        // nhận option theo thứ tự uuid, lệch khỏi variants[].tierIndex → ma trận
+        // SKU prefill sai giá/tồn.
+        options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
         variants: true,
         crossSells: { select: { relatedProductId: true } },
       },
