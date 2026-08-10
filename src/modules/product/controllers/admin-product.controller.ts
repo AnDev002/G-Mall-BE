@@ -178,7 +178,7 @@ export class AdminProductController {
       .slice(0, 200);
     if (ids.length === 0) return [];
 
-    return this.prisma.product.findMany({
+    const rows = await this.prisma.product.findMany({
       where: { id: { in: ids } },
       select: {
         id: true,
@@ -190,6 +190,11 @@ export class AdminProductController {
         shop: { select: { id: true, name: true } },
       },
     });
+
+    // `price` là Prisma Decimal → JSON.stringify ra CHUỖI ("123456"), không phải số.
+    // Mọi endpoint sản phẩm khác đều đã `Number(...)` (vd findOnePublic); giữ đồng nhất,
+    // nếu không FE hiển thị giá mất dấu phân cách và mọi phép tính thành nối chuỗi.
+    return rows.map((p) => ({ ...p, price: Number(p.price) }));
   }
   
   @Get(':id')
