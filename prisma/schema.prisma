@@ -132,6 +132,11 @@ model User {
   // #11/#23/#35/#53 (wiki 0044/0045) — thông báo cá nhân (notification model cuối file).
   notifications Notification[]
 
+  // wiki 0105 — tài khoản tiếp thị (affiliate SẢN PHẨM). Khác hẳn `referredById` ở trên:
+  // referral gắn vào NGƯỜI (1-1 vĩnh viễn, thưởng 1 lần), affiliate gắn vào GIAO DỊCH
+  // (link → click → dòng hàng → hoa hồng, lặp vô hạn). Hai hệ chạy song song.
+  affiliateAccount AffiliateAccount?
+
   @@index([email])
   @@index([role])
   @@index([createdAt])
@@ -516,6 +521,14 @@ model Product {
   discountEndDate   DateTime?
   isDiscountActive  Boolean       @default(false)
 
+  // wiki 0105 — affiliate sản phẩm. MẶC ĐỊNH TẮT: seller phải tự bật và tự đặt %,
+  // vì hoa hồng TRỪ VÀO DOANH THU CỦA CHÍNH SELLER — không ai được bị trừ tiền
+  // ngoài ý muốn. Trần % đọc từ SystemSetting `AFFILIATE_MAX_RATE`.
+  // `affiliateRate` là tỉ lệ thập phân (0.0500 = 5%), không phải số phần trăm.
+  affiliateEnabled Boolean         @default(false)
+  affiliateRate    Decimal?        @db.Decimal(6, 4)
+  affiliateLinks   AffiliateLink[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -527,6 +540,7 @@ model Product {
   @@index([sellerId, createdAt(sort: Desc)])
   @@index([slug])
   @@index([shopId])
+  @@index([affiliateEnabled])
 }
 
 model Brand {
@@ -685,12 +699,12 @@ model Order {
 }
 
 model OrderItem {
-  id        String   @id @default(uuid())
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id])
-  productId String? // 1. Đổi thành Optional (Thêm dấu ?)
-  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variantId String? // Wiki 0083: biến thể đã mua — để hoàn tồn kho variant khi hủy đơn
+  id                 String   @id @default(uuid())
+  orderId            String
+  order              Order    @relation(fields: [orderId], references: [id])
+  productId          String? // 1. Đổi thành Optional (Thêm dấu ?)
+  product            Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variantId          String? // Wiki 0083: biến thể đã mua — để hoàn tồn kho variant khi hủy đơn
   flashSaleProductId String? // Wiki 0088: link FlashSaleProduct để HOÀN sold khi hủy đơn (chống leak suất flash + griefing)
 
   quantity Int
@@ -873,6 +887,8 @@ enum WalletTransactionType {
   PAYOUT // Rút tiền về ngân hàng
   REFUND // Hoàn tiền cho khách
   FEE // Phí sàn (nếu có)
+  AFFILIATE_COMMISSION // wiki 0105 — hoa hồng đã chốt sổ, cộng vào ví người tiếp thị
+  AFFILIATE_FEE // wiki 0105 — hoa hồng trừ khỏi doanh thu seller (ghi riêng để seller thấy rõ trên sổ)
 }
 
 enum WalletTransactionStatus {
@@ -1147,16 +1163,16 @@ model Notification {
 // wiki 0052: image search — metadata index trong MySQL, vector lưu trong Qdrant.
 // Tách table riêng để query Product không phải JOIN nặng + dễ rebuild index.
 enum EmbeddingStatus {
-  PENDING   // Chưa index
-  INDEXED   // Đã có vector trong Qdrant
-  FAILED    // Thử index nhưng lỗi (vd ảnh 404, CLIP service down)
-  SKIPPED   // SP không có ảnh → không index được
+  PENDING // Chưa index
+  INDEXED // Đã có vector trong Qdrant
+  FAILED // Thử index nhưng lỗi (vd ảnh 404, CLIP service down)
+  SKIPPED // SP không có ảnh → không index được
 }
 
 model ProductEmbedding {
-  id        String          @id @default(uuid())
-  productId String          @unique
-  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id        String  @id @default(uuid())
+  productId String  @unique
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   status    EmbeddingStatus @default(PENDING)
   // SHA-256 của image bytes — nếu ảnh đổi mà hash giống cũ thì skip re-encode
@@ -1165,9 +1181,146 @@ model ProductEmbedding {
   // Lý do FAILED (vd "image fetch 404") để debug. Null khi INDEXED.
   errorMsg  String?         @db.Text
 
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  indexedAt DateTime?       // Set khi status -> INDEXED
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  indexedAt DateTime? // Set khi status -> INDEXED
 
   @@index([status, updatedAt])
+}
+
+// =====================================================================
+// AFFILIATE SẢN PHẨM (wiki 0105)
+//
+// Chạy SONG SONG với hệ referral cũ (User.referredById) — KHÔNG thay thế.
+// Referral gắn vào NGƯỜI (1-1 vĩnh viễn, thưởng 1 lần); affiliate gắn vào
+// GIAO DỊCH (n-n, lặp vô hạn) nên phải có sổ cái riêng.
+//
+// Hai khoá idempotent quan trọng nhất của cả hệ nằm ở đây, đặt ở TẦNG DB
+// chứ không dựa vào sự cẩn thận của code:
+//   - AffiliateCommission.orderItemId @unique      → không trả hoa hồng 2 lần
+//   - AffiliateSettlement @@unique([accountId, period]) → không chốt sổ 2 lần
+// =====================================================================
+
+enum AffiliateAccountStatus {
+  PENDING // chờ admin duyệt
+  APPROVED // được phép lấy link
+  REJECTED // bị từ chối (được nộp lại)
+  SUSPENDED // bị đình chỉ do gian lận
+}
+
+enum AffiliateCommissionStatus {
+  PENDING // đơn đã đặt, chưa giao xong
+  APPROVED // đơn giao xong — tạm tính, sàn đang giữ
+  SETTLED // đã chốt sổ, tiền đã vào ví, rút được
+  CANCELLED // đơn huỷ
+  REJECTED // vi phạm (tự mua / trùng IP)
+}
+
+/// Một user = một tài khoản tiếp thị. Phải được admin duyệt mới lấy được link.
+model AffiliateAccount {
+  id           String                 @id @default(uuid())
+  userId       String                 @unique
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code         String                 @unique
+  status       AffiliateAccountStatus @default(PENDING)
+  channel      String?                @db.Text // kênh chia sẻ tự khai (FB/TikTok/Zalo…)
+  note         String?                @db.Text
+  rejectReason String?                @db.Text
+  reviewedAt   DateTime?
+  reviewedById String?
+
+  // CHỈ đếm số lượng. TIỀN KHÔNG lưu ở đây — mọi con số tiền đều cộng từ
+  // AffiliateCommission theo status. Số dư denormalize là nguồn drift kinh điển:
+  // một nhánh code quên cập nhật là sổ lệch vĩnh viễn mà không ai biết.
+  totalClicks Int @default(0)
+  totalOrders Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  links       AffiliateLink[]
+  commissions AffiliateCommission[]
+  settlements AffiliateSettlement[]
+
+  @@index([status])
+}
+
+/// Một người tiếp thị × một sản phẩm = một link cố định (lấy lại vẫn ra link cũ).
+model AffiliateLink {
+  id        String           @id @default(uuid())
+  code      String           @unique // mã ngắn nằm trong URL ?aff=<code>
+  accountId String
+  account   AffiliateAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  shopId    String? // chụp lại để lọc/báo cáo không phải join
+  clicks    Int              @default(0)
+  createdAt DateTime         @default(now())
+
+  clickLogs   AffiliateClick[]
+  commissions AffiliateCommission[]
+
+  @@unique([accountId, productId])
+  @@index([productId])
+  @@index([shopId])
+}
+
+/// Nhật ký click — chống gian lận + báo cáo.
+model AffiliateClick {
+  id        String        @id @default(uuid())
+  linkId    String
+  link      AffiliateLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  clientIp  String?
+  userAgent String?       @db.Text
+  viewerId  String? // userId nếu người bấm đã đăng nhập
+  createdAt DateTime      @default(now())
+
+  @@index([linkId, createdAt])
+  @@index([clientIp, createdAt])
+}
+
+/// SỔ CÁI hoa hồng. Mỗi dòng hàng bán được sinh đúng một dòng ở đây.
+/// `orderItemId @unique` đặt ở mức DÒNG HÀNG chứ không phải mức đơn, vì một đơn
+/// có thể chứa nhiều món của nhiều người tiếp thị khác nhau.
+model AffiliateCommission {
+  id           String                    @id @default(uuid())
+  accountId    String
+  account      AffiliateAccount          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  linkId       String
+  link         AffiliateLink             @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  orderId      String
+  orderItemId  String                    @unique
+  productId    String
+  shopId       String?
+  sellerId     String?
+  baseAmount   Decimal                   @db.Decimal(15, 2) // giá bán × số lượng lúc mua
+  rate         Decimal                   @db.Decimal(6, 4) // % CHỤP LẠI lúc mua (seller đổi % sau không ảnh hưởng đơn cũ)
+  amount       Decimal                   @db.Decimal(15, 2) // hoa hồng sau khi áp trần
+  status       AffiliateCommissionStatus @default(PENDING)
+  rejectReason String?
+  deliveredAt  DateTime?
+  settlementId String?
+  settlement   AffiliateSettlement?      @relation(fields: [settlementId], references: [id])
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([accountId, status])
+  @@index([orderId])
+  @@index([status, deliveredAt])
+}
+
+/// Một kỳ chốt sổ của một người tiếp thị.
+model AffiliateSettlement {
+  id        String           @id @default(uuid())
+  accountId String
+  account   AffiliateAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  period    String // 'YYYY-MM' — kỳ được chốt
+  amount    Decimal          @db.Decimal(15, 2)
+  itemCount Int
+  settledAt DateTime         @default(now())
+
+  commissions AffiliateCommission[]
+
+  @@unique([accountId, period])
+  @@index([period])
 }
