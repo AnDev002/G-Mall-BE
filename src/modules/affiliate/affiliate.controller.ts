@@ -19,6 +19,7 @@ import { RecordClickDto } from './dto/record-click.dto';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AffiliateSettlementService } from './affiliate-settlement.service';
 import { FinanceService } from '../finance/finance.service';
+import { RateLimit, RateLimitGuard } from '../../common/guards/rate-limit.guard';
 
 /**
  * wiki 0105 — API cho NGƯỜI TIẾP THỊ.
@@ -119,8 +120,17 @@ export class AffiliateController {
 export class AffiliateClickController {
   constructor(private readonly linkService: AffiliateLinkService) {}
 
+  /**
+   * Có `RateLimitGuard` vì đây là điểm cuối CÔNG KHAI CÓ GHI DATABASE — hình dạng mà kẻ
+   * xấu thích nhất. Việc gộp click trùng IP trong 60s chỉ giới hạn số BẢN GHI, không
+   * giới hạn số LƯỢT GỌI: mỗi lượt vẫn tốn một truy vấn tra link. Chốt ở tầng trước.
+   *
+   * 30 lượt/phút/IP là rộng rãi cho người dùng thật (một người mở vài chục sản phẩm
+   * trong một phút đã là bất thường) nhưng đủ chặn kẻ gọi vòng lặp.
+   */
   @Public()
-  @UseGuards(OptionalJwtAuthGuard)
+  @UseGuards(OptionalJwtAuthGuard, RateLimitGuard)
+  @RateLimit({ points: 30, windowSeconds: 60, keyBy: 'ip+path' })
   @Post('click')
   recordClick(@Req() req: any, @Body() dto: RecordClickDto) {
     const ip =

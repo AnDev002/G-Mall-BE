@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../../database/database.module';
+import { RedisModule } from '../../database/redis/redis.module';
 import { SystemSettingModule } from '../../common/services/system-setting.module';
 import { NotificationModule } from '../notification/notification.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -20,7 +21,9 @@ import { AffiliateSettlementService } from './affiliate-settlement.service';
 // `FinanceModule` được import để DÙNG LẠI nguyên luồng rút tiền của seller thay vì
 // dựng luồng thứ hai — hai đường rút tiền song song là hai chỗ phải đối soát.
 @Module({
-  imports: [DatabaseModule, SystemSettingModule, NotificationModule, FinanceModule],
+  // RedisModule: RateLimitGuard trên `POST /affiliate/click` (điểm cuối công khai
+  // có ghi DB) dùng Redis INCR + TTL để đếm lượt gọi.
+  imports: [DatabaseModule, RedisModule, SystemSettingModule, NotificationModule, FinanceModule],
   controllers: [AffiliateController, AffiliateClickController, AdminAffiliateController],
   providers: [
     AffiliateService,
