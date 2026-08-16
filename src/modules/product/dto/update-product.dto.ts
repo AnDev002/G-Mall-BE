@@ -68,3 +68,20 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsBoolean()
   syncVariants?: boolean;
 }
+/**
+ * wiki 0105 — seller bật/tắt affiliate và đặt % hoa hồng cho MỘT sản phẩm.
+ *
+ * `rate` là tỉ lệ THẬP PHÂN (0.05 = 5%), không phải số phần trăm — giao diện nhập
+ * theo % rồi chia 100 trước khi gửi. Trần thật kiểm ở service vì nó đọc từ
+ * SystemSetting (`AFFILIATE_MAX_RATE`), DTO không với tới được.
+ */
+export class UpdateProductAffiliateDto {
+  @ApiProperty({ description: 'Bật hay tắt tiếp thị liên kết cho sản phẩm này' })
+  @IsBoolean()
+  enabled!: boolean;
+
+  @ApiProperty({ required: false, description: 'Tỉ lệ hoa hồng dạng thập phân, ví dụ 0.05 = 5%' })
+  @IsOptional()
+  @IsNumber()
+  rate?: number;
+}

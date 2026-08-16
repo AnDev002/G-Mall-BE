@@ -2,7 +2,7 @@
 import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete } from '@nestjs/common';
 import { ProductWriteService } from '../services/product-write.service';
 import { CreateProductDto } from '../dto/create-product.dto';
-import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
+import { UpdateProductAffiliateDto, UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { JwtAuthGuard } from 'src/modules/auth/guards/jwt.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -47,6 +47,17 @@ export class SellerProductController {
     @Body() dto: UpdateProductDiscountDto,
   ) {
     return this.productWriteService.updateDiscount(user.id, id, dto);
+  }
+
+  // wiki 0105 — bật/tắt affiliate + đặt % hoa hồng cho sản phẩm của chính mình.
+  // Đặt cạnh :id/discount và TRƯỚC @Get(':id') để route tĩnh không bị ':id' nuốt.
+  @Patch(':id/affiliate')
+  async updateAffiliate(
+    @User() user: UserEntity,
+    @Param('id') id: string,
+    @Body() dto: UpdateProductAffiliateDto,
+  ) {
+    return this.productWriteService.updateAffiliate(user.id, id, dto);
   }
 
   @Delete(':id')

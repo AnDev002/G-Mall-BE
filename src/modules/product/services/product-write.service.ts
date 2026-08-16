@@ -6,9 +6,10 @@ import { PrismaService } from '../../../database/prisma/prisma.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
 import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
-import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
+import { UpdateProductAffiliateDto, UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { ProductReadService } from './product-read.service';
 import { ImageSearchService } from '../../image-search/image-search.service'; // wiki 0052
+import { SystemSettingService } from '../../../common/services/system-setting.service'; // wiki 0105
 @Injectable()
 export class ProductWriteService {
   private readonly logger = new Logger(ProductWriteService.name);
@@ -17,6 +18,7 @@ export class ProductWriteService {
     private readonly productCache: ProductCacheService,
     private readonly productReadService: ProductReadService,
     private readonly imageSearch: ImageSearchService, // wiki 0052
+    private readonly systemSetting: SystemSettingService, // wiki 0105
   ) {}
 
   // wiki 0052: enqueue index job — fire and forget, never block product save.
@@ -723,6 +725,71 @@ export class ProductWriteService {
         createdAt: 'desc',
       },
     });
+  }
+
+  /**
+   * wiki 0105 — bật/tắt affiliate + đặt % hoa hồng cho một sản phẩm của chính seller.
+   *
+   * Mặc định MỌI sản phẩm đều TẮT: hoa hồng TRỪ VÀO DOANH THU CỦA CHÍNH SELLER khi đơn
+   * giao thành công, nên không ai được bị trừ tiền ngoài ý muốn. Đánh đổi đã biết trước:
+   * ngày ra mắt danh sách sản phẩm affiliate sẽ trống cho tới khi seller vào bật.
+   *
+   * Trần % đọc từ SystemSetting chứ không viết cứng — nó là chốt chặn để (phí sàn +
+   * hoa hồng) không nuốt hết doanh thu seller, và ban điều hành phải chỉnh được mà
+   * không cần deploy lại.
+   */
+  async updateAffiliate(sellerId: string, productId: string, dto: UpdateProductAffiliateDto) {
+    // Kiểm quyền theo SHOP, cùng khuôn với updateDiscount bên dưới: sản phẩm thuộc về
+    // shop, và một user chỉ sở hữu một shop.
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, shopId: true },
+    });
+    if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
+
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+    if (!shop || product.shopId !== shop.id) {
+      throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
+    }
+
+    if (!dto.enabled) {
+      // Tắt thì GIỮ NGUYÊN affiliateRate: bật lại không phải nhập lại từ đầu.
+      const off = await this.prisma.product.update({
+        where: { id: productId },
+        data: { affiliateEnabled: false },
+        select: { id: true, affiliateEnabled: true, affiliateRate: true },
+      });
+      await this.productCache.invalidateProduct(productId).catch(() => {});
+      return {
+        id: off.id,
+        affiliateEnabled: off.affiliateEnabled,
+        affiliateRate: off.affiliateRate === null ? null : Number(off.affiliateRate),
+      };
+    }
+
+    if (dto.rate === undefined || dto.rate === null) {
+      throw new BadRequestException('Cần đặt % hoa hồng khi bật tiếp thị liên kết.');
+    }
+    if (!Number.isFinite(dto.rate) || dto.rate <= 0) {
+      throw new BadRequestException('% hoa hồng phải lớn hơn 0.');
+    }
+
+    const maxRate = await this.systemSetting.getNumber('AFFILIATE_MAX_RATE', 0.3);
+    if (dto.rate > maxRate) {
+      throw new BadRequestException(`% hoa hồng tối đa là ${(maxRate * 100).toFixed(0)}%.`);
+    }
+
+    const on = await this.prisma.product.update({
+      where: { id: productId },
+      data: { affiliateEnabled: true, affiliateRate: new Prisma.Decimal(dto.rate) },
+      select: { id: true, affiliateEnabled: true, affiliateRate: true },
+    });
+    await this.productCache.invalidateProduct(productId).catch(() => {});
+    return {
+      id: on.id,
+      affiliateEnabled: on.affiliateEnabled,
+      affiliateRate: Number(on.affiliateRate),
+    };
   }
 
   async updateDiscount(sellerId: string, productId: string, dto: UpdateProductDiscountDto) {
