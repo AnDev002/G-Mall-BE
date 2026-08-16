@@ -36,6 +36,7 @@ import { ComplaintModule } from './modules/complaint/complaint.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { SystemSettingModule } from './common/services/system-setting.module';
 import { ImageSearchModule } from './modules/image-search/image-search.module'; // wiki 0052
+import { AffiliateModule } from './modules/affiliate/affiliate.module'; // wiki 0105
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -134,6 +135,7 @@ import { ImageSearchModule } from './modules/image-search/image-search.module'; 
     ComplaintModule,
     NotificationModule,
     ImageSearchModule, // wiki 0052: image search (CLIP + Qdrant)
+    AffiliateModule, // wiki 0105: affiliate sản phẩm (chạy song song hệ referral cũ)
   ],
   controllers: [AppController],
   providers: [AppService],
