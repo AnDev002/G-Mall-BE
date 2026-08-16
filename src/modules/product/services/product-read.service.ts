@@ -655,10 +655,14 @@ export class ProductReadService implements OnModuleInit {
 
     const mappedProduct = {
         ...product,
-        sellerId: product.sellerId || product.seller?.id, 
-        categoryId: product.categoryId, 
-        price: Number(product.price), 
+        sellerId: product.sellerId || product.seller?.id,
+        categoryId: product.categoryId,
+        price: Number(product.price),
         regularPrice: product.originalPrice ? Number(product.originalPrice) : undefined,
+        // wiki 0105: Prisma serialize Decimal thành CHUỖI → FE nhân giá × "0.1000" ra
+        // NaN, nút chia sẻ hiện hoa hồng sai. Ép về số ngay tại nguồn, cùng cách `price`
+        // đã làm (lớp bug đã gặp ở wiki 0103).
+        affiliateRate: product.affiliateRate === null ? null : Number(product.affiliateRate),
         tiers: product.options.map(opt => ({
             name: opt.name,
             options: opt.values.map(v => v.value), 

@@ -224,6 +224,34 @@ export class AffiliateCommissionService {
     return cap;
   }
 
+  /**
+   * Đơn ĐÃ GIAO nhưng KHÔNG có doanh thu để trích hoa hồng → đóng sổ bằng `REJECTED`.
+   *
+   * `creditSellerOnDelivered` có nhiều nhánh thoát sớm (đơn không gắn shop, shop không
+   * còn chủ, `net <= 0` do khuyến mãi ăn hết đơn). Nếu không đóng ở đây, dòng hoa hồng
+   * nằm lại `PENDING` VĨNH VIỄN: chốt sổ chỉ quét `APPROVED`, còn người tiếp thị thì mãi
+   * mãi thấy "chờ khách nhận hàng" cho một đơn đã giao xong.
+   *
+   * Cùng lớp lỗi với "tiền mắc kẹt" ở chốt sổ — hỏng âm thầm, không ai khiếu nại vì
+   * không ai biết mình có khoản đó. Thà đóng lại kèm lý do đọc được còn hơn treo.
+   */
+  async rejectUnfundable(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    reason: string,
+  ): Promise<number> {
+    const res = await tx.affiliateCommission.updateMany({
+      where: { orderId, status: 'PENDING' },
+      data: { status: 'REJECTED', rejectReason: reason, deliveredAt: new Date() },
+    });
+    if (res.count > 0) {
+      this.logger.warn(
+        `[Affiliate] đóng ${res.count} khoản của đơn ${orderId} vì không có doanh thu để trích: ${reason}`,
+      );
+    }
+    return res.count;
+  }
+
   /** Đơn huỷ → hoa hồng huỷ theo. Tiền chưa hề chuyển đi nên không ai mất gì. */
   async cancelForOrder(tx: Prisma.TransactionClient, orderId: string): Promise<number> {
     const res = await tx.affiliateCommission.updateMany({

@@ -1020,18 +1020,34 @@ export class OrderService {
   // Best-effort (try/catch) — không làm fail flow giao hàng. Là mảnh ghép để payout chạy E2E.
   private async creditSellerOnDelivered(tx: Prisma.TransactionClient, order: any) {
     try {
-      if (!order?.shopId) return;
-      const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
-      if (!isPaid) return;
-      const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
-      const net = Math.floor(Number(order.totalAmount) * (1 - feeRate));
-      if (net <= 0) return;
       // Wiki 0086: idempotent — nếu đã có giao dịch ORDER_INCOME cho đơn này thì bỏ qua
       // (lưới an toàn cuối: chống credit ví seller 2 lần dù bị gọi lại do race/toggle).
+      // Đặt TRƯỚC mọi thứ khác: lần chạy đầu đã xử lý xong cả hoa hồng lẫn ví.
       const already = await tx.walletTransaction.findFirst({ where: { referenceId: order.id, type: 'ORDER_INCOME' } });
       if (already) return;
-      const shop = await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } });
-      if (!shop?.ownerId) return;
+
+      const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+      const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
+      const net = order?.shopId && isPaid ? Math.floor(Number(order.totalAmount) * (1 - feeRate)) : 0;
+      const shop = order?.shopId
+        ? await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } })
+        : null;
+
+      // wiki 0105 — đơn ĐÃ GIAO nhưng không có doanh thu để trích hoa hồng thì phải ĐÓNG
+      // SỔ hoa hồng, không được thoát sớm để nó nằm lại PENDING vĩnh viễn. Chốt sổ chỉ
+      // quét APPROVED, nên khoản treo là khoản mắc kẹt mà không ai biết để khiếu nại.
+      if (!order?.shopId || !isPaid || net <= 0 || !shop?.ownerId) {
+        await this.affiliateCommission.rejectUnfundable(
+          tx,
+          order.id,
+          !isPaid
+            ? 'Đơn chưa được thanh toán'
+            : net <= 0
+              ? 'Doanh thu đơn sau khuyến mãi không đủ để trả hoa hồng'
+              : 'Đơn không xác định được cửa hàng nhận doanh thu',
+        );
+        return;
+      }
 
       // wiki 0105 — chốt hoa hồng affiliate TRƯỚC khi ghi có cho seller, vì nó trừ
       // thẳng vào phần seller nhận. `approveOnDelivered` tự áp trần theo `net` nên
