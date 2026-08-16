@@ -82,4 +82,70 @@ export class AdminAffiliateService {
 
     return { id: updated.id, status: updated.status, code: updated.code };
   }
+
+  /** Đối soát hoa hồng toàn sàn — admin xem được mọi dòng, lọc theo trạng thái/kỳ. */
+  async listCommissions(status?: string, period?: string, rawPage?: string) {
+    const page = Math.max(1, Number(rawPage) || 1);
+    const limit = 30;
+    const validStatus = ['PENDING', 'APPROVED', 'SETTLED', 'CANCELLED', 'REJECTED'];
+
+    const where: Prisma.AffiliateCommissionWhereInput = {};
+    if (status && status !== 'ALL') {
+      if (!validStatus.includes(status)) {
+        throw new BadRequestException('Trạng thái lọc không hợp lệ.');
+      }
+      where.status = status as any;
+    }
+    if (period) {
+      // period dạng 'YYYY-MM' → lọc theo ngày GIAO HÀNG, vì đó là mốc quyết định khoản
+      // đó thuộc kỳ chốt sổ nào (xem AffiliateSettlementService.runSettlement).
+      const m = /^(\d{4})-(\d{2})$/.exec(period);
+      if (!m) throw new BadRequestException('Kỳ phải có dạng YYYY-MM.');
+      const from = new Date(Number(m[1]), Number(m[2]) - 1, 1);
+      const to = new Date(Number(m[1]), Number(m[2]), 1);
+      where.deliveredAt = { gte: from, lt: to };
+    }
+
+    const [rows, total, agg] = await Promise.all([
+      this.prisma.affiliateCommission.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          account: { select: { code: true, user: { select: { email: true, name: true } } } },
+        },
+      }),
+      this.prisma.affiliateCommission.count({ where }),
+      this.prisma.affiliateCommission.aggregate({ where, _sum: { amount: true } }),
+    ]);
+
+    return {
+      data: rows.map((r) => ({
+        id: r.id,
+        orderId: r.orderId,
+        productId: r.productId,
+        shopId: r.shopId,
+        status: r.status,
+        baseAmount: Number(r.baseAmount),
+        rate: Number(r.rate),
+        amount: Number(r.amount),
+        rejectReason: r.rejectReason,
+        deliveredAt: r.deliveredAt,
+        createdAt: r.createdAt,
+        affiliate: {
+          code: r.account?.code ?? null,
+          email: r.account?.user?.email ?? null,
+          name: r.account?.user?.name ?? null,
+        },
+      })),
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        totalAmount: Number(agg._sum.amount ?? 0),
+      },
+    };
+  }
 }

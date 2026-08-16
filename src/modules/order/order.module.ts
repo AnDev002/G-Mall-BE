@@ -17,6 +17,7 @@ import { ReviewService } from './review.service';
 import { ReviewController } from './review.controller';
 import { CharityModule } from '../charity/charity.module';
 import { NotificationModule } from '../notification/notification.module';
+import { AffiliateModule } from '../affiliate/affiliate.module'; // wiki 0105
 @Module({
   imports: [
     DatabaseModule,
@@ -28,6 +29,7 @@ import { NotificationModule } from '../notification/notification.module';
     PaymentModule,
     CharityModule, // Cho OrderService.confirmOrderReceived hook auto-trích quỹ (spec [0018])
     NotificationModule, // wiki 0046: trigger notif khi cancel/confirm/status update
+    AffiliateModule, // wiki 0105: sinh/chốt/huỷ hoa hồng affiliate theo vòng đời đơn
     BullModule.registerQueue({
       name: 'order_queue',
     }),

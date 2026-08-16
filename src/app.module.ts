@@ -37,6 +37,7 @@ import { NotificationModule } from './modules/notification/notification.module';
 import { SystemSettingModule } from './common/services/system-setting.module';
 import { ImageSearchModule } from './modules/image-search/image-search.module'; // wiki 0052
 import { AffiliateModule } from './modules/affiliate/affiliate.module'; // wiki 0105
+import { ScheduleModule } from '@nestjs/schedule'; // wiki 0105: chốt sổ hoa hồng hàng tháng
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -136,6 +137,10 @@ import { AffiliateModule } from './modules/affiliate/affiliate.module'; // wiki 
     NotificationModule,
     ImageSearchModule, // wiki 0052: image search (CLIP + Qdrant)
     AffiliateModule, // wiki 0105: affiliate sản phẩm (chạy song song hệ referral cũ)
+    // wiki 0105: dự án TRƯỚC ĐÂY không có tác vụ định kỳ nào. Cần cho việc chốt sổ hoa
+    // hồng hàng tháng. BE chạy PM2 MỘT tiến trình (`nest-app`) nên không có rủi ro hai
+    // nơi cùng chạy; ngoài ra hàm chốt sổ vốn idempotent nên chạy trùng cũng vô hại.
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],

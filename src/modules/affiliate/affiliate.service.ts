@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -87,16 +88,130 @@ export class AffiliateService {
     const account = await this.prisma.affiliateAccount.findUnique({ where: { userId } });
     if (!account) return { registered: false, status: null };
 
+    const [grouped, user, clickAgg] = await Promise.all([
+      // TIỀN LUÔN CỘNG TỪ SỔ CÁI. Không có cột tổng nào để đọc — số dư denormalize là
+      // nguồn drift kinh điển: một nhánh quên cập nhật là sổ lệch vĩnh viễn.
+      this.prisma.affiliateCommission.groupBy({
+        by: ['status'],
+        where: { accountId: account.id },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { walletBalance: true } }),
+      this.prisma.affiliateLink.aggregate({
+        where: { accountId: account.id },
+        _sum: { clicks: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const sumOf = (s: string) =>
+      Number(grouped.find((g) => g.status === s)?._sum.amount ?? 0);
+    const countOf = (s: string) =>
+      Number(grouped.find((g) => g.status === s)?._count._all ?? 0);
+
     return {
       registered: true,
       status: account.status,
       code: account.code,
       channel: account.channel,
       rejectReason: account.rejectReason,
-      totalClicks: account.totalClicks,
-      totalOrders: account.totalOrders,
       createdAt: account.createdAt,
       reviewedAt: account.reviewedAt,
+
+      totalClicks: Number(clickAgg._sum.clicks ?? 0),
+      totalLinks: clickAgg._count._all,
+      totalOrders: countOf('PENDING') + countOf('APPROVED') + countOf('SETTLED'),
+
+      // Ba con số hiển thị, hai trạng thái tiền: chưa rút được / rút được.
+      balance: {
+        // "Khách chưa nhận hàng" — đơn còn có thể huỷ.
+        waitingDelivery: sumOf('PENDING'),
+        // "Đã chắc, đợi tới kỳ chốt sổ" — sàn đang giữ.
+        provisional: sumOf('APPROVED'),
+        // "Hoa hồng thật" — đã chốt sổ, nằm trong ví, rút được.
+        available: Number(user?.walletBalance ?? 0),
+        settledLifetime: sumOf('SETTLED'),
+      },
     };
+  }
+
+  /** Sổ hoa hồng chi tiết, lọc theo trạng thái. */
+  async getCommissions(userId: string, status?: string, rawPage?: string) {
+    const account = await this.prisma.affiliateAccount.findUnique({ where: { userId } });
+    if (!account) return { data: [], meta: { page: 1, limit: 20, total: 0, totalPages: 0 } };
+
+    const page = Math.max(1, Number(rawPage) || 1);
+    const limit = 20;
+    const valid = ['PENDING', 'APPROVED', 'SETTLED', 'CANCELLED', 'REJECTED'];
+
+    const where: any = { accountId: account.id };
+    if (status && status !== 'ALL') {
+      if (!valid.includes(status)) {
+        throw new BadRequestException('Trạng thái lọc không hợp lệ.');
+      }
+      where.status = status;
+    }
+
+    const [rows, total] = await Promise.all([
+      this.prisma.affiliateCommission.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: { link: { select: { code: true } } },
+      }),
+      this.prisma.affiliateCommission.count({ where }),
+    ]);
+
+    const productIds = [...new Set(rows.map((r) => r.productId))];
+    const products = productIds.length
+      ? await this.prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, name: true, images: true },
+        })
+      : [];
+    const productById = new Map(products.map((p) => [p.id, p]));
+
+    return {
+      data: rows.map((r) => {
+        const p = productById.get(r.productId);
+        return {
+          id: r.id,
+          orderId: r.orderId,
+          status: r.status,
+          // Decimal → Number: Prisma serialize Decimal thành CHUỖI, FE mất dấu phân
+          // cách và phép cộng thành nối chuỗi (bug đã gặp ở wiki 0103).
+          baseAmount: Number(r.baseAmount),
+          rate: Number(r.rate),
+          amount: Number(r.amount),
+          rejectReason: r.rejectReason,
+          deliveredAt: r.deliveredAt,
+          createdAt: r.createdAt,
+          linkCode: r.link?.code ?? null,
+          product: {
+            id: r.productId,
+            name: p?.name ?? '(sản phẩm đã bị gỡ)',
+            image: Array.isArray(p?.images) ? (p!.images as any)[0] ?? null : null,
+          },
+        };
+      }),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Ném lỗi nếu user chưa phải người tiếp thị ĐÃ DUYỆT.
+   *
+   * Dùng làm cổng chặn cho những hành động chỉ dành cho người tiếp thị — đặc biệt là
+   * RÚT TIỀN: không có chốt này thì `/affiliate/payout` trở thành cổng rút tiền mở cho
+   * mọi tài khoản đã đăng nhập.
+   */
+  async requireApprovedAffiliate(userId: string) {
+    const account = await this.prisma.affiliateAccount.findUnique({ where: { userId } });
+    if (!account || account.status !== 'APPROVED') {
+      throw new ForbiddenException('Bạn chưa phải người tiếp thị đã được duyệt.');
+    }
+    return account;
   }
 }

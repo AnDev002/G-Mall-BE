@@ -18,6 +18,7 @@ import { PaymentService } from '../payment/payment.service';
 import { CharityService } from '../charity/charity.service';
 import { SystemSettingService } from '../../common/services/system-setting.service';
 import { NotificationService } from '../notification/notification.service';
+import { AffiliateCommissionService } from '../affiliate/affiliate-commission.service'; // wiki 0105
 
 // Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k.
 //
@@ -48,6 +49,7 @@ export class OrderService {
     private systemSetting: SystemSettingService,
     private notificationService: NotificationService,
     private redis: RedisService,
+    private affiliateCommission: AffiliateCommissionService, // wiki 0105
   ) {}
 
   /**
@@ -318,6 +320,12 @@ export class OrderService {
   async createOrder(userId: string, dto: CreateOrderDto, clientIp: string | null = null) {
     const preview = await this.previewOrder(userId, dto);
     const receiver = dto.receiverInfo || {};
+
+    // wiki 0105 — quy đổi affiliate. Kiểm NGOÀI transaction để giữ transaction đặt hàng
+    // ngắn nhất có thể (nó đã phải gánh trừ kho, voucher, xu, flash-sale). Cookie phía
+    // người dùng KHÔNG tin được nên mọi điều kiện đều kiểm lại trong resolveRefs; mục
+    // nào hỏng bị bỏ im lặng — một link sai không được phép làm hỏng đơn của người mua.
+    const affMap = await this.affiliateCommission.resolveRefs(userId, (dto as any).affiliate);
     
     let noteMap: Record<string, string> = {};
     if (typeof dto.note === 'object') {
@@ -497,8 +505,25 @@ export class OrderService {
                          price: i.price,
                      }))
                  }
-             }
+             },
+             // wiki 0105: cần id của từng dòng hàng để làm khoá idempotent cho sổ hoa
+             // hồng (AffiliateCommission.orderItemId @unique). include chỉ THÊM trường,
+             // không bỏ trường nào nên các chỗ dùng newOrder phía sau không đổi.
+             include: { items: { select: { id: true, productId: true, quantity: true, price: true } } },
           });
+
+          // wiki 0105: sinh dòng hoa hồng PENDING cho các món đến từ link affiliate.
+          // Nằm TRONG transaction đặt hàng: nếu ghi sổ hỏng thì đơn cũng không nên tồn
+          // tại nửa vời — người tiếp thị mất công dẫn khách mà không được ghi nhận là
+          // lỗi âm thầm, không ai đi khiếu nại thứ họ không biết mình có.
+          if (affMap.size > 0) {
+             await this.affiliateCommission.createPendingForOrder(tx, {
+                orderId: newOrder.id,
+                items: newOrder.items,
+                affMap,
+             });
+          }
+
           createdOrders.push(newOrder);
       }
 
@@ -718,6 +743,10 @@ export class OrderService {
         data: { status: 'CANCELLED' },
       });
       if (claim.count === 0) throw new BadRequestException('Đơn hàng đã được xử lý.');
+      // wiki 0105: hoa hồng affiliate huỷ theo đơn. Đặt ngay sau claim ATOMIC nên chỉ
+      // request THẮNG race mới chạy — giống mọi thao tác bồi hoàn khác ở khối này.
+      // Tiền chưa hề chuyển đi (chỉ chuyển ví khi CHỐT SỔ) nên không ai mất gì.
+      await this.affiliateCommission.cancelForOrder(tx, orderId);
       for (const item of order.items) {
         if (item.productId) {
           await tx.product.update({
@@ -1003,10 +1032,34 @@ export class OrderService {
       if (already) return;
       const shop = await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } });
       if (!shop?.ownerId) return;
-      await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: net } } });
+
+      // wiki 0105 — chốt hoa hồng affiliate TRƯỚC khi ghi có cho seller, vì nó trừ
+      // thẳng vào phần seller nhận. `approveOnDelivered` tự áp trần theo `net` nên
+      // `net - commission` KHÔNG BAO GIỜ âm (xem chú thích áp trần trong service đó).
+      // Đơn không có affiliate → trả 0 → công thức cũ nguyên vẹn từng đồng.
+      const commissionTotal = await this.affiliateCommission.approveOnDelivered(tx, order.id, net);
+      const sellerNet = net - commissionTotal;
+
+      await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: sellerNet } } });
       await tx.walletTransaction.create({
         data: { userId: shop.ownerId, amount: net, type: 'ORDER_INCOME', status: 'COMPLETED', referenceId: order.id, description: `Doanh thu đơn #${order.id.slice(0, 8)}` },
       });
+      // Ghi phí tiếp thị thành dòng RIÊNG (âm) thay vì gộp vào ORDER_INCOME: seller mở
+      // sổ thấy "doanh thu 950.000, phí tiếp thị −50.000" thay vì một con số 900.000
+      // không giải thích được. Chốt idempotent phía trên (ORDER_INCOME theo referenceId)
+      // vẫn bảo vệ cả hai dòng vì chúng luôn được ghi cùng nhau trong một transaction.
+      if (commissionTotal > 0) {
+        await tx.walletTransaction.create({
+          data: {
+            userId: shop.ownerId,
+            amount: new Prisma.Decimal(-commissionTotal),
+            type: 'AFFILIATE_FEE',
+            status: 'COMPLETED',
+            referenceId: order.id,
+            description: `Phí tiếp thị liên kết đơn #${order.id.slice(0, 8)}`,
+          },
+        });
+      }
     } catch (e: any) {
       // [FIX review-finance/MEDIUM - wiki 0088] RETHROW để tx CUỐN NGƯỢC (rollback) toàn bộ thao tác
       // DELIVERED. Trước đây chỉ log + nuốt → đơn vẫn commit DELIVERED nhưng ví seller KHÔNG được
@@ -1076,6 +1129,10 @@ export class OrderService {
           data: { status: 'CANCELLED' },
         });
         if (claim.count === 0) throw new BadRequestException('Đơn đã được xử lý, không thể hủy.');
+        // wiki 0105: đối xứng với luồng buyer-cancel — seller huỷ đơn thì hoa hồng
+        // affiliate cũng phải huỷ, nếu không nó nằm PENDING vĩnh viễn rồi được chốt sổ
+        // ở GĐ4 cho một đơn KHÔNG BAO GIỜ giao (đúc tiền).
+        await this.affiliateCommission.cancelForOrder(tx, orderId);
         const full = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
         if (full) {
           for (const item of (full as any).items) {
