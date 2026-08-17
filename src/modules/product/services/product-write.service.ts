@@ -98,6 +98,18 @@ export class ProductWriteService {
           shop: {
             connect: { id: shop.id }
           },
+          // wiki 0108: PHAI ghi ca `seller` chu khong chi `shop`.
+          //
+          // Truoc day cho nay chi `shop.connect`, nen `Product.sellerId` de NULL. Ma
+          // `dashboard.service.getSellerStats()` loc MOI truy van theo
+          // `product.is.sellerId` (doanh thu, so don, so san pham, hang sap het) — nen
+          // nguoi ban nhin thay 0đ doanh thu VINH VIEN du tien da vao vi that.
+          // Do duoc tren prod truoc khi sua: 687/912 san pham thieu sellerId, 13 shop
+          // bi anh huong, 56 don DELIVERED lien quan. `userId` o day chinh la chu shop
+          // (`shop` duoc tim bang `ownerId: userId` o dau ham) nen day la dung nguoi.
+          seller: {
+            connect: { id: userId }
+          },
           brandRel: brandId ? { connect: { id: brandId } } : undefined,
           price: new Prisma.Decimal(price || 0),
           stock: totalStock,
