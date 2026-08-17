@@ -394,7 +394,14 @@ export class ProductWriteService {
     if (brandId !== undefined) {
         updateData.brandRel = { connect: { id: brandId } };
     }
-    if (brand !== undefined) updateData.brand = brand;
+    // KHÔNG ghi `brand` như một cột: `Product` KHÔNG có cột `brand` (chỉ có `brandId` +
+    // quan hệ `brandRel`). Dòng cũ `updateData.brand = brand` khiến Prisma ném
+    // "Unknown argument brand" → PrismaExceptionFilter đổi thành 400 "Dữ liệu đầu vào
+    // không hợp lệ" → seller KHÔNG BAO GIỜ sửa được sản phẩm, vì AddProductPage luôn
+    // gửi `brand: brand || 'No Brand'` trong mọi lần bấm Cập nhật.
+    //
+    // Tên hãng vốn đã được lưu đúng chỗ ở khối gộp `attributes` ngay bên dưới — giống
+    // hệt cách `create()` làm. Nên dòng cũ vừa thừa vừa gây chết.
     if (images !== undefined) updateData.images = Array.isArray(images) ? images : [];
     if (categoryId !== undefined) updateData.category = { connect: { id: categoryId } };
 
