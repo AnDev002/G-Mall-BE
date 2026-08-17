@@ -163,6 +163,9 @@ export class CartService {
         images: true,
         stock: true,
         slug: true,
+        // wiki 0108: PHẢI nạp variants ở đây. Giỏ hàng đã theo dõi `productVariantId`
+        // từ round15, nhưng lại chưa bao giờ đọc giá/tồn của chính variant đó.
+        variants: { select: { id: true, sku: true, price: true, stock: true, image: true } },
         // Thêm phần này:
         shop: {
           select: {
@@ -183,17 +186,35 @@ export class CartService {
         const p = productMap.get(entry.productId)!;
         const quantity = parseInt(cartItemsRaw[entry.field]);
         const images = p.images as any[];
+
+        // wiki 0108: giỏ hàng phải báo giá/tồn của ĐÚNG biến thể khách đã chọn.
+        //
+        // Trước đây chỗ này luôn trả `p.price` và `p.stock` của sản phẩm gốc, kể cả khi
+        // dòng giỏ có `variantId`. Đo được trên prod: trang sản phẩm hiện 180.000đ
+        // (giá variant), giỏ hàng hiện 120.000đ (giá gốc), còn `/orders/preview` tính
+        // đúng 180.000đ ⇒ **khách bị tính nhiều hơn con số họ nhìn thấy lúc quyết định**.
+        // `stock` cũng vậy: trả 639 của sản phẩm gốc thay vì 121 của variant, nên nút
+        // tăng số lượng cho phép vượt quá tồn kho thật của biến thể.
+        // Khớp theo id HOẶC sku, giống `resolveGuardStock` (FE có nơi gửi sku).
+        const variant = entry.variantId
+          ? p.variants.find(v => v.id === entry.variantId || v.sku === entry.variantId)
+          : null;
+        // Variant lạ/cũ → lùi về giá gốc thay vì làm vỡ giỏ; order-time vẫn chặn variant sai.
+        const unitPrice = variant?.price != null ? Number(variant.price) : Number(p.price);
+        const availableStock = variant ? variant.stock : p.stock;
+
         return {
           // id = composite field để FE gọi DELETE/PATCH :itemId trúng đúng variant này.
           id: entry.field,
           productId: p.id,
           productVariantId: entry.variantId,
           title: p.name,
-          imageUrl: Array.isArray(images) ? (images[0]?.url || images[0]) : '',
-          price: Number(p.price),
+          imageUrl:
+            variant?.image || (Array.isArray(images) ? (images[0]?.url || images[0]) : ''),
+          price: unitPrice,
           quantity: quantity,
-          stock: p.stock,
-          totalPrice: Number(p.price) * quantity,
+          stock: availableStock,
+          totalPrice: unitPrice * quantity,
           // [FIX 2] Map thông tin shop ra ngoài object
           shopId: p.shop?.id || 'unknown-shop',
           shopName: p.shop?.name || 'Cửa hàng'
