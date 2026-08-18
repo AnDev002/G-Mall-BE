@@ -18,6 +18,17 @@ export class DashboardService {
     });
 
     const totalOrders = await this.prisma.order.count();
+
+    // wiki 0108: giao diện quản trị gắn nhãn "Đơn hàng mới" cho `totalOrders`, nhưng đó
+    // là ĐẾM TẤT CẢ đơn từ trước tới nay (đo trên prod: 262, trong khi 30 ngày gần nhất
+    // chỉ có 17). Một con số đứng yên hàng tháng dưới cái tên "mới" thì vô dụng — tệ hơn
+    // là gây hiểu nhầm. Trả thêm số đơn 30 ngày gần nhất để giao diện hiển thị đúng thứ
+    // nó đang hứa; `totalOrders` vẫn giữ nguyên cho chỗ nào cần tổng.
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const newOrders30d = await this.prisma.order.count({
+      where: { createdAt: { gte: new Date(Date.now() - THIRTY_DAYS_MS) } },
+    });
+
     const totalUsers = await this.prisma.user.count();
 
     // [round14 FIX L2] Đếm Shop thực sự ACTIVE (loại shop banned/pending và seller chưa có shop).
@@ -28,6 +39,7 @@ export class DashboardService {
     return {
       totalRevenue: Number(revenueAgg._sum.totalAmount) || 0, // Convert Decimal to Number để FE dễ đọc
       totalOrders,
+      newOrders30d,
       totalUsers,
       activeShops,
     };
