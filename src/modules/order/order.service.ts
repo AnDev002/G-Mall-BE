@@ -537,6 +537,46 @@ export class OrderService {
         timeout: 40000 
     }); 
 
+    // ------------------------------------------------------------------------
+    // wiki 0108: BÁO CHO NGƯỜI ĐƯỢC TẶNG BIẾT.
+    //
+    // Trước đây đặt đơn quà tặng xong thì KHÔNG có gì xảy ra phía người nhận: không mail,
+    // không `Notification`, không tra ngược số điện thoại/email về `User`. Trên một sàn
+    // QUÀ TẶNG, người được tặng không hề biết mình có quà — món quà có thể nằm đó mãi.
+    //
+    // Ở đây chỉ làm phần chắc chắn đúng: nếu số điện thoại người nhận khớp một tài khoản
+    // có thật thì tạo thông báo trong ứng dụng. Người nhận CHƯA có tài khoản thì cần gửi
+    // mail/SMS — việc đó phụ thuộc hạ tầng gửi tin nên để lại, ghi rõ trong wiki.
+    //
+    // Best-effort: hỏng thì KHÔNG được làm sập đơn hàng đã đặt thành công.
+    if (dto.isGift && result.length > 0) {
+      try {
+        const phone = String((dto as any).receiverInfo?.phone || '').trim();
+        if (phone) {
+          const nguoiNhan = await this.prisma.user.findFirst({
+            where: { phone },
+            select: { id: true },
+          });
+          // Đừng tự báo cho chính mình khi người ta tự mua tặng mình.
+          if (nguoiNhan && nguoiNhan.id !== userId) {
+            const nguoiTang = await this.prisma.user.findUnique({
+              where: { id: userId },
+              select: { name: true },
+            });
+            await this.notificationService.create({
+              userId: nguoiNhan.id,
+              type: 'ORDER',
+              title: 'Bạn nhận được một món quà!',
+              content: `${nguoiTang?.name || 'Một người bạn'} vừa gửi tặng bạn một món quà. Đơn #${result[0].id.slice(0, 8)} đang được chuẩn bị.`,
+              link: '/user/purchase',
+            });
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Không tạo được thông báo cho người được tặng: ${e.message}`);
+      }
+    }
+
     // [FIX 3] Di chuyển logic xóa giỏ hàng (Redis) ra ngoài transaction DB
     // Redis nhanh nhưng network I/O có thể làm chậm DB lock nếu để bên trong
     try {
