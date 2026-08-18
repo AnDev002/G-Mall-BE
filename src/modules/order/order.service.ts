@@ -492,6 +492,14 @@ export class OrderService {
                  wardCode: receiver.wardCode ? String(receiver.wardCode) : null,
                  provinceId: receiver.provinceId != null ? Number(receiver.provinceId) : null,
                  message: note,
+                 // wiki 0108: LƯU LỜI CHÚC. FE đã gửi `senderInfo.message` từ lâu nhưng
+                 // trước đây không ai đọc — `message` thì đang giữ ghi chú cho shop, nên
+                 // lời chúc rơi thẳng vào hư không. Trên một sàn quà tặng, mất lời chúc là
+                 // mất chính món quà. Cắt ở 500 cho khớp `VARCHAR(500)` của cột, tránh lặp
+                 // lại lỗi P2000 → 500.
+                 giftMessage: dto.isGift
+                   ? (String((dto as any).senderInfo?.message ?? '').trim().slice(0, 500) || null)
+                   : null,
                  isGift: dto.isGift || false,
                  paymentMethod: dto.paymentMethod,
                  paymentStatus: 'PENDING',

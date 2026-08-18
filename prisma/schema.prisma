@@ -677,7 +677,14 @@ model Order {
   recipientName    String?
   recipientPhone   String?
   recipientAddress String?
-  message          String? // Lời chúc
+  // wiki 0108: chú thích cũ ghi "Lời chúc" là SAI so với thực tế — `order.service` ghi
+  // GHI CHÚ CHO SHOP vào đây (`message: note`, lấy theo từng shop). Lời chúc thật nằm ở
+  // `giftMessage` bên dưới. Giữ tên cột để không phá dữ liệu 299 đơn đang có.
+  message          String? // Ghi chú người mua gửi shop (VD: "giao giờ hành chính")
+  // wiki 0108: lời chúc kèm quà. FE vẫn gửi (`senderInfo.message`) từ lâu nhưng BE chưa
+  // bao giờ đọc → trên một sàn QUÀ TẶNG, lời chúc bị vứt đi 100%. Tách cột riêng vì hai
+  // thứ cùng tồn tại trong một đơn (vừa nhắn shop, vừa gửi lời chúc cho người nhận).
+  giftMessage      String? @db.VarChar(500)
   isGift           Boolean @default(false)
 
   paymentMethod String // MOMO, BANKING, COD
