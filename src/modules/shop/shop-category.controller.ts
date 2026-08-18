@@ -1,8 +1,9 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, Request, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { PrismaService } from '../../database/prisma/prisma.service';
+import { CreateShopCategoryDto } from './dto/shop-category.dto';
 
 @Controller('seller/shop-categories')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -20,10 +21,20 @@ export class ShopCategoryController {
   }
 
   @Post()
-  async create(@Request() req, @Body('name') name: string) {
+  async create(@Request() req, @Body() dto: CreateShopCategoryDto) {
     const shopId = await this.getShopId(req.user.id);
+
+    // wiki 0108: chặn trùng tên trong CÙNG một shop. Trước đây tạo được hai danh mục
+    // y hệt nhau, người bán không phân biệt nổi khi gán sản phẩm. (Khác shop trùng tên
+    // thì vẫn cho — đó là chuyện bình thường.)
+    const trung = await this.prisma.shopCategory.findFirst({
+      where: { shopId, name: dto.name },
+      select: { id: true },
+    });
+    if (trung) throw new BadRequestException('Shop đã có danh mục tên này');
+
     return this.prisma.shopCategory.create({
-      data: { name, shopId }
+      data: { name: dto.name, shopId }
     });
   }
 
