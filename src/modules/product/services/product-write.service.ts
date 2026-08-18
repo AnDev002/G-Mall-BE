@@ -826,6 +826,21 @@ export class ProductWriteService {
         throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
     }
 
+    // wiki 0108: ngày kết thúc phải SAU ngày bắt đầu.
+    //
+    // Giao diện đã chặn ("Ngày kết thúc phải sau ngày bắt đầu") nhưng API thì không —
+    // gọi thẳng API với `start = 31/12`, `end = 01/01` vẫn nhận **200** và ghi vào DB một
+    // khoảng thời gian không bao giờ đúng. Khuyến mãi kiểu đó vừa không bao giờ chạy, vừa
+    // làm hỏng mọi truy vấn lọc theo khoảng ngày. Kiểm ở tầng dịch vụ chứ không phải DTO
+    // vì đây là ràng buộc GIỮA hai trường.
+    if (dto.isDiscountActive && dto.discountStartDate && dto.discountEndDate) {
+      const batDau = new Date(dto.discountStartDate);
+      const ketThuc = new Date(dto.discountEndDate);
+      if (!Number.isNaN(batDau.getTime()) && !Number.isNaN(ketThuc.getTime()) && ketThuc <= batDau) {
+        throw new BadRequestException('Ngày kết thúc khuyến mãi phải sau ngày bắt đầu');
+      }
+    }
+
     // --- VALIDATE TOÀN BỘ TRƯỚC KHI GHI (atomic) ---
     // Wiki 0082 fix: validate ALL variant discountValues up front nên một biến thể
     // lỗi không để lại ghi dở dang. Tính sẵn payload để dùng trong transaction.

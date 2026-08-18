@@ -1,5 +1,5 @@
 // BE-1.7/modules/product/dto/create-product.dto.ts
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsPositive, IsArray, ValidateNested, IsJSON, IsObject, MaxLength, IsIn } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsPositive, IsArray, ArrayUnique, ValidateNested, IsJSON, IsObject, MaxLength, IsIn } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 // Spec [0018]: Mô tả ngắn — block 6 fields hiển thị nhanh trên trang SP.
@@ -19,8 +19,16 @@ export class ProductTierDto {
   @IsNotEmpty()
   name: string;
 
+  // wiki 0108: chặn hai lựa chọn TRÙNG TÊN trong cùng một phân loại. Trước đây
+  // `tiers: [{ name: 'Màu', options: ['Đỏ', 'Đỏ'] }]` được nhận (201), và người mua nhìn
+  // thấy hai ô "Đỏ" y hệt nhau trên trang sản phẩm — không cách nào biết chúng khác gì,
+  // mà mỗi ô lại trỏ tới một SKU khác nhau với tồn kho và giá riêng.
+  // So sánh sau khi cắt khoảng trắng và bỏ phân biệt hoa/thường: "Đỏ", "đỏ " là một.
   @IsArray()
   @IsString({ each: true })
+  @ArrayUnique((o: string) => String(o).trim().toLowerCase(), {
+    message: 'Các lựa chọn trong cùng một phân loại không được trùng tên',
+  })
   options: string[];
 
   @IsOptional()
