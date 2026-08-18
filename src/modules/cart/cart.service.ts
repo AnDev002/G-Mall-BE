@@ -230,8 +230,11 @@ export class CartService {
               return nhom.values?.[idx]?.value ?? null;
             })
             .filter(Boolean);
-          if (phan.length) return phan.join(' / ');
-          return variant.sku && String(variant.sku).trim() ? String(variant.sku).trim() : null;
+          // CHỈ trả tên khi dựng được từ giá trị phân loại thật. KHÔNG lùi về `sku`:
+          // với người mua, "KM88631" không phải là một màu hay một cỡ — hiện nó dưới nhãn
+          // "Phân loại" chỉ làm họ hoang mang thêm. `sku` được trả RIÊNG ở trường `sku`
+          // để giao diện tự quyết hiển thị thế nào.
+          return phan.length ? phan.join(' / ') : null;
         })();
         // Variant lạ/cũ → lùi về giá gốc thay vì làm vỡ giỏ; order-time vẫn chặn variant sai.
         const unitPrice = variant?.price != null ? Number(variant.price) : Number(p.price);
