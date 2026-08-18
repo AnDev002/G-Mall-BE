@@ -165,7 +165,16 @@ export class CartService {
         slug: true,
         // wiki 0108: PHẢI nạp variants ở đây. Giỏ hàng đã theo dõi `productVariantId`
         // từ round15, nhưng lại chưa bao giờ đọc giá/tồn của chính variant đó.
-        variants: { select: { id: true, sku: true, price: true, stock: true, image: true } },
+        variants: { select: { id: true, sku: true, price: true, stock: true, image: true, tierIndex: true } },
+        // wiki 0108: nạp thêm phân loại để dựng TÊN biến thể ("Đỏ / Size L") — xem
+        // `tenBienThe()` bên dưới.
+        options: {
+          orderBy: { position: 'asc' },
+          select: {
+            name: true,
+            values: { orderBy: { position: 'asc' }, select: { value: true } },
+          },
+        },
         // Thêm phần này:
         shop: {
           select: {
@@ -199,6 +208,31 @@ export class CartService {
         const variant = entry.variantId
           ? p.variants.find(v => v.id === entry.variantId || v.sku === entry.variantId)
           : null;
+
+        // wiki 0108: giỏ hàng phải NÓI RÕ khách đang mua biến thể nào.
+        //
+        // Trước đây dòng giỏ chỉ có tên sản phẩm; khách chọn "xanh lá" rồi mở giỏ ra thì
+        // không còn dấu vết nào của lựa chọn đó — không biết mình sắp trả tiền cho màu nào.
+        //
+        // Dựng tên một cách PHÒNG THỦ vì dữ liệu `tierIndex` trên prod không nhất quán:
+        // có sản phẩm chỉ 1 nhóm phân loại nhưng `tierIndex` lại là "2,2", có chỉ số vượt
+        // quá số lựa chọn đang có. Chỉ lấy những thành phần ánh xạ được; ánh xạ không ra
+        // gì thì lùi về `sku`, và không có `sku` thì trả null — thà không hiện còn hơn
+        // hiện một cái tên bịa.
+        const tenBienThe = (() => {
+          if (!variant) return null;
+          const phan = String(variant.tierIndex ?? '')
+            .split(',')
+            .map((x) => Number(x.trim()))
+            .map((idx, i) => {
+              const nhom = (p as any).options?.[i];
+              if (!nhom || !Number.isInteger(idx)) return null;
+              return nhom.values?.[idx]?.value ?? null;
+            })
+            .filter(Boolean);
+          if (phan.length) return phan.join(' / ');
+          return variant.sku && String(variant.sku).trim() ? String(variant.sku).trim() : null;
+        })();
         // Variant lạ/cũ → lùi về giá gốc thay vì làm vỡ giỏ; order-time vẫn chặn variant sai.
         const unitPrice = variant?.price != null ? Number(variant.price) : Number(p.price);
         const availableStock = variant ? variant.stock : p.stock;
@@ -208,6 +242,9 @@ export class CartService {
           id: entry.field,
           productId: p.id,
           productVariantId: entry.variantId,
+          // Tên nhóm phân loại + giá trị đã chọn, để giao diện hiện "Phân loại: Đỏ / L".
+          variantName: tenBienThe,
+          sku: variant?.sku ?? null,
           title: p.name,
           imageUrl:
             variant?.image || (Array.isArray(images) ? (images[0]?.url || images[0]) : ''),
