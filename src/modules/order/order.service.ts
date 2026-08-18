@@ -1134,6 +1134,31 @@ export class OrderService {
     }
   }
 
+  /**
+   * wiki 0108 — ADMIN đổi trạng thái đơn.
+   *
+   * Trước đây `admin-order.controller` chỉ có `@Get()` và `@Get(':id')`: admin **không có
+   * cách nào** sửa một đơn bị kẹt (shop bỏ bê, khách gọi tổng đài xin huỷ, giao nhầm...).
+   * Mọi đường `PATCH/PUT /admin/orders/:id...` đều 404.
+   *
+   * Cố ý ỦY QUYỀN cho `updateOrderStatus` của người bán thay vì viết lại: như vậy admin đi
+   * qua ĐÚNG bộ luật đang có — chặn lùi trạng thái, chặn đổi tiếp khi đã DELIVERED/CANCELLED,
+   * hoàn tồn kho/xu/voucher khi huỷ, tạo thông báo cho người mua. Admin không nên được phép
+   * lặng lẽ phá vỡ máy trạng thái; thứ họ cần là **quyền chạm tới đơn của shop khác**, và
+   * đó đúng là thứ duy nhất hàm này nới ra.
+   */
+  async updateOrderStatusAsAdmin(orderId: string, status: OrderStatus) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, shop: { select: { ownerId: true } } },
+    });
+    if (!order) throw new NotFoundException('Đơn hàng không tồn tại');
+    if (!order.shop?.ownerId) {
+      throw new BadRequestException('Đơn không gắn với cửa hàng nào nên không đổi trạng thái được');
+    }
+    return this.updateOrderStatus(orderId, order.shop.ownerId, status);
+  }
+
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop) throw new NotFoundException('Shop không tồn tại');
