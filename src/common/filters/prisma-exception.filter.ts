@@ -55,6 +55,19 @@ export class PrismaExceptionFilter implements ExceptionFilter {
           status = HttpStatus.NOT_FOUND;
           message = 'Không tìm thấy bản ghi';
           break;
+        case 'P2000': {
+          // [wiki 0108] Giá trị DÀI HƠN sức chứa của cột. Đây là input xấu của client
+          // (400), KHÔNG phải sự cố máy chủ — trước đây nó rơi xuống `default` và thành
+          // 500 "Lỗi xử lý dữ liệu". Đo được trên prod: đặt đơn kèm ghi chú 258 ký tự →
+          // 500, vì `Order.message` là VARCHAR(191) và giao diện cũng không đặt maxlength.
+          // Nói rõ cột nào để người dùng biết đường sửa.
+          status = HttpStatus.BAD_REQUEST;
+          const col = ((exception.meta ?? {}) as any).column_name;
+          message = col
+            ? `Nội dung trường "${col}" quá dài, vui lòng rút ngắn lại`
+            : 'Nội dung nhập vào quá dài, vui lòng rút ngắn lại';
+          break;
+        }
         case 'P2014': // Required relation violation
           status = HttpStatus.BAD_REQUEST;
           message = 'Vi phạm quan hệ bắt buộc';
