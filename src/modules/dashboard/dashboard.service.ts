@@ -1,6 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service'; // Kiểm tra lại path này nếu cần
-import { OrderStatus, ShopStatus } from '@prisma/client'; // [round14 FIX L2] dùng ShopStatus đếm shop ACTIVE (bỏ Role không còn dùng)
+// [round14 FIX L2] dùng ShopStatus đếm shop ACTIVE (bỏ Role không còn dùng)
+// wiki 0111: thêm Prisma (cần `Prisma.DbNull` cho cột JSON) + các enum trạng thái chờ duyệt.
+import {
+  OrderStatus,
+  ShopStatus,
+  Prisma,
+  AffiliateAccountStatus,
+  ProductStatus,
+  PayoutStatus,
+} from '@prisma/client';
 import moment from 'moment';
 @Injectable()
 export class DashboardService {
@@ -42,6 +51,67 @@ export class DashboardService {
       newOrders30d,
       totalUsers,
       activeShops,
+    };
+  }
+
+  /**
+   * wiki 0111 — đếm việc đang chờ admin xử lý, cho badge trên menu quản trị.
+   *
+   * Vì sao cần: các màn duyệt nằm rải trong những nhóm menu ĐANG ĐÓNG, nên admin không
+   * nhìn thấy việc mới trừ khi tự mở từng nhóm ra xem. Đo trên prod ngày 20/08: một hồ sơ
+   * tiếp thị của người thật nằm chờ 2 ngày, không ai biết. Con số ở đây là để việc tự tìm
+   * đến admin, thay vì admin phải đi tìm việc.
+   *
+   * Một endpoint gộp thay vì để giao diện gọi 6 API: menu hiện ở MỌI trang quản trị, sáu
+   * lượt gọi mỗi lần đổi trang là lãng phí thấy rõ. Tất cả đều là `count` không join, chạy
+   * song song.
+   *
+   * Về index: năm cột `status` đều có index (`Product.status` được thêm ở wiki 0111 — trước
+   * đó bảng lớn nhất hệ thống lại là bảng duy nhất thiếu, xem `prisma/manual/0111-*.sql`).
+   * Riêng `shopUpdates` lọc trên cột JSON `pendingDetails` thì KHÔNG index được; chấp nhận
+   * quét bảng Shop vì bảng này nhỏ hơn hai bậc so với Product (85 dòng trên prod, 20/08).
+   *
+   * Số ở đây phải KHỚP với số dòng mà trang tương ứng hiển thị khi mở ra — badge nói "3"
+   * mà bấm vào thấy 5 dòng thì còn tệ hơn không có badge. Nên mỗi phép đếm dưới đây sao y
+   * điều kiện lọc mặc định của chính trang đó.
+   */
+  async getPendingCounts() {
+    const [
+      affiliateAccounts,
+      sellerApprovals,
+      shopUpdates,
+      productApprovals,
+      payouts,
+      complaints,
+    ] = await Promise.all([
+      // /admin/affiliate — tab hồ sơ, lọc mặc định "Chờ duyệt"
+      this.prisma.affiliateAccount.count({
+        where: { status: AffiliateAccountStatus.PENDING },
+      }),
+      // /admin/users/approvals — GET /admin/users/pending-shops
+      this.prisma.shop.count({ where: { status: ShopStatus.PENDING } }),
+      // GET /admin/users/shop-updates — shop đã hoạt động nhưng gửi yêu cầu sửa hồ sơ.
+      // Cột JSON: phải dùng `Prisma.DbNull`, `{ not: null }` không cùng ngữ nghĩa.
+      // KHÔNG lọc thêm status: giữ đúng điều kiện của trang danh sách để hai con số khớp
+      // nhau, chấp nhận việc một shop vừa PENDING vừa có pendingDetails được tính ở cả hai.
+      this.prisma.shop.count({ where: { pendingDetails: { not: Prisma.DbNull } } }),
+      // /admin/products/approvals — GET /admin/products?status=PENDING.
+      // DRAFT là seller chưa gửi duyệt nên không tính.
+      this.prisma.product.count({ where: { status: ProductStatus.PENDING } }),
+      // /admin/finance/payouts
+      this.prisma.payoutRequest.count({ where: { status: PayoutStatus.PENDING } }),
+      // /admin/complaints — lọc mặc định "Chờ xử lý" = 'open' (cột String, không phải enum).
+      // 'processing' cố ý KHÔNG tính: việc đó đã có người nhận, badge chỉ nhắc việc chưa ai đụng.
+      this.prisma.complaint.count({ where: { status: 'open' } }),
+    ]);
+
+    return {
+      affiliateAccounts,
+      sellerApprovals,
+      shopUpdates,
+      productApprovals,
+      payouts,
+      complaints,
     };
   }
 

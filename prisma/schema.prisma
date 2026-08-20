@@ -541,6 +541,12 @@ model Product {
   @@index([slug])
   @@index([shopId])
   @@index([affiliateEnabled])
+  // wiki 0111: `status` là cột lọc của mọi màn duyệt sản phẩm, và từ nay còn bị đếm ở
+  // `/admin/dashboard/pending-counts` mỗi lần admin đổi trang. Trước đây bảng này không có
+  // index nào trên `status` (EXPLAIN cho `type: ALL` — quét toàn bảng), trong khi Shop,
+  // AffiliateAccount, PayoutRequest, Complaint đều đã có. Catalog là bảng lớn nhất và còn
+  // phình tiếp, nên vá trước khi nó thành vấn đề thật.
+  @@index([status])
 }
 
 model Brand {
