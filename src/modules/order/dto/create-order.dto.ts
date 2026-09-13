@@ -19,6 +19,15 @@ export class CartItemDto {
   variantId?: string;
 }
 
+/** wiki 0105 — một mục quy đổi affiliate gửi kèm lúc thanh toán. */
+export class AffiliateRefDto {
+  @IsString()
+  productId: string;
+
+  @IsString()
+  code: string;
+}
+
 export class CreateOrderDto {
   @IsBoolean()
   @Transform(({ value }) => {
@@ -89,6 +98,16 @@ export class CreateOrderDto {
   // Note có thể là String (gộp) hoặc Object (từng shop)
   @IsOptional()
   note?: string | Record<string, string>;
+
+  // wiki 0105 — quy đổi affiliate: FE đọc cookie `gm_aff` rồi gửi kèm danh sách
+  // { productId, code }. BE KIỂM LẠI TOÀN BỘ trong AffiliateCommissionService.resolveRefs
+  // (link đúng sản phẩm, hồ sơ đã duyệt, sản phẩm còn bật affiliate, không tự mua) —
+  // cookie nằm ở phía người dùng nên tuyệt đối không tin được.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AffiliateRefDto)
+  affiliate?: AffiliateRefDto[];
 
   @IsOptional()
   @IsNumber()

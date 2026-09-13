@@ -154,6 +154,48 @@ export class AdminProductController {
   async bulkDeleteProduct(@Body() body: { ids: string[] }) {
       return this.productWriteService.bulkDelete(body.ids);
   }
+
+  /**
+   * wiki 0103 — Lấy nhiều sản phẩm theo danh sách id.
+   *
+   * FE `ProductSelector` (dùng ở tạo voucher, cấu hình trang chủ, flash-sale của
+   * seller) gọi endpoint này để hiện lại các sản phẩm ĐÃ CHỌN khi mở form sửa.
+   * Trước đây endpoint KHÔNG tồn tại — comment trong FE tự ghi "dùng tạm endpoint
+   * giả định" — nên gọi luôn 404, danh sách đã chọn hiện ra rỗng và admin dễ lưu
+   * đè mất lựa chọn cũ.
+   *
+   * Trả về MẢNG THẲNG (không bọc `{data}`) — `apiClient` của FE trả nguyên body.
+   * `shop` chỉ lấy id+name vì FE chỉ hiển thị tên shop.
+   */
+  @Post('get-by-ids')
+  @Roles(Role.ADMIN)
+  @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
+  async getByIds(@Body() body: { ids?: unknown }) {
+    const raw = Array.isArray(body?.ids) ? body.ids : [];
+    // Lọc phần tử không phải chuỗi để không đẩy giá trị lạ xuống Prisma (=> 500),
+    // bỏ trùng, và chặn trên 200 id cho một lần gọi.
+    const ids = [...new Set(raw.filter((v): v is string => typeof v === 'string' && v.length > 0))]
+      .slice(0, 200);
+    if (ids.length === 0) return [];
+
+    const rows = await this.prisma.product.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        images: true,
+        status: true,
+        stock: true,
+        shop: { select: { id: true, name: true } },
+      },
+    });
+
+    // `price` là Prisma Decimal → JSON.stringify ra CHUỖI ("123456"), không phải số.
+    // Mọi endpoint sản phẩm khác đều đã `Number(...)` (vd findOnePublic); giữ đồng nhất,
+    // nếu không FE hiển thị giá mất dấu phân cách và mọi phép tính thành nối chuỗi.
+    return rows.map((p) => ({ ...p, price: Number(p.price) }));
+  }
   
   @Get(':id')
   // [GENIUS FIX] Chi tiết cũng không nên cache khi admin đang edit/duyệt
@@ -163,7 +205,9 @@ export class AdminProductController {
         where: { id },
         include: { 
             shop: true,
-            options: { include: { values: true } },
+            // wiki 0095 B2: order theo position để admin thấy đúng thứ tự phân loại
+            // seller đã set, và khớp variants[].tierIndex khi duyệt sản phẩm.
+            options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
             variants: true,
             category: true
         }

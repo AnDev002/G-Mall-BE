@@ -1,6 +1,6 @@
 // BE-1.7/modules/product/dto/create-product.dto.ts
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, IsPositive, IsArray, ValidateNested, IsJSON, IsObject, MaxLength, IsIn } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsPositive, IsArray, ArrayUnique, ValidateNested, IsJSON, IsObject, MaxLength, IsIn } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 
 // Spec [0018]: Mô tả ngắn — block 6 fields hiển thị nhanh trên trang SP.
 // Lưu thành Json trong Product.shortDesc. Tất cả optional, MaxLength tránh spam.
@@ -19,8 +19,16 @@ export class ProductTierDto {
   @IsNotEmpty()
   name: string;
 
+  // wiki 0108: chặn hai lựa chọn TRÙNG TÊN trong cùng một phân loại. Trước đây
+  // `tiers: [{ name: 'Màu', options: ['Đỏ', 'Đỏ'] }]` được nhận (201), và người mua nhìn
+  // thấy hai ô "Đỏ" y hệt nhau trên trang sản phẩm — không cách nào biết chúng khác gì,
+  // mà mỗi ô lại trỏ tới một SKU khác nhau với tồn kho và giá riêng.
+  // So sánh sau khi cắt khoảng trắng và bỏ phân biệt hoa/thường: "Đỏ", "đỏ " là một.
   @IsArray()
   @IsString({ each: true })
+  @ArrayUnique((o: string) => String(o).trim().toLowerCase(), {
+    message: 'Các lựa chọn trong cùng một phân loại không được trùng tên',
+  })
   options: string[];
 
   @IsOptional()
@@ -62,8 +70,13 @@ export class CreateProductDto {
   status?: 'DRAFT' | 'PENDING';
 
   // --- Cơ bản ---
+  // wiki 0108: `@IsNotEmpty()` KHÔNG chặn chuỗi toàn khoảng trắng — `"   "` lọt qua và
+  // tạo ra sản phẩm không tên (slug thành `----1787032643`), nằm giữa danh sách shop mà
+  // không ai đọc được đó là gì. Cắt khoảng trắng TRƯỚC khi kiểm để `"   "` trở thành `""`
+  // rồi bị `@IsNotEmpty()` bắt.
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'Tên sản phẩm không được để trống' })
   name: string;
 
   @IsString()
@@ -74,8 +87,14 @@ export class CreateProductDto {
   @IsNotEmpty()
   categoryId: string;
 
+  // wiki 0108: chặn giá vượt sức chứa của cột. `Product.price` là `decimal(65,30)` —
+  // phần thập phân 30 chữ số nên phần nguyên chỉ còn 35 chữ số, và Prisma ném lỗi
+  // "value out of range" thành 500 trước khi tới được DB. Đo trên prod: `price: 1e15`
+  // → 500 "Lỗi xử lý dữ liệu". Một tỉ tỉ đồng cho một món quà là vô nghĩa, nên chặn ở
+  // mức 1e12 (1 nghìn tỉ) — thừa sức cho mọi hàng hoá thật mà vẫn là 400 tử tế.
   @IsNumber()
   @IsPositive()
+  @Max(1_000_000_000_000, { message: 'Giá sản phẩm vượt quá mức cho phép' })
   price: number; // Giá hiển thị mặc định
 
   @IsOptional()

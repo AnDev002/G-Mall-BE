@@ -636,8 +636,13 @@ export class ProductReadService implements OnModuleInit {
       },
       include: {
         seller: { select: { name: true, id: true, avatar: true } },
+        // wiki 0095 B2: PHẢI orderBy position — KHÔNG được orderBy id.
+        // `ProductOptionValue.id` là uuid() ngẫu nhiên, còn `variants[].tierIndex`
+        // ("0,1") trỏ theo `position` lúc create. Sắp theo id → thứ tự options
+        // lệch khỏi tierIndex → user bấm "512GB" nhưng lấy đúng SKU/giá/tồn của
+        // option khác (bug tiền), và list hiển thị lộn xộn.
         options: {
-          include: { values: { orderBy: { id: 'asc' } } },
+          include: { values: { orderBy: { position: 'asc' } } },
           orderBy: { position: 'asc' },
         },
         variants: true,
@@ -650,10 +655,14 @@ export class ProductReadService implements OnModuleInit {
 
     const mappedProduct = {
         ...product,
-        sellerId: product.sellerId || product.seller?.id, 
-        categoryId: product.categoryId, 
-        price: Number(product.price), 
+        sellerId: product.sellerId || product.seller?.id,
+        categoryId: product.categoryId,
+        price: Number(product.price),
         regularPrice: product.originalPrice ? Number(product.originalPrice) : undefined,
+        // wiki 0105: Prisma serialize Decimal thành CHUỖI → FE nhân giá × "0.1000" ra
+        // NaN, nút chia sẻ hiện hoa hồng sai. Ép về số ngay tại nguồn, cùng cách `price`
+        // đã làm (lớp bug đã gặp ở wiki 0103).
+        affiliateRate: product.affiliateRate === null ? null : Number(product.affiliateRate),
         tiers: product.options.map(opt => ({
             name: opt.name,
             options: opt.values.map(v => v.value), 
@@ -820,7 +829,12 @@ export class ProductReadService implements OnModuleInit {
     if (relatedIds.length > 0) {
         const products = await this.prisma.product.findMany({
             where: { id: { in: relatedIds }, status: 'ACTIVE' },
-            include: { options: { include: { values: true } }, variants: true }
+            // wiki 0095 B2: cùng lý do findOnePublic — values phải theo position
+            // để khớp variants[].tierIndex.
+            include: {
+                options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
+                variants: true,
+            }
         });
         const activeProducts = products.filter(p => p.status === 'ACTIVE' && p.stock > 0);
         await this.redis.set(cacheKey, JSON.stringify(activeProducts), 'EX', 86400);

@@ -34,6 +34,43 @@ export class PointService {
     };
   }
 
+  /**
+   * wiki 0095 B6 — Số liệu trang "Link giới thiệu" (/user/affiliate).
+   *
+   * Trả cả LUẬT THƯỞNG chứ không chỉ con số, vì banner cũ ở trang mời bạn bè ghi
+   * "đăng ký thành công là được 20.000 điểm" — SAI so với code: thưởng chỉ trả
+   * khi bạn được mời có ĐƠN ĐẦU TIÊN ≥ REFERRAL_MIN_ORDER và đơn đó đã GIAO
+   * THÀNH CÔNG (xem order.service.handleReferralReward). FE đọc thẳng số liệu
+   * này để không bao giờ lệch với cấu hình thật trong SystemSetting nữa.
+   */
+  async getAffiliateStats(userId: string) {
+    const [invitedCount, rewardedCount, earned, rewardSetting, minOrderSetting] = await Promise.all([
+      this.prisma.user.count({ where: { referredById: userId } }),
+      this.prisma.user.count({ where: { referredById: userId, referralRewardPaid: true } }),
+      this.prisma.pointHistory.aggregate({
+        _sum: { amount: true },
+        where: { userId, type: PointType.EARN_AFFILIATE },
+      }),
+      this.prisma.systemSetting.findUnique({ where: { key: 'REFERRAL_REWARD_AMOUNT' } }),
+      this.prisma.systemSetting.findUnique({ where: { key: 'REFERRAL_MIN_ORDER' } }),
+    ]);
+
+    const toNumber = (raw: string | undefined, fallback: number) => {
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+
+    return {
+      invitedCount,                 // đã đăng ký qua link của mình
+      rewardedCount,                // trong đó đã chốt thưởng
+      pendingCount: Math.max(0, invitedCount - rewardedCount),
+      pointsEarned: earned._sum.amount ?? 0,
+      // Luật thưởng — FE render trực tiếp, không hardcode lại.
+      rewardPerFriend: toNumber(rewardSetting?.value, 20000),
+      minOrderValue: toNumber(minOrderSetting?.value, 300000),
+    };
+  }
+
   async getConversionRate(): Promise<number> {
     // 1. Thử lấy từ Redis cho nhanh (nếu có cache)
     const cached = await this.redis.get('POINT_RATE');

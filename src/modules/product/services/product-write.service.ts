@@ -6,9 +6,10 @@ import { PrismaService } from '../../../database/prisma/prisma.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { ProductCacheService } from './product-cache.service';
 import { DiscountType, Prisma, ProductStatus } from '@prisma/client';
-import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
+import { UpdateProductAffiliateDto, UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
 import { ProductReadService } from './product-read.service';
 import { ImageSearchService } from '../../image-search/image-search.service'; // wiki 0052
+import { SystemSettingService } from '../../../common/services/system-setting.service'; // wiki 0105
 @Injectable()
 export class ProductWriteService {
   private readonly logger = new Logger(ProductWriteService.name);
@@ -17,7 +18,8 @@ export class ProductWriteService {
     private readonly productCache: ProductCacheService,
     private readonly productReadService: ProductReadService,
     private readonly imageSearch: ImageSearchService, // wiki 0052
-  ) { }
+    private readonly systemSetting: SystemSettingService, // wiki 0105
+  ) {}
 
   // wiki 0052: enqueue index job — fire and forget, never block product save.
   // Failure here means the product is missing from image search until next
@@ -96,6 +98,18 @@ export class ProductWriteService {
           shop: {
             connect: { id: shop.id }
           },
+          // wiki 0108: PHAI ghi ca `seller` chu khong chi `shop`.
+          //
+          // Truoc day cho nay chi `shop.connect`, nen `Product.sellerId` de NULL. Ma
+          // `dashboard.service.getSellerStats()` loc MOI truy van theo
+          // `product.is.sellerId` (doanh thu, so don, so san pham, hang sap het) — nen
+          // nguoi ban nhin thay 0đ doanh thu VINH VIEN du tien da vao vi that.
+          // Do duoc tren prod truoc khi sua: 687/912 san pham thieu sellerId, 13 shop
+          // bi anh huong, 56 don DELIVERED lien quan. `userId` o day chinh la chu shop
+          // (`shop` duoc tim bang `ownerId: userId` o dau ham) nen day la dung nguoi.
+          seller: {
+            connect: { id: userId }
+          },
           brandRel: brandId ? { connect: { id: brandId } } : undefined,
           price: new Prisma.Decimal(price || 0),
           stock: totalStock,
@@ -170,11 +184,12 @@ export class ProductWriteService {
       }
 
       const finalProduct = await tx.product.findUnique({
-        where: { id: product.id },
-        include: {
-          options: { include: { values: true } },
-          variants: true
-        }
+          where: { id: product.id },
+          include: {
+              // wiki 0095 B2: values orderBy position để response create khớp tierIndex.
+              options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
+              variants: true
+          }
       });
       return finalProduct;
     });
@@ -617,13 +632,14 @@ export class ProductWriteService {
     // systemTags/categoryId (xử lý connect riêng). attributes/videos/sizeChart vẫn giữ
     // như create cho consistency.
     const {
-      images, price, brandId,
-      tiers, variations, crossSellIds, systemTags,
-      categoryId,
-      videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
-      attributes,
-      shortDesc,
-      ...rest
+        images, price, brandId,
+        tiers, variations, crossSellIds, systemTags,
+        syncVariants, // wiki 0095 B3: cờ điều khiển, KHÔNG phải cột Product
+        categoryId,
+        videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
+        attributes,
+        shortDesc,
+        ...rest
     } = dto as any;
 
     const updateData: any = { ...rest };
@@ -632,7 +648,14 @@ export class ProductWriteService {
     if (brandId !== undefined) {
       updateData.brandRel = { connect: { id: brandId } };
     }
-    if (brand !== undefined) updateData.brand = brand;
+    // KHÔNG ghi `brand` như một cột: `Product` KHÔNG có cột `brand` (chỉ có `brandId` +
+    // quan hệ `brandRel`). Dòng cũ `updateData.brand = brand` khiến Prisma ném
+    // "Unknown argument brand" → PrismaExceptionFilter đổi thành 400 "Dữ liệu đầu vào
+    // không hợp lệ" → seller KHÔNG BAO GIỜ sửa được sản phẩm, vì AddProductPage luôn
+    // gửi `brand: brand || 'No Brand'` trong mọi lần bấm Cập nhật.
+    //
+    // Tên hãng vốn đã được lưu đúng chỗ ở khối gộp `attributes` ngay bên dưới — giống
+    // hệt cách `create()` làm. Nên dòng cũ vừa thừa vừa gây chết.
     if (images !== undefined) updateData.images = Array.isArray(images) ? images : [];
     if (categoryId !== undefined) updateData.category = { connect: { id: categoryId } };
 
@@ -659,6 +682,26 @@ export class ProductWriteService {
       }
     }
 
+    // wiki 0095 B3: TRƯỚC ĐÂY tiers/variations bị destructure ra rồi VỨT ĐI —
+    // seller sửa phân loại xong bấm "Cập nhật" thì phân loại không bao giờ được
+    // lưu ("ko lưu được" trong report của khách). Giờ đồng bộ lại thật sự.
+    //
+    // Chỉ chạy khi client gửi cờ `syncVariants` (FE bản đã fix prefill mới gửi).
+    // Lý do: client CŨ luôn gửi `tiers: []` vì form không prefill được — nếu BE
+    // cứ thấy `tiers` là sync thì một lần bấm Lưu từ bản FE cũ sẽ XOÁ SẠCH SKU
+    // của sản phẩm. Cờ opt-in giúp BE deploy trước FE vẫn an toàn tuyệt đối.
+    //
+    // Chạy TRƯỚC product.update: sync có thể từ chối (thiếu SKU, variant đang
+    // chạy Flash Sale) và phải fail SỚM. Nếu update tên/giá trước rồi sync mới
+    // ném lỗi thì seller nhận 400 nhưng sản phẩm đã đổi một nửa — không cách nào
+    // biết phần nào đã lưu.
+    if (dto.syncVariants === true) {
+      const totalStock = await this.syncTiersAndVariants(id, tiers ?? [], variations ?? []);
+      // Tồn kho cha do sync tính (tổng tồn các SKU) là nguồn đúng — không để
+      // giá trị `stock` FE gửi kèm ghi đè ngược lại.
+      updateData.stock = totalStock;
+    }
+
     const updated = await this.prisma.product.update({
       where: { id },
       data: updateData,
@@ -683,6 +726,188 @@ export class ProductWriteService {
     return updated;
   }
 
+  /**
+   * wiki 0095 B3 — Đồng bộ lại nhóm phân loại (ProductOption/Value) + biến thể
+   * (ProductVariant) khi seller sửa sản phẩm.
+   *
+   * Vì sao KHÔNG "xoá sạch rồi tạo lại":
+   *  - `FlashSaleProduct.variantId` là quan hệ BẮT BUỘC (Restrict) → xoá variant
+   *    đang chạy flash sale sẽ ném lỗi FK khó hiểu giữa transaction.
+   *  - `OrderItem.variantId` trỏ tới variant để hoàn tồn kho khi huỷ đơn
+   *    (wiki 0083). Đổi ID mỗi lần sửa = mất đường hoàn kho của đơn đang bay.
+   *  - Đổi ID còn làm giỏ hàng / link flash sale của user trỏ vào hư không.
+   *
+   * Nên: đối chiếu theo TỔ HỢP GIÁ TRỊ ("Đen | 512GB") chứ không theo tierIndex
+   * thô. tierIndex chỉ là chỉ số, seller đảo thứ tự option là nó đổi nghĩa;
+   * tổ hợp giá trị mới là danh tính thật của một SKU. Nhờ vậy đảo thứ tự option
+   * vẫn giữ nguyên ID variant, chỉ ghi lại tierIndex mới.
+   *
+   * @returns tổng tồn kho các SKU sau khi đồng bộ (để caller ghi vào Product.stock)
+   */
+  private async syncTiersAndVariants(
+    productId: string,
+    tiers: { name: string; options: string[]; images?: string[] }[],
+    variations: { price: number; stock: number; sku?: string; imageUrl?: string; tierIndex: number[] }[],
+  ): Promise<number> {
+    // Cùng ràng buộc như create(): có nhóm phân loại thì bắt buộc có SKU.
+    if (tiers.length > 0 && variations.length === 0) {
+      throw new BadRequestException('Phải thiết lập biến thể SKU khi có nhóm phân loại');
+    }
+
+    const existing = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: {
+        options: {
+          include: { values: { orderBy: { position: 'asc' } } },
+          orderBy: { position: 'asc' },
+        },
+        variants: true,
+      },
+    });
+    if (!existing) throw new NotFoundException('Sản phẩm không tồn tại');
+
+    /** "0,1" + bảng option cũ  →  "Đen | 512GB". Dùng làm khoá đối chiếu. */
+    const comboOf = (
+      tierIndex: number[],
+      groups: { values: { value: string }[] }[],
+    ): string =>
+      tierIndex
+        .map((valueIdx, groupIdx) => groups[groupIdx]?.values[valueIdx]?.value ?? `#${valueIdx}`)
+        .join(' | ');
+
+    const parseTierIndex = (raw: unknown): number[] => {
+      if (Array.isArray(raw)) return raw as number[];
+      if (typeof raw === 'string' && raw.length > 0) {
+        return raw.split(',').map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+      }
+      return [];
+    };
+
+    // Variant cũ theo combo. Sản phẩm không phân loại có tierIndex '' → combo ''.
+    const oldByCombo = new Map<string, (typeof existing.variants)[number]>();
+    for (const v of existing.variants) {
+      const combo = comboOf(parseTierIndex(v.tierIndex), existing.options);
+      if (!oldByCombo.has(combo)) oldByCombo.set(combo, v);
+    }
+
+    // Không phân loại → quy về đúng 1 SKU mặc định (combo '').
+    const newTargets =
+      tiers.length > 0
+        ? variations.map((v) => ({
+            combo: comboOf(v.tierIndex, tiers.map((t) => ({ values: t.options.map((o) => ({ value: o })) }))),
+            tierIndex: v.tierIndex.join(','),
+            price: Number(v.price),
+            stock: Number(v.stock),
+            sku: v.sku ?? '',
+            image: v.imageUrl || null,
+          }))
+        : [{
+            combo: '',
+            tierIndex: '',
+            price: Number(existing.price),
+            stock: Number(existing.stock ?? 0),
+            sku: '',
+            image: null as string | null,
+          }];
+
+    const keepCombos = new Set(newTargets.map((t) => t.combo));
+    const toDelete = existing.variants.filter(
+      (v) => !keepCombos.has(comboOf(parseTierIndex(v.tierIndex), existing.options)),
+    );
+
+    // Chặn TRƯỚC transaction: variant đang nằm trong flash sale không xoá được
+    // (FK Restrict). Báo rõ để seller tự gỡ khỏi flash sale, thay vì để Prisma
+    // ném lỗi P2003 khó hiểu.
+    if (toDelete.length > 0) {
+      const locked = await this.prisma.flashSaleProduct.findMany({
+        where: { variantId: { in: toDelete.map((v) => v.id) } },
+        select: { variantId: true },
+      });
+      if (locked.length > 0) {
+        const lockedIds = new Set(locked.map((l) => l.variantId));
+        const names = toDelete
+          .filter((v) => lockedIds.has(v.id))
+          .map((v) => comboOf(parseTierIndex(v.tierIndex), existing.options) || v.sku || v.id)
+          .join(', ');
+        throw new BadRequestException(
+          `Không thể xoá phân loại đang chạy Flash Sale: ${names}. ` +
+            `Vui lòng gỡ khỏi chương trình Flash Sale trước khi sửa.`,
+        );
+      }
+    }
+
+    const totalStock = newTargets.reduce((sum, t) => sum + t.stock, 0);
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Dựng lại nhóm phân loại. Xoá thẳng được vì không bảng nào tham chiếu
+      //    ProductOptionValue (cascade từ ProductOption).
+      await tx.productOption.deleteMany({ where: { productId } });
+      for (let i = 0; i < tiers.length; i++) {
+        const tier = tiers[i];
+        if (!tier.options?.length) continue;
+        const images = tier.images || [];
+        await tx.productOption.create({
+          data: {
+            productId,
+            name: tier.name,
+            position: i,
+            values: {
+              create: tier.options.map((val, idx) => ({
+                value: val,
+                image: images[idx] || null,
+                position: idx, // khớp với tierIndex của variant
+              })),
+            },
+          },
+        });
+      }
+
+      // 2. Giữ ID cho SKU còn tồn tại, tạo mới cho SKU vừa thêm.
+      for (const target of newTargets) {
+        const old = oldByCombo.get(target.combo);
+        if (old) {
+          await tx.productVariant.update({
+            where: { id: old.id },
+            data: {
+              price: new Prisma.Decimal(target.price),
+              stock: target.stock,
+              sku: target.sku,
+              tierIndex: target.tierIndex,
+              // Ảnh riêng của SKU: chỉ ghi đè khi FE thực sự gửi ảnh mới.
+              ...(target.image !== null ? { image: target.image } : {}),
+            },
+          });
+        } else {
+          await tx.productVariant.create({
+            data: {
+              productId,
+              price: new Prisma.Decimal(target.price),
+              stock: target.stock,
+              sku: target.sku,
+              image: target.image,
+              tierIndex: target.tierIndex,
+            },
+          });
+        }
+      }
+
+      // 3. Dọn SKU seller đã bỏ.
+      if (toDelete.length > 0) {
+        await tx.productVariant.deleteMany({ where: { id: { in: toDelete.map((v) => v.id) } } });
+      }
+
+      // 4. Tồn kho cha = tổng tồn các SKU (giống create()).
+      //    Vẫn ghi trong transaction này để nếu caller lỗi sau đó thì DB vẫn
+      //    nhất quán; caller ghi lại lần nữa cùng giá trị là vô hại.
+      await tx.product.update({ where: { id: productId }, data: { stock: totalStock } });
+    });
+
+    this.logger.log(
+      `[syncVariants] product=${productId} tiers=${tiers.length} sku=${newTargets.length} xoá=${toDelete.length}`,
+    );
+    return totalStock;
+  }
+
   // --- 3b. Lấy 1 sản phẩm để CHỈNH SỬA (wiki 0068 A1) ---
   // Bug: FE AddProductPage gọi GET /products/:id (route không tồn tại) -> 404 ->
   // toast "Không tải được dữ liệu sản phẩm để chỉnh sửa". Trước đây seller KHÔNG có
@@ -697,7 +922,10 @@ export class ProductWriteService {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, shopId: shop.id },
       include: {
-        options: { include: { values: true }, orderBy: { position: 'asc' } },
+        // wiki 0095 B3: values PHẢI orderBy position. Thiếu dòng này thì form sửa
+        // nhận option theo thứ tự uuid, lệch khỏi variants[].tierIndex → ma trận
+        // SKU prefill sai giá/tồn.
+        options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
         variants: true,
         crossSells: { select: { relatedProductId: true } },
       },
@@ -760,6 +988,71 @@ export class ProductWriteService {
     });
   }
 
+  /**
+   * wiki 0105 — bật/tắt affiliate + đặt % hoa hồng cho một sản phẩm của chính seller.
+   *
+   * Mặc định MỌI sản phẩm đều TẮT: hoa hồng TRỪ VÀO DOANH THU CỦA CHÍNH SELLER khi đơn
+   * giao thành công, nên không ai được bị trừ tiền ngoài ý muốn. Đánh đổi đã biết trước:
+   * ngày ra mắt danh sách sản phẩm affiliate sẽ trống cho tới khi seller vào bật.
+   *
+   * Trần % đọc từ SystemSetting chứ không viết cứng — nó là chốt chặn để (phí sàn +
+   * hoa hồng) không nuốt hết doanh thu seller, và ban điều hành phải chỉnh được mà
+   * không cần deploy lại.
+   */
+  async updateAffiliate(sellerId: string, productId: string, dto: UpdateProductAffiliateDto) {
+    // Kiểm quyền theo SHOP, cùng khuôn với updateDiscount bên dưới: sản phẩm thuộc về
+    // shop, và một user chỉ sở hữu một shop.
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, shopId: true },
+    });
+    if (!product) throw new NotFoundException('Sản phẩm không tồn tại');
+
+    const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+    if (!shop || product.shopId !== shop.id) {
+      throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
+    }
+
+    if (!dto.enabled) {
+      // Tắt thì GIỮ NGUYÊN affiliateRate: bật lại không phải nhập lại từ đầu.
+      const off = await this.prisma.product.update({
+        where: { id: productId },
+        data: { affiliateEnabled: false },
+        select: { id: true, affiliateEnabled: true, affiliateRate: true },
+      });
+      await this.productCache.invalidateProduct(productId).catch(() => {});
+      return {
+        id: off.id,
+        affiliateEnabled: off.affiliateEnabled,
+        affiliateRate: off.affiliateRate === null ? null : Number(off.affiliateRate),
+      };
+    }
+
+    if (dto.rate === undefined || dto.rate === null) {
+      throw new BadRequestException('Cần đặt % hoa hồng khi bật tiếp thị liên kết.');
+    }
+    if (!Number.isFinite(dto.rate) || dto.rate <= 0) {
+      throw new BadRequestException('% hoa hồng phải lớn hơn 0.');
+    }
+
+    const maxRate = await this.systemSetting.getNumber('AFFILIATE_MAX_RATE', 0.3);
+    if (dto.rate > maxRate) {
+      throw new BadRequestException(`% hoa hồng tối đa là ${(maxRate * 100).toFixed(0)}%.`);
+    }
+
+    const on = await this.prisma.product.update({
+      where: { id: productId },
+      data: { affiliateEnabled: true, affiliateRate: new Prisma.Decimal(dto.rate) },
+      select: { id: true, affiliateEnabled: true, affiliateRate: true },
+    });
+    await this.productCache.invalidateProduct(productId).catch(() => {});
+    return {
+      id: on.id,
+      affiliateEnabled: on.affiliateEnabled,
+      affiliateRate: Number(on.affiliateRate),
+    };
+  }
+
   async updateDiscount(sellerId: string, productId: string, dto: UpdateProductDiscountDto) {
     // 1. Lấy sản phẩm và variants
     const product = await this.prisma.product.findUnique({
@@ -773,6 +1066,21 @@ export class ProductWriteService {
     const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
     if (!shop || product.shopId !== shop.id) {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa sản phẩm này');
+    }
+
+    // wiki 0108: ngày kết thúc phải SAU ngày bắt đầu.
+    //
+    // Giao diện đã chặn ("Ngày kết thúc phải sau ngày bắt đầu") nhưng API thì không —
+    // gọi thẳng API với `start = 31/12`, `end = 01/01` vẫn nhận **200** và ghi vào DB một
+    // khoảng thời gian không bao giờ đúng. Khuyến mãi kiểu đó vừa không bao giờ chạy, vừa
+    // làm hỏng mọi truy vấn lọc theo khoảng ngày. Kiểm ở tầng dịch vụ chứ không phải DTO
+    // vì đây là ràng buộc GIỮA hai trường.
+    if (dto.isDiscountActive && dto.discountStartDate && dto.discountEndDate) {
+      const batDau = new Date(dto.discountStartDate);
+      const ketThuc = new Date(dto.discountEndDate);
+      if (!Number.isNaN(batDau.getTime()) && !Number.isNaN(ketThuc.getTime()) && ketThuc <= batDau) {
+        throw new BadRequestException('Ngày kết thúc khuyến mãi phải sau ngày bắt đầu');
+      }
     }
 
     // --- VALIDATE TOÀN BỘ TRƯỚC KHI GHI (atomic) ---

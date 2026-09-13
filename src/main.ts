@@ -73,14 +73,23 @@ async function bootstrap() {
     ? corsOriginsEnv.split(',').map((s) => s.trim()).filter(Boolean)
     : [];
 
-  // [FIX] Gộp domain lấy từ .env và các domain cố định của dự án
-  const corsOrigins = [
-    ...envOrigins,
-    'http://localhost:3000',
-    'http://localhost:3001',
+  // Wiki 0094 — sửa lại thay đổi 07/07: bản đó nối CỨNG localhost:3000/3001 vào whitelist ở
+  // MỌI môi trường. Kết hợp `credentials: true`, prod sẽ chấp nhận request kèm cookie phiên
+  // của khách phát đi từ một trang đang chạy trên máy họ (http://localhost:3000) — đúng thứ
+  // whitelist ở wiki 0004 sinh ra để chặn.
+  // Giữ lại phần ĐÚNG của thay đổi đó: domain thật luôn có mặt để prod không bao giờ rơi vào
+  // whitelist rỗng → 500 (sự cố wiki 0040). localhost CHỈ bật ở non-production.
+  const isProd = process.env.NODE_ENV === 'production';
+  const PROJECT_ORIGINS = [
     'https://gmall.vn',
-    'https://www.gmall.vn'
+    'https://www.gmall.vn',
+    'https://gmall.onrender.com',
   ];
+  const DEV_ORIGINS = ['http://localhost:3000', 'http://localhost:3001'];
+  const corsOrigins = Array.from(
+    new Set([...envOrigins, ...PROJECT_ORIGINS, ...(isProd ? [] : DEV_ORIGINS)]),
+  );
+  console.log(`[CORS] NODE_ENV=${process.env.NODE_ENV ?? '(unset)'} — whitelist: ${corsOrigins.join(', ')}`);
 
   app.enableCors({
     origin: (origin, callback) => {

@@ -18,12 +18,19 @@ import { PaymentService } from '../payment/payment.service';
 import { CharityService } from '../charity/charity.service';
 import { SystemSettingService } from '../../common/services/system-setting.service';
 import { NotificationService } from '../notification/notification.service';
+import { AffiliateCommissionService } from '../affiliate/affiliate-commission.service'; // wiki 0105
 
-// Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k. Index 0 (30k) là tùy chọn
-// rẻ nhất, không có "không gói".
-// Thiệp: 5k mặc định. Nếu khách muốn thiệp cao hơn → chuyển sang mục thiệp
-// riêng để chọn (sẽ thêm sau khi có catalog thiệp).
-const GIFT_WRAP_PRICES = [30000, 50000];
+// Spec [0018]: gói quà bỏ free/20k, còn 30k và 50k.
+//
+// Wiki 0094 — SỬA LỖI TIỀN: FE gửi lên INDEX của MẪU trong `giftWrapData.ts`, mà file đó có
+// **6 mẫu** (3 mẫu 30k + 3 mẫu 50k), trong khi mảng này chỉ có 2 phần tử. Hậu quả đo được:
+//   index 0 → 30k  (đúng)
+//   index 1 → thu 50k trong khi thẻ ghi 30k      → khách trả THỪA 20.000đ
+//   index 2..5 → tra ra undefined → `|| 0` → 0đ  → sàn MẤT 30k/50k mỗi đơn
+// => mảng này PHẢI khớp 1-1 theo index với FE `src/modules/gift-payment/data/giftWrapData.ts`.
+// Đổi thứ tự/thêm mẫu ở FE thì phải sửa ở đây cùng lúc.
+const GIFT_WRAP_PRICES = [30000, 30000, 30000, 50000, 50000, 50000];
+// Khớp FE `CARD_OPTIONS` trong GiftPaymentPage.tsx (id 0 = không thiệp, 1 = tiêu chuẩn, 2 = cao cấp).
 const CARD_PRICES = [0, 5000, 15000];
 
 @Injectable()
@@ -42,6 +49,7 @@ export class OrderService {
     private systemSetting: SystemSettingService,
     private notificationService: NotificationService,
     private redis: RedisService,
+    private affiliateCommission: AffiliateCommissionService, // wiki 0105
   ) {}
 
   /**
@@ -247,7 +255,21 @@ export class OrderService {
 
     let giftFee = 0;
     if (dto.isGift) {
-        giftFee = (GIFT_WRAP_PRICES[dto.giftWrapIndex || 0] || 0) + (CARD_PRICES[dto.cardIndex || 0] || 0);
+        // Wiki 0094: 2 lỗi tiền ở công thức cũ `PRICES[idx || 0] || 0`
+        //  (a) idx = null/undefined (khách KHÔNG chọn gói quà — FE gửi `selectedGiftWrap = null`)
+        //      bị `|| 0` biến thành index 0 → thu 30.000đ trong khi FE hiển thị 0đ.
+        //  (b) idx ngoài phạm vi → `|| 0` nuốt lỗi thành 0đ, sàn mất tiền mà không ai biết.
+        // Giờ: null/undefined = không chọn → 0đ; ngoài phạm vi → 400 fail-loud.
+        const pickFee = (idx: number | null | undefined, table: number[], label: string): number => {
+            if (idx === null || idx === undefined) return 0;
+            if (!Number.isInteger(idx) || idx < 0 || idx >= table.length) {
+                throw new BadRequestException(`${label} không hợp lệ`);
+            }
+            return table[idx];
+        };
+        giftFee =
+            pickFee(dto.giftWrapIndex, GIFT_WRAP_PRICES, 'Mẫu gói quà') +
+            pickFee(dto.cardIndex, CARD_PRICES, 'Mẫu thiệp');
     }
 
     // [FIX H2 - wiki 0088] FREESHIP giảm vào PHÍ SHIP (cap ≤ tổng ship), không vào subtotal.
@@ -298,6 +320,12 @@ export class OrderService {
   async createOrder(userId: string, dto: CreateOrderDto, clientIp: string | null = null) {
     const preview = await this.previewOrder(userId, dto);
     const receiver = dto.receiverInfo || {};
+
+    // wiki 0105 — quy đổi affiliate. Kiểm NGOÀI transaction để giữ transaction đặt hàng
+    // ngắn nhất có thể (nó đã phải gánh trừ kho, voucher, xu, flash-sale). Cookie phía
+    // người dùng KHÔNG tin được nên mọi điều kiện đều kiểm lại trong resolveRefs; mục
+    // nào hỏng bị bỏ im lặng — một link sai không được phép làm hỏng đơn của người mua.
+    const affMap = await this.affiliateCommission.resolveRefs(userId, (dto as any).affiliate);
     
     let noteMap: Record<string, string> = {};
     if (typeof dto.note === 'object') {
@@ -464,6 +492,14 @@ export class OrderService {
                  wardCode: receiver.wardCode ? String(receiver.wardCode) : null,
                  provinceId: receiver.provinceId != null ? Number(receiver.provinceId) : null,
                  message: note,
+                 // wiki 0108: LƯU LỜI CHÚC. FE đã gửi `senderInfo.message` từ lâu nhưng
+                 // trước đây không ai đọc — `message` thì đang giữ ghi chú cho shop, nên
+                 // lời chúc rơi thẳng vào hư không. Trên một sàn quà tặng, mất lời chúc là
+                 // mất chính món quà. Cắt ở 500 cho khớp `VARCHAR(500)` của cột, tránh lặp
+                 // lại lỗi P2000 → 500.
+                 giftMessage: dto.isGift
+                   ? (String((dto as any).senderInfo?.message ?? '').trim().slice(0, 500) || null)
+                   : null,
                  isGift: dto.isGift || false,
                  paymentMethod: dto.paymentMethod,
                  paymentStatus: 'PENDING',
@@ -477,8 +513,25 @@ export class OrderService {
                          price: i.price,
                      }))
                  }
-             }
+             },
+             // wiki 0105: cần id của từng dòng hàng để làm khoá idempotent cho sổ hoa
+             // hồng (AffiliateCommission.orderItemId @unique). include chỉ THÊM trường,
+             // không bỏ trường nào nên các chỗ dùng newOrder phía sau không đổi.
+             include: { items: { select: { id: true, productId: true, quantity: true, price: true } } },
           });
+
+          // wiki 0105: sinh dòng hoa hồng PENDING cho các món đến từ link affiliate.
+          // Nằm TRONG transaction đặt hàng: nếu ghi sổ hỏng thì đơn cũng không nên tồn
+          // tại nửa vời — người tiếp thị mất công dẫn khách mà không được ghi nhận là
+          // lỗi âm thầm, không ai đi khiếu nại thứ họ không biết mình có.
+          if (affMap.size > 0) {
+             await this.affiliateCommission.createPendingForOrder(tx, {
+                orderId: newOrder.id,
+                items: newOrder.items,
+                affMap,
+             });
+          }
+
           createdOrders.push(newOrder);
       }
 
@@ -491,6 +544,46 @@ export class OrderService {
         maxWait: 5000, 
         timeout: 40000 
     }); 
+
+    // ------------------------------------------------------------------------
+    // wiki 0108: BÁO CHO NGƯỜI ĐƯỢC TẶNG BIẾT.
+    //
+    // Trước đây đặt đơn quà tặng xong thì KHÔNG có gì xảy ra phía người nhận: không mail,
+    // không `Notification`, không tra ngược số điện thoại/email về `User`. Trên một sàn
+    // QUÀ TẶNG, người được tặng không hề biết mình có quà — món quà có thể nằm đó mãi.
+    //
+    // Ở đây chỉ làm phần chắc chắn đúng: nếu số điện thoại người nhận khớp một tài khoản
+    // có thật thì tạo thông báo trong ứng dụng. Người nhận CHƯA có tài khoản thì cần gửi
+    // mail/SMS — việc đó phụ thuộc hạ tầng gửi tin nên để lại, ghi rõ trong wiki.
+    //
+    // Best-effort: hỏng thì KHÔNG được làm sập đơn hàng đã đặt thành công.
+    if (dto.isGift && result.length > 0) {
+      try {
+        const phone = String((dto as any).receiverInfo?.phone || '').trim();
+        if (phone) {
+          const nguoiNhan = await this.prisma.user.findFirst({
+            where: { phone },
+            select: { id: true },
+          });
+          // Đừng tự báo cho chính mình khi người ta tự mua tặng mình.
+          if (nguoiNhan && nguoiNhan.id !== userId) {
+            const nguoiTang = await this.prisma.user.findUnique({
+              where: { id: userId },
+              select: { name: true },
+            });
+            await this.notificationService.create({
+              userId: nguoiNhan.id,
+              type: 'ORDER',
+              title: 'Bạn nhận được một món quà!',
+              content: `${nguoiTang?.name || 'Một người bạn'} vừa gửi tặng bạn một món quà. Đơn #${result[0].id.slice(0, 8)} đang được chuẩn bị.`,
+              link: '/user/purchase',
+            });
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Không tạo được thông báo cho người được tặng: ${e.message}`);
+      }
+    }
 
     // [FIX 3] Di chuyển logic xóa giỏ hàng (Redis) ra ngoài transaction DB
     // Redis nhanh nhưng network I/O có thể làm chậm DB lock nếu để bên trong
@@ -698,6 +791,10 @@ export class OrderService {
         data: { status: 'CANCELLED' },
       });
       if (claim.count === 0) throw new BadRequestException('Đơn hàng đã được xử lý.');
+      // wiki 0105: hoa hồng affiliate huỷ theo đơn. Đặt ngay sau claim ATOMIC nên chỉ
+      // request THẮNG race mới chạy — giống mọi thao tác bồi hoàn khác ở khối này.
+      // Tiền chưa hề chuyển đi (chỉ chuyển ví khi CHỐT SỔ) nên không ai mất gì.
+      await this.affiliateCommission.cancelForOrder(tx, orderId);
       for (const item of order.items) {
         if (item.productId) {
           await tx.product.update({
@@ -971,22 +1068,62 @@ export class OrderService {
   // Best-effort (try/catch) — không làm fail flow giao hàng. Là mảnh ghép để payout chạy E2E.
   private async creditSellerOnDelivered(tx: Prisma.TransactionClient, order: any) {
     try {
-      if (!order?.shopId) return;
-      const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
-      if (!isPaid) return;
-      const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
-      const net = Math.floor(Number(order.totalAmount) * (1 - feeRate));
-      if (net <= 0) return;
       // Wiki 0086: idempotent — nếu đã có giao dịch ORDER_INCOME cho đơn này thì bỏ qua
       // (lưới an toàn cuối: chống credit ví seller 2 lần dù bị gọi lại do race/toggle).
+      // Đặt TRƯỚC mọi thứ khác: lần chạy đầu đã xử lý xong cả hoa hồng lẫn ví.
       const already = await tx.walletTransaction.findFirst({ where: { referenceId: order.id, type: 'ORDER_INCOME' } });
       if (already) return;
-      const shop = await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } });
-      if (!shop?.ownerId) return;
-      await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: net } } });
+
+      const isPaid = order.paymentStatus === 'PAID' || String(order.paymentMethod).toLowerCase() === 'cod';
+      const feeRate = await this.systemSetting.getNumber('ORDER_PLATFORM_FEE_RATE', 0.05);
+      const net = order?.shopId && isPaid ? Math.floor(Number(order.totalAmount) * (1 - feeRate)) : 0;
+      const shop = order?.shopId
+        ? await tx.shop.findUnique({ where: { id: order.shopId }, select: { ownerId: true } })
+        : null;
+
+      // wiki 0105 — đơn ĐÃ GIAO nhưng không có doanh thu để trích hoa hồng thì phải ĐÓNG
+      // SỔ hoa hồng, không được thoát sớm để nó nằm lại PENDING vĩnh viễn. Chốt sổ chỉ
+      // quét APPROVED, nên khoản treo là khoản mắc kẹt mà không ai biết để khiếu nại.
+      if (!order?.shopId || !isPaid || net <= 0 || !shop?.ownerId) {
+        await this.affiliateCommission.rejectUnfundable(
+          tx,
+          order.id,
+          !isPaid
+            ? 'Đơn chưa được thanh toán'
+            : net <= 0
+              ? 'Doanh thu đơn sau khuyến mãi không đủ để trả hoa hồng'
+              : 'Đơn không xác định được cửa hàng nhận doanh thu',
+        );
+        return;
+      }
+
+      // wiki 0105 — chốt hoa hồng affiliate TRƯỚC khi ghi có cho seller, vì nó trừ
+      // thẳng vào phần seller nhận. `approveOnDelivered` tự áp trần theo `net` nên
+      // `net - commission` KHÔNG BAO GIỜ âm (xem chú thích áp trần trong service đó).
+      // Đơn không có affiliate → trả 0 → công thức cũ nguyên vẹn từng đồng.
+      const commissionTotal = await this.affiliateCommission.approveOnDelivered(tx, order.id, net);
+      const sellerNet = net - commissionTotal;
+
+      await tx.user.update({ where: { id: shop.ownerId }, data: { walletBalance: { increment: sellerNet } } });
       await tx.walletTransaction.create({
         data: { userId: shop.ownerId, amount: net, type: 'ORDER_INCOME', status: 'COMPLETED', referenceId: order.id, description: `Doanh thu đơn #${order.id.slice(0, 8)}` },
       });
+      // Ghi phí tiếp thị thành dòng RIÊNG (âm) thay vì gộp vào ORDER_INCOME: seller mở
+      // sổ thấy "doanh thu 950.000, phí tiếp thị −50.000" thay vì một con số 900.000
+      // không giải thích được. Chốt idempotent phía trên (ORDER_INCOME theo referenceId)
+      // vẫn bảo vệ cả hai dòng vì chúng luôn được ghi cùng nhau trong một transaction.
+      if (commissionTotal > 0) {
+        await tx.walletTransaction.create({
+          data: {
+            userId: shop.ownerId,
+            amount: new Prisma.Decimal(-commissionTotal),
+            type: 'AFFILIATE_FEE',
+            status: 'COMPLETED',
+            referenceId: order.id,
+            description: `Phí tiếp thị liên kết đơn #${order.id.slice(0, 8)}`,
+          },
+        });
+      }
     } catch (e: any) {
       // [FIX review-finance/MEDIUM - wiki 0088] RETHROW để tx CUỐN NGƯỢC (rollback) toàn bộ thao tác
       // DELIVERED. Trước đây chỉ log + nuốt → đơn vẫn commit DELIVERED nhưng ví seller KHÔNG được
@@ -995,6 +1132,31 @@ export class OrderService {
       this.logger.error(`[SellerCredit fail → rollback] order=${order?.id} err=${e?.message}`);
       throw e;
     }
+  }
+
+  /**
+   * wiki 0108 — ADMIN đổi trạng thái đơn.
+   *
+   * Trước đây `admin-order.controller` chỉ có `@Get()` và `@Get(':id')`: admin **không có
+   * cách nào** sửa một đơn bị kẹt (shop bỏ bê, khách gọi tổng đài xin huỷ, giao nhầm...).
+   * Mọi đường `PATCH/PUT /admin/orders/:id...` đều 404.
+   *
+   * Cố ý ỦY QUYỀN cho `updateOrderStatus` của người bán thay vì viết lại: như vậy admin đi
+   * qua ĐÚNG bộ luật đang có — chặn lùi trạng thái, chặn đổi tiếp khi đã DELIVERED/CANCELLED,
+   * hoàn tồn kho/xu/voucher khi huỷ, tạo thông báo cho người mua. Admin không nên được phép
+   * lặng lẽ phá vỡ máy trạng thái; thứ họ cần là **quyền chạm tới đơn của shop khác**, và
+   * đó đúng là thứ duy nhất hàm này nới ra.
+   */
+  async updateOrderStatusAsAdmin(orderId: string, status: OrderStatus) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, shop: { select: { ownerId: true } } },
+    });
+    if (!order) throw new NotFoundException('Đơn hàng không tồn tại');
+    if (!order.shop?.ownerId) {
+      throw new BadRequestException('Đơn không gắn với cửa hàng nào nên không đổi trạng thái được');
+    }
+    return this.updateOrderStatus(orderId, order.shop.ownerId, status);
   }
 
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
@@ -1056,6 +1218,10 @@ export class OrderService {
           data: { status: 'CANCELLED' },
         });
         if (claim.count === 0) throw new BadRequestException('Đơn đã được xử lý, không thể hủy.');
+        // wiki 0105: đối xứng với luồng buyer-cancel — seller huỷ đơn thì hoa hồng
+        // affiliate cũng phải huỷ, nếu không nó nằm PENDING vĩnh viễn rồi được chốt sổ
+        // ở GĐ4 cho một đơn KHÔNG BAO GIỜ giao (đúc tiền).
+        await this.affiliateCommission.cancelForOrder(tx, orderId);
         const full = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
         if (full) {
           for (const item of (full as any).items) {

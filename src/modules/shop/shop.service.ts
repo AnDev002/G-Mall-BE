@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateShopDto } from './dto/create-shop.dto'; // Bạn tự tạo DTO nhé
 import { nanoid } from 'nanoid';
@@ -352,6 +352,26 @@ export class ShopService {
     // Tách dữ liệu: Thông tin cơ bản (update ngay) và Giấy tờ (cần duyệt)
     const basicInfo: any = {};
     const sensitiveInfo: any = {};
+
+    // wiki 0108: chặn đổi tên trùng tên shop khác.
+    //
+    // Có HAI đường cập nhật hồ sơ shop: `auth.service.updateShopProfile` (đã kiểm trùng
+    // tên từ lâu) và hàm này, phục vụ `PUT /shops/me/profile` — nhưng hàm này thì KHÔNG
+    // kiểm. Đo trên prod: đổi tên shop mình thành tên một shop thật đang hoạt động →
+    // **200**, và sàn có hai gian hàng cùng tên. Người mua không phân biệt nổi, còn tên
+    // shop lại là thứ họ dùng để nhận diện người bán.
+    //
+    // Sửa ở service chứ không ở DTO vì đây là ràng buộc với DỮ LIỆU đang có, không phải
+    // với hình dạng payload.
+    if (data.shopName && data.shopName !== shop.name) {
+      const trung = await this.prisma.shop.findFirst({
+        where: { name: data.shopName, id: { not: shop.id } },
+        select: { id: true },
+      });
+      if (trung) {
+        throw new ConflictException('Tên Shop đã tồn tại, vui lòng chọn tên khác.');
+      }
+    }
 
     // Map dữ liệu từ DTO
     if (data.shopName) basicInfo.name = data.shopName;

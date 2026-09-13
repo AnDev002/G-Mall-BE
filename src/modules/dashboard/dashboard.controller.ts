@@ -23,6 +23,17 @@ export class DashboardController {
     return this.dashboardService.getStats();
   }
 
+  /**
+   * wiki 0111 — số việc đang chờ xử lý, cho badge trên menu quản trị.
+   * Tách khỏi `stats` chứ không nhét thêm vào đó: badge nằm ở mọi trang quản trị và cần
+   * làm mới theo nhịp khác hẳn dashboard, còn `stats` thì giao diện dashboard đang dùng
+   * với một hình dạng cố định — thêm khoá vào đó là đổi hợp đồng của người khác.
+   */
+  @Get('pending-counts')
+  async getPendingCounts() {
+    return this.dashboardService.getPendingCounts();
+  }
+
   // THÊM MỚI: API cho Seller
   @Get('seller/stats')
   @Roles(Role.SELLER)

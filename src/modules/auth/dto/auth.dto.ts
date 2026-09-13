@@ -1,5 +1,5 @@
 // src/auth/dto/auth.dto.ts
-import { IsEmail, IsNotEmpty, IsString, MinLength, MaxLength, Length } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength, MaxLength, Length } from 'class-validator';
 
 // Wiki 0064: MaxLength định nghĩa tường minh cho mọi field string —
 // trước đây thiếu, 10KB name pass validation rồi crash Prisma (VARCHAR 255).
@@ -20,6 +20,14 @@ export class RegisterDto {
   @IsNotEmpty({ message: 'Vui lòng nhập họ tên' })
   @MaxLength(100, { message: 'Họ tên không được dài quá 100 ký tự' })
   name: string;
+
+  // wiki 0095 B6: mã giới thiệu lấy từ link affiliate `/register?ref=<userId>`.
+  // KHÔNG @IsUUID và KHÔNG bắt buộc: ref hỏng/hết hạn/bịa chỉ được BỎ QUA
+  // chứ tuyệt đối không chặn người ta đăng ký. @MaxLength để không nuốt payload rác.
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  ref?: string;
 }
 
 export class RegisterSellerDto {
