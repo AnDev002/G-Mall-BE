@@ -1,5 +1,6 @@
 // BE--1/modules/product/controllers/seller-product.controller.ts
-import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete } from '@nestjs/common';
+import 'multer';
+import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete, UseInterceptors, UploadedFile, BadRequestException, Res } from '@nestjs/common';
 import { ProductWriteService } from '../services/product-write.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
@@ -8,6 +9,7 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { User } from 'src/common/decorators/user.decorator';
+import { FileInterceptor } from '@nestjs/platform-express';
 interface UserEntity {
   id: string;
   email: string;
@@ -30,7 +32,23 @@ export class SellerProductController {
     // FIX: Sử dụng req.user.id
     return this.productWriteService.update(id, req.user.id, dto);
   }
+@Get('bulk-template')
+  async downloadTemplate(@Res() res: Response) {
+    return this.productWriteService.generateExcelTemplate(res);
+  }
 
+  // 2. Upload file Excel nhập hàng loạt
+  @Post('bulk-import')
+  @UseInterceptors(FileInterceptor('file'))
+  async bulkImport(
+    @Request() req,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('Vui lòng chọn file Excel (.xlsx) để tải lên');
+    }
+    return this.productWriteService.bulkImportProducts(req.user.id, file.buffer);
+  }
   @Get('my-products')
   searchMyProducts(
     @Request() req,
