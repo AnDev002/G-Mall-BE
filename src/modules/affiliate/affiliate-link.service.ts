@@ -94,7 +94,7 @@ export class AffiliateLinkService {
       code: link.code,
       clicks: link.clicks,
       // Đường dẫn TƯƠNG ĐỐI: BE không biết domain nào đang phục vụ (localhost /
-      // onrender / lovegifts.vn). FE ghép với `window.location.origin` — cùng cách trang
+      // onrender / gmall.vn). FE ghép với `window.location.origin` — cùng cách trang
       // giới thiệu bạn bè đang làm.
       path: `/product-details/${product.id}?aff=${link.code}`,
       product: {

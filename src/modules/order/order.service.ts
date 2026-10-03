@@ -492,14 +492,6 @@ export class OrderService {
                  wardCode: receiver.wardCode ? String(receiver.wardCode) : null,
                  provinceId: receiver.provinceId != null ? Number(receiver.provinceId) : null,
                  message: note,
-                 // wiki 0108: LƯU LỜI CHÚC. FE đã gửi `senderInfo.message` từ lâu nhưng
-                 // trước đây không ai đọc — `message` thì đang giữ ghi chú cho shop, nên
-                 // lời chúc rơi thẳng vào hư không. Trên một sàn quà tặng, mất lời chúc là
-                 // mất chính món quà. Cắt ở 500 cho khớp `VARCHAR(500)` của cột, tránh lặp
-                 // lại lỗi P2000 → 500.
-                 giftMessage: dto.isGift
-                   ? (String((dto as any).senderInfo?.message ?? '').trim().slice(0, 500) || null)
-                   : null,
                  isGift: dto.isGift || false,
                  paymentMethod: dto.paymentMethod,
                  paymentStatus: 'PENDING',
@@ -544,46 +536,6 @@ export class OrderService {
         maxWait: 5000, 
         timeout: 40000 
     }); 
-
-    // ------------------------------------------------------------------------
-    // wiki 0108: BÁO CHO NGƯỜI ĐƯỢC TẶNG BIẾT.
-    //
-    // Trước đây đặt đơn quà tặng xong thì KHÔNG có gì xảy ra phía người nhận: không mail,
-    // không `Notification`, không tra ngược số điện thoại/email về `User`. Trên một sàn
-    // QUÀ TẶNG, người được tặng không hề biết mình có quà — món quà có thể nằm đó mãi.
-    //
-    // Ở đây chỉ làm phần chắc chắn đúng: nếu số điện thoại người nhận khớp một tài khoản
-    // có thật thì tạo thông báo trong ứng dụng. Người nhận CHƯA có tài khoản thì cần gửi
-    // mail/SMS — việc đó phụ thuộc hạ tầng gửi tin nên để lại, ghi rõ trong wiki.
-    //
-    // Best-effort: hỏng thì KHÔNG được làm sập đơn hàng đã đặt thành công.
-    if (dto.isGift && result.length > 0) {
-      try {
-        const phone = String((dto as any).receiverInfo?.phone || '').trim();
-        if (phone) {
-          const nguoiNhan = await this.prisma.user.findFirst({
-            where: { phone },
-            select: { id: true },
-          });
-          // Đừng tự báo cho chính mình khi người ta tự mua tặng mình.
-          if (nguoiNhan && nguoiNhan.id !== userId) {
-            const nguoiTang = await this.prisma.user.findUnique({
-              where: { id: userId },
-              select: { name: true },
-            });
-            await this.notificationService.create({
-              userId: nguoiNhan.id,
-              type: 'ORDER',
-              title: 'Bạn nhận được một món quà!',
-              content: `${nguoiTang?.name || 'Một người bạn'} vừa gửi tặng bạn một món quà. Đơn #${result[0].id.slice(0, 8)} đang được chuẩn bị.`,
-              link: '/user/purchase',
-            });
-          }
-        }
-      } catch (e) {
-        this.logger.warn(`Không tạo được thông báo cho người được tặng: ${e.message}`);
-      }
-    }
 
     // [FIX 3] Di chuyển logic xóa giỏ hàng (Redis) ra ngoài transaction DB
     // Redis nhanh nhưng network I/O có thể làm chậm DB lock nếu để bên trong
@@ -1132,31 +1084,6 @@ export class OrderService {
       this.logger.error(`[SellerCredit fail → rollback] order=${order?.id} err=${e?.message}`);
       throw e;
     }
-  }
-
-  /**
-   * wiki 0108 — ADMIN đổi trạng thái đơn.
-   *
-   * Trước đây `admin-order.controller` chỉ có `@Get()` và `@Get(':id')`: admin **không có
-   * cách nào** sửa một đơn bị kẹt (shop bỏ bê, khách gọi tổng đài xin huỷ, giao nhầm...).
-   * Mọi đường `PATCH/PUT /admin/orders/:id...` đều 404.
-   *
-   * Cố ý ỦY QUYỀN cho `updateOrderStatus` của người bán thay vì viết lại: như vậy admin đi
-   * qua ĐÚNG bộ luật đang có — chặn lùi trạng thái, chặn đổi tiếp khi đã DELIVERED/CANCELLED,
-   * hoàn tồn kho/xu/voucher khi huỷ, tạo thông báo cho người mua. Admin không nên được phép
-   * lặng lẽ phá vỡ máy trạng thái; thứ họ cần là **quyền chạm tới đơn của shop khác**, và
-   * đó đúng là thứ duy nhất hàm này nới ra.
-   */
-  async updateOrderStatusAsAdmin(orderId: string, status: OrderStatus) {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      select: { id: true, shop: { select: { ownerId: true } } },
-    });
-    if (!order) throw new NotFoundException('Đơn hàng không tồn tại');
-    if (!order.shop?.ownerId) {
-      throw new BadRequestException('Đơn không gắn với cửa hàng nào nên không đổi trạng thái được');
-    }
-    return this.updateOrderStatus(orderId, order.shop.ownerId, status);
   }
 
   async updateOrderStatus(orderId: string, sellerId: string, status: OrderStatus) {
