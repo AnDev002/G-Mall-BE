@@ -81,9 +81,8 @@ async function bootstrap() {
   // whitelist rỗng → 500 (sự cố wiki 0040). localhost CHỈ bật ở non-production.
   const isProd = process.env.NODE_ENV === 'production';
   const PROJECT_ORIGINS = [
-    'https://gmall.vn',
-    'https://www.gmall.vn',
-    'https://gmall.onrender.com',
+    'https://lovegifts.vn',
+    'https://www.lovegifts.vn',
   ];
   const DEV_ORIGINS = ['http://localhost:3000', 'http://localhost:3001'];
   const corsOrigins = Array.from(
