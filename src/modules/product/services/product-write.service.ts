@@ -19,7 +19,7 @@ export class ProductWriteService {
     private readonly productReadService: ProductReadService,
     private readonly imageSearch: ImageSearchService, // wiki 0052
     private readonly systemSetting: SystemSettingService, // wiki 0105
-  ) {}
+  ) { }
 
   // wiki 0052: enqueue index job — fire and forget, never block product save.
   // Failure here means the product is missing from image search until next
@@ -184,12 +184,12 @@ export class ProductWriteService {
       }
 
       const finalProduct = await tx.product.findUnique({
-          where: { id: product.id },
-          include: {
-              // wiki 0095 B2: values orderBy position để response create khớp tierIndex.
-              options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
-              variants: true
-          }
+        where: { id: product.id },
+        include: {
+          // wiki 0095 B2: values orderBy position để response create khớp tierIndex.
+          options: { include: { values: { orderBy: { position: 'asc' } } }, orderBy: { position: 'asc' } },
+          variants: true
+        }
       });
       return finalProduct;
     });
@@ -632,14 +632,14 @@ export class ProductWriteService {
     // systemTags/categoryId (xử lý connect riêng). attributes/videos/sizeChart vẫn giữ
     // như create cho consistency.
     const {
-        images, price, brandId,
-        tiers, variations, crossSellIds, systemTags,
-        syncVariants, // wiki 0095 B3: cờ điều khiển, KHÔNG phải cột Product
-        categoryId,
-        videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
-        attributes,
-        shortDesc,
-        ...rest
+      images, price, brandId,
+      tiers, variations, crossSellIds, systemTags,
+      syncVariants, // wiki 0095 B3: cờ điều khiển, KHÔNG phải cột Product
+      categoryId,
+      videos, sizeChart, brand, origin, weight, length: lenDim, width, height,
+      attributes,
+      shortDesc,
+      ...rest
     } = dto as any;
 
     const updateData: any = { ...rest };
@@ -696,9 +696,10 @@ export class ProductWriteService {
     // ném lỗi thì seller nhận 400 nhưng sản phẩm đã đổi một nửa — không cách nào
     // biết phần nào đã lưu.
     if (dto.syncVariants === true) {
-      const totalStock = await this.syncTiersAndVariants(id, tiers ?? [], variations ?? []);
-      // Tồn kho cha do sync tính (tổng tồn các SKU) là nguồn đúng — không để
-      // giá trị `stock` FE gửi kèm ghi đè ngược lại.
+      const totalStock = await this.syncTiersAndVariants(id, tiers ?? [], variations ?? [], {
+        stock: rest.stock,
+        price,
+      });
       updateData.stock = totalStock;
     }
 
@@ -718,7 +719,7 @@ export class ProductWriteService {
       }
     }
 
-    await this.productCache.invalidateProduct(id);
+    await this.productCache.invalidateProduct(id, updated.slug);
 
     // wiki 0052: re-index nếu images đổi (hash check trong processor sẽ skip nếu giống cũ).
     if (images !== undefined) this.safeEnqueueIndex(id);
@@ -748,6 +749,7 @@ export class ProductWriteService {
     productId: string,
     tiers: { name: string; options: string[]; images?: string[] }[],
     variations: { price: number; stock: number; sku?: string; imageUrl?: string; tierIndex: number[] }[],
+    fallback?: { stock?: number; price?: number },   // <-- THÊM
   ): Promise<number> {
     // Cùng ràng buộc như create(): có nhóm phân loại thì bắt buộc có SKU.
     if (tiers.length > 0 && variations.length === 0) {
@@ -794,21 +796,21 @@ export class ProductWriteService {
     const newTargets =
       tiers.length > 0
         ? variations.map((v) => ({
-            combo: comboOf(v.tierIndex, tiers.map((t) => ({ values: t.options.map((o) => ({ value: o })) }))),
-            tierIndex: v.tierIndex.join(','),
-            price: Number(v.price),
-            stock: Number(v.stock),
-            sku: v.sku ?? '',
-            image: v.imageUrl || null,
-          }))
+          combo: comboOf(v.tierIndex, tiers.map((t) => ({ values: t.options.map((o) => ({ value: o })) }))),
+          tierIndex: v.tierIndex.join(','),
+          price: Number(v.price),
+          stock: Number(v.stock),
+          sku: v.sku ?? '',
+          image: v.imageUrl || null,
+        }))
         : [{
-            combo: '',
-            tierIndex: '',
-            price: Number(existing.price),
-            stock: Number(existing.stock ?? 0),
-            sku: '',
-            image: null as string | null,
-          }];
+          combo: '',
+          tierIndex: '',
+          price: Number(fallback?.price ?? existing.price),
+          stock: Number(fallback?.stock ?? existing.stock ?? 0),   // <-- dùng số mới
+          sku: oldByCombo.get('')?.sku ?? '',                      // <-- giữ SKU cũ
+          image: null as string | null,
+        }];
 
     const keepCombos = new Set(newTargets.map((t) => t.combo));
     const toDelete = existing.variants.filter(
@@ -831,7 +833,7 @@ export class ProductWriteService {
           .join(', ');
         throw new BadRequestException(
           `Không thể xoá phân loại đang chạy Flash Sale: ${names}. ` +
-            `Vui lòng gỡ khỏi chương trình Flash Sale trước khi sửa.`,
+          `Vui lòng gỡ khỏi chương trình Flash Sale trước khi sửa.`,
         );
       }
     }
@@ -1020,7 +1022,7 @@ export class ProductWriteService {
         data: { affiliateEnabled: false },
         select: { id: true, affiliateEnabled: true, affiliateRate: true },
       });
-      await this.productCache.invalidateProduct(productId).catch(() => {});
+      await this.productCache.invalidateProduct(productId).catch(() => { });
       return {
         id: off.id,
         affiliateEnabled: off.affiliateEnabled,
@@ -1045,7 +1047,7 @@ export class ProductWriteService {
       data: { affiliateEnabled: true, affiliateRate: new Prisma.Decimal(dto.rate) },
       select: { id: true, affiliateEnabled: true, affiliateRate: true },
     });
-    await this.productCache.invalidateProduct(productId).catch(() => {});
+    await this.productCache.invalidateProduct(productId).catch(() => { });
     return {
       id: on.id,
       affiliateEnabled: on.affiliateEnabled,
