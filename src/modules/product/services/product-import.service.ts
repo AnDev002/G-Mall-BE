@@ -91,7 +91,7 @@ interface Plan {
   products: ProductPlan[]; models: ModelPlan[];
   productRows: number; modelRows: number; productGroups: number;
 }
-interface JobState {
+export interface JobState {
   id: string; userId: string; status: 'running' | 'done' | 'failed';
   total: number; processed: number; created: number; modelsAdded: number; modelsUpdated: number;
   currentName?: string; errors: ImportIssue[]; warnings: ImportIssue[];
