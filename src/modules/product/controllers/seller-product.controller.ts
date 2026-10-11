@@ -1,5 +1,10 @@
 // BE--1/modules/product/controllers/seller-product.controller.ts
-import { Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete } from '@nestjs/common';
+import {
+  Controller, Get, Post, Body, UseGuards, Request, Patch, Param, Query, ParseIntPipe, Delete,
+  UseInterceptors, UploadedFiles, BadRequestException, StreamableFile, Header
+} from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { ProductImportService, ImportOptions } from '../services/product-import.service';
 import { ProductWriteService } from '../services/product-write.service';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { UpdateProductAffiliateDto, UpdateProductDiscountDto, UpdateProductDto } from '../dto/update-product.dto';
@@ -17,14 +22,17 @@ interface UserEntity {
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SELLER)
 export class SellerProductController {
-  constructor(private readonly productWriteService: ProductWriteService) {}
+  constructor(
+    private readonly productWriteService: ProductWriteService,
+    private readonly productImportService: ProductImportService,
+  ) { }
 
   @Post()
   create(@Request() req, @Body() dto: CreateProductDto) {
     // FIX: Sử dụng req.user.id thay vì req.user.userId
     return this.productWriteService.create(req.user.id, dto);
   }
-  
+
   @Patch(':id')
   update(@Request() req, @Param('id') id: string, @Body() dto: UpdateProductDto) {
     // FIX: Sử dụng req.user.id
@@ -68,13 +76,13 @@ export class SellerProductController {
 
   @Get()
   getMyProducts(
-      @Request() req,
-      @Query('status') status: string,
-      @Query('page') page?: string,
-      @Query('limit') limit?: string,
-      @Query('search') search?: string,
-      @Query('sortBy') sortBy?: string,
-      @Query('sortOrder') sortOrder?: 'asc' | 'desc',
+    @Request() req,
+    @Query('status') status: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
   ) {
     return this.productWriteService.findAllBySeller(req.user.id, status, {
       page: page ? Number(page) : undefined,
@@ -90,5 +98,63 @@ export class SellerProductController {
   @Get(':id')
   findOneForEdit(@Request() req, @Param('id') id: string) {
     return this.productWriteService.findOneForEdit(req.user.id, id);
+  }
+
+  // ───── Nhập hàng loạt từ Excel ─────
+  @Get('import/template')
+  @Header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  @Header('Content-Disposition', 'attachment; filename="mau-nhap-san-pham.xlsx"')
+  async downloadImportTemplate() {
+    return new StreamableFile(await this.productImportService.buildTemplate());
+  }
+
+  // Kiểm tra file (không ghi DB, không tải ảnh) -> trả về ngay
+  @Post('import/validate')
+  @UseInterceptors(FileFieldsInterceptor(
+    [{ name: 'file', maxCount: 1 }, { name: 'images', maxCount: 1 }],
+    { limits: { fileSize: 50 * 1024 * 1024, files: 2 } },
+  ))
+  validateImport(
+    @Request() req,
+    @UploadedFiles() files: { file?: Express.Multer.File[]; images?: Express.Multer.File[] },
+    @Body() body: Record<string, string>,
+  ) {
+    const { xlsx, zip } = this.pickImportFiles(files);
+    return this.productImportService.validate(req.user.id, xlsx, zip, this.parseImportOpts(body));
+  }
+
+  // Nhập thật: chạy nền, trả jobId để FE poll tiến trình
+  @Post('import')
+  @UseInterceptors(FileFieldsInterceptor(
+    [{ name: 'file', maxCount: 1 }, { name: 'images', maxCount: 1 }],
+    { limits: { fileSize: 50 * 1024 * 1024, files: 2 } },
+  ))
+  startImport(
+    @Request() req,
+    @UploadedFiles() files: { file?: Express.Multer.File[]; images?: Express.Multer.File[] },
+    @Body() body: Record<string, string>,
+  ) {
+    const { xlsx, zip } = this.pickImportFiles(files);
+    return this.productImportService.startImport(req.user.id, xlsx, zip, this.parseImportOpts(body));
+  }
+
+  @Get('import/jobs/:jobId')
+  @Header('Cache-Control', 'no-store')
+  getImportJob(@Request() req, @Param('jobId') jobId: string) {
+    return this.productImportService.getJob(req.user.id, jobId);
+  }
+
+  private pickImportFiles(files: { file?: Express.Multer.File[]; images?: Express.Multer.File[] }) {
+    const x = files?.file?.[0];
+    if (!x) throw new BadRequestException('Vui lòng chọn file .xlsx');
+    if (x.size > 5 * 1024 * 1024) throw new BadRequestException('File Excel tối đa 5MB');
+    return { xlsx: x.buffer, zip: files?.images?.[0]?.buffer ?? null };
+  }
+
+  private parseImportOpts(body: Record<string, string>): ImportOptions {
+    return {
+      draft: body?.draft === '1' || body?.draft === 'true',
+      onExisting: body?.onExisting === 'update' ? 'update' : 'skip',
+    };
   }
 }

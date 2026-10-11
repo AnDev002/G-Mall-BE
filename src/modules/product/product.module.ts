@@ -9,12 +9,14 @@ import { CategoryModule } from '../category/category.module';
 import { ProductAutoTagService } from './services/product-auto-tag.service';
 import { ImageSearchModule } from '../image-search/image-search.module'; // wiki 0052
 import { SystemSettingModule } from '../../common/services/system-setting.module'; // wiki 0105
-
+import { ProductImportService } from './services/product-import.service';
+import { StorageModule } from '../storage/storage.module'; 
 @Module({
   imports: [
     CategoryModule, // [FIX] Thêm dòng này để ProductReadService dùng được CategoryService
     ImageSearchModule, // wiki 0052: auto-index sau create/update SP
     SystemSettingModule, // wiki 0105: đọc trần % hoa hồng AFFILIATE_MAX_RATE
+    StorageModule, // wiki 0106: upload ảnh SP
   ],
   controllers: [
     StoreProductController,  // Cho Khách hàng (Buyer)
@@ -25,7 +27,8 @@ import { SystemSettingModule } from '../../common/services/system-setting.module
     ProductReadService,
     ProductWriteService,
     ProductCacheService,
-    ProductAutoTagService
+    ProductAutoTagService,
+    ProductImportService
   ],
   exports: [
     ProductReadService,
