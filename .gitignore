@@ -60,3 +60,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 *.bak
 .env*
 *.bak
+node_modules/
+dist/
+dist.bak.*/
+.env
+.env.*
