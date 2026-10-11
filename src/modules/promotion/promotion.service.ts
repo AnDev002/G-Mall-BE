@@ -9,12 +9,12 @@ export class PromotionService {
   constructor(
     private prisma: PrismaService,
     private redisService: RedisService
-  ) {}
+  ) { }
 
   // =================================================================
   // 🆕 PHẦN MỚI: LOGIC TÍNH TOÁN MULTI-SHOP (Dùng cho OrderService mới)
   // =================================================================
-  
+
   /**
    * Tính toán voucher cho đơn hàng gồm nhiều Shop.
    * Logic:
@@ -41,7 +41,7 @@ export class PromotionService {
     // thiếu data → chạy vào nhánh else và bị bỏ qua. Thêm include để chuẩn.
     const vouchers = await this.prisma.voucher.findMany({
       where: {
-        code: { in: voucherIds },
+        OR: [{ code: { in: voucherIds } }, { id: { in: voucherIds } }],   // <-- đổi dòng này
         isActive: true,
         startDate: { lte: new Date() },
         endDate: { gte: new Date() },
@@ -107,7 +107,7 @@ export class PromotionService {
     for (const voucher of shopVouchers) {
       const targetShopId = voucher.shopId;
       // Nếu voucher không thuộc shop nào trong giỏ hàng -> Bỏ qua
-      if (!targetShopId || !shopGroups[targetShopId]) continue; 
+      if (!targetShopId || !shopGroups[targetShopId]) continue;
 
       const group = shopGroups[targetShopId];
       let eligibleAmount = 0;
@@ -148,12 +148,12 @@ export class PromotionService {
       // Cộng dồn giảm giá cho shop đó (đề phòng shop cho dùng nhiều voucher - tùy logic business)
       // Ở đây giả định mỗi loại voucher áp dụng 1 lần, nhưng code hỗ trợ cộng dồn
       shopDiscounts[targetShopId] = (shopDiscounts[targetShopId] || 0) + discount;
-      
-      appliedVouchers.push({ 
-          ...voucher, 
-          appliedAmount: discount, 
-          shopId: targetShopId,
-          isSystem: false
+
+      appliedVouchers.push({
+        ...voucher,
+        appliedAmount: discount,
+        shopId: targetShopId,
+        isSystem: false
       });
     }
 
@@ -162,7 +162,7 @@ export class PromotionService {
     Object.keys(shopGroups).forEach(shopId => {
       const originalSub = shopGroups[shopId].subtotal;
       const shopDisc = shopDiscounts[shopId] || 0;
-      totalAfterShopDiscount += Math.max(0, originalSub - shopDisc); 
+      totalAfterShopDiscount += Math.max(0, originalSub - shopDisc);
     });
 
     // 5. Xử lý Voucher Sàn (System)
@@ -179,10 +179,10 @@ export class PromotionService {
       }
 
       systemDiscount += discount;
-      appliedVouchers.push({ 
-          ...voucher, 
-          appliedAmount: discount, 
-          isSystem: true 
+      appliedVouchers.push({
+        ...voucher,
+        appliedAmount: discount,
+        isSystem: true
       });
     }
 
@@ -221,9 +221,9 @@ export class PromotionService {
 
   // --- 1. CORE LOGIC: TÍNH TOÁN GIẢM GIÁ (CŨ) ---
   async validateAndCalculateVouchers(
-    voucherIds: string[], 
-    orderTotal: number,   
-    items: any[] 
+    voucherIds: string[],
+    orderTotal: number,
+    items: any[]
   ) {
     if (!voucherIds || voucherIds.length === 0) {
       return { totalDiscount: 0, appliedVouchers: [] };
@@ -237,7 +237,7 @@ export class PromotionService {
         startDate: { lte: new Date() },
         endDate: { gte: new Date() },
       },
-      include: { 
+      include: {
         products: { select: { id: true } },
         categories: { select: { id: true } }
       }
@@ -258,16 +258,16 @@ export class PromotionService {
 
       if (voucher.scope === 'GLOBAL' || voucher.scope === 'SHOP') {
         eligibleTotal = orderTotal;
-      } 
+      }
       else if (voucher.scope === 'PRODUCT') {
         const validIds = voucher.products.map(p => p.id);
         eligibleTotal = items
           .filter(i => validIds.includes(i.productId))
           .reduce((sum, i) => sum + (i.price * i.quantity), 0);
-      } 
+      }
       else if (voucher.scope === 'CATEGORY') {
         const validCatIds = voucher.categories.map(c => c.id);
-        
+
         // [FIX] Lọc item thuộc category (Check null an toàn)
         const validItems = items.filter(item => {
           const productInfo = dbProducts.find(p => p.id === item.productId);
@@ -311,7 +311,48 @@ export class PromotionService {
       // Có thể include thêm số lượng đã dùng nếu cần hiển thị progress bar
     });
   }
+  // Voucher khả dụng cho các sản phẩm đang thanh toán: không cần khách lưu trước.
+  async getAvailableVouchers(userId: string, productIds: string[]) {
+    const ids = [...new Set(productIds)].slice(0, 100);
+    const products = ids.length
+      ? await this.prisma.product.findMany({
+        where: { id: { in: ids } },
+        select: { shopId: true, categoryId: true },
+      })
+      : [];
+    const shopIds = [...new Set(products.map(p => p.shopId).filter((s): s is string => !!s))];
+    const categoryIds = [...new Set(products.map(p => p.categoryId).filter((c): c is string => !!c))];
+    const now = new Date();
 
+    const vouchers = await this.prisma.voucher.findMany({
+      where: {
+        isActive: true,
+        startDate: { lte: now },
+        endDate: { gte: now },
+        type: { not: VoucherType.FREESHIP },
+        // Bỏ voucher user đã dùng (hệ thống chỉ cho 1 lượt/user)
+        userVouchers: { none: { userId, isUsed: true } },
+        OR: [
+          { scope: VoucherScope.GLOBAL },
+          { scope: VoucherScope.SHOP, shopId: { in: shopIds } },
+          { scope: VoucherScope.PRODUCT, shopId: { in: shopIds }, products: { some: { id: { in: ids } } } },
+          { scope: VoucherScope.CATEGORY, shopId: { in: shopIds }, categories: { some: { id: { in: categoryIds } } } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { shop: { select: { name: true } } },
+    });
+
+    return vouchers
+      .filter(v => v.usageLimit <= 0 || v.usageCount < v.usageLimit)
+      .map(({ shop, ...v }) => ({
+        ...v,
+        amount: Number(v.amount),
+        minOrderValue: Number(v.minOrderValue),
+        maxDiscount: v.maxDiscount != null ? Number(v.maxDiscount) : undefined,
+        shopName: shop?.name ?? null,
+      }));
+  }
   // --- 2. WRAPPER CHO CONTROLLER ---
   async calculateDiscount(dto: any) {
     const voucherIds = dto.voucherCode ? [dto.voucherCode] : [];
@@ -322,7 +363,7 @@ export class PromotionService {
   async createShopVoucher(sellerId: string, dto: CreateVoucherDto) {
     // 1. Validate ngày
     if (new Date(dto.endDate) <= new Date(dto.startDate)) {
-        throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
+      throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
     }
 
     // 2. [THÊM MỚI] Kiểm tra mã voucher đã tồn tại chưa
@@ -335,10 +376,10 @@ export class PromotionService {
 
     // 3. Validate Scope
     if (dto.scope === VoucherScope.PRODUCT && !dto.productIds?.length) {
-        throw new BadRequestException('Vui lòng chọn sản phẩm');
+      throw new BadRequestException('Vui lòng chọn sản phẩm');
     }
     if (dto.scope === VoucherScope.CATEGORY && !dto.categoryIds?.length) {
-        throw new BadRequestException('Vui lòng chọn danh mục');
+      throw new BadRequestException('Vui lòng chọn danh mục');
     }
 
     // [FIX H1 - wiki 0088] LẤY shopId của seller và GẮN vào voucher. Trước đây create chỉ set
@@ -375,7 +416,7 @@ export class PromotionService {
           endDate: new Date(dto.endDate),
           minOrderValue: new Prisma.Decimal(dto.minOrderValue || 0),
           maxDiscount: dto.maxDiscount ? new Prisma.Decimal(dto.maxDiscount) : null,
-          
+
           products: dto.scope === VoucherScope.PRODUCT && dto.productIds ? {
             connect: dto.productIds.map(id => ({ id }))
           } : undefined,
@@ -385,7 +426,7 @@ export class PromotionService {
           } : undefined
         }
       });
-      
+
       // [round14 review-FIX] Bỏ ghi `voucher:CODE:stock` — sau M9 key này KHÔNG còn được đọc/DECR
       // (ngân sách lượt dùng do DB usageCount lo ở redeem). Tránh để lại dead key trong Redis.
 
@@ -407,10 +448,10 @@ export class PromotionService {
     if (existingVoucher) {
       throw new BadRequestException(`Mã voucher '${dto.code}' đã tồn tại.`);
     }
-    
+
     // Validate Scope cho Admin
     if (dto.scope === VoucherScope.PRODUCT && !dto.productIds?.length) {
-        throw new BadRequestException('Vui lòng chọn sản phẩm áp dụng');
+      throw new BadRequestException('Vui lòng chọn sản phẩm áp dụng');
     }
     // Admin cũng có thể tạo voucher theo Category nếu muốn (Logic tương tự)
 
@@ -421,18 +462,18 @@ export class PromotionService {
           code: dto.code,
           name: dto.name,
           type: dto.type,
-          scope: dto.scope, 
+          scope: dto.scope,
           amount: new Prisma.Decimal(dto.amount),
           usageLimit: dto.usageLimit,
           startDate: new Date(dto.startDate),
           endDate: new Date(dto.endDate),
           minOrderValue: new Prisma.Decimal(dto.minOrderValue || 0),
           maxDiscount: dto.maxDiscount ? new Prisma.Decimal(dto.maxDiscount) : null,
-          
+
           products: dto.scope === VoucherScope.PRODUCT && dto.productIds ? {
             connect: dto.productIds.map(id => ({ id }))
           } : undefined,
-          
+
           // Nếu Admin muốn support Category scope thì thêm đoạn này:
           categories: dto.scope === VoucherScope.CATEGORY && dto.categoryIds ? {
             connect: dto.categoryIds.map(id => ({ id }))
@@ -485,8 +526,8 @@ export class PromotionService {
     if (result === -2) throw new BadRequestException('Bạn đã lưu voucher này rồi');
 
     await this.prisma.userVoucher.create({
-        data: { userId, voucherId: voucher.id }
-    }).catch(() => {});
+      data: { userId, voucherId: voucher.id }
+    }).catch(() => { });
 
     return { message: 'Lưu voucher thành công!' };
   }

@@ -11,14 +11,14 @@ import { Public } from "src/common/decorators/public.decorator";
 
 // Định nghĩa nhanh DTO nếu chưa có file riêng (hoặc bạn có thể tách ra file)
 export class CalculateCartDto {
-    total: number;
-    voucherCode?: string;
-    items?: any[];
+  total: number;
+  voucherCode?: string;
+  items?: any[];
 }
 
 @Controller('promotions')
 export class PromotionController {
-  constructor(private readonly promotionService: PromotionService) {}
+  constructor(private readonly promotionService: PromotionService) { }
 
   // SELLER: Tạo voucher
   @Post('seller/create')
@@ -46,11 +46,16 @@ export class PromotionController {
 
   // BUYER/SYSTEM: Tính toán giá giỏ hàng (Dry Run)
   @Post('calculate')
-  @UseGuards(JwtAuthGuard) 
+  @UseGuards(JwtAuthGuard)
   async calculateCart(@Body() dto: CalculateCartDto) {
     return this.promotionService.calculateDiscount(dto);
   }
-
+  @Get('available')
+  @UseGuards(JwtAuthGuard)
+  async getAvailable(@Query('productIds') productIds: string, @UserDecorator() user: User) {
+    const ids = (productIds || '').split(',').map(s => s.trim()).filter(Boolean);
+    return this.promotionService.getAvailableVouchers(user.id, ids);
+  }
   @Get('seller')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SELLER)
@@ -73,7 +78,7 @@ export class PromotionController {
     return this.promotionService.createSystemVoucher(dto);
   }
 
-  
+
 
   // 2. Admin xem danh sách Voucher sàn (Global)
   @Get('admin/system-vouchers')
