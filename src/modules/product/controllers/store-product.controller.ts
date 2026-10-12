@@ -12,7 +12,7 @@ import { getPagination } from 'src/common/utils/pagination.util';
 
 @Controller('store/products')
 export class StoreProductController {
-  constructor(private readonly productReadService: ProductReadService, private readonly prisma: PrismaService) {}
+  constructor(private readonly productReadService: ProductReadService, private readonly prisma: PrismaService) { }
 
 
 
@@ -29,6 +29,7 @@ export class StoreProductController {
     @Query('limit') limit: number,
     @Query('search') search: string,
     @Query('categorySlug') categorySlug: string,
+    @Query('categoryId') categoryId: string,
     @Query('minPrice') minPrice: number,
     @Query('maxPrice') maxPrice: number,
     @Query('rating') rating: number,
@@ -38,18 +39,19 @@ export class StoreProductController {
   ) {
     // Logic vẫn dùng ReadService xịn xò (có Redis)
     if (search === 'recommendation') {
-        const userId = req.user?.userId || (deviceId ? `guest:${deviceId}` : null);
-        if (userId) {
-            return this.productReadService.getPersonalizedFeed(userId, Number(page) || 1, Number(limit) || 20);
-        }
+      const userId = req.user?.userId || (deviceId ? `guest:${deviceId}` : null);
+      if (userId) {
+        return this.productReadService.getPersonalizedFeed(userId, Number(page) || 1, Number(limit) || 20);
+      }
     }
 
     // 2. Logic Filter đầy đủ
-    return this.productReadService.findAllPublic({ 
-      page: Number(page), 
-      limit: Number(limit), 
+    return this.productReadService.findAllPublic({
+      page: Number(page),
+      limit: Number(limit),
       search,
       categorySlug, // Pass slug xuống service
+      categoryId,
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       rating: rating ? Number(rating) : undefined,
@@ -58,7 +60,7 @@ export class StoreProductController {
     });
   }
 
-  
+
 
   @Get(':id')
   @Public()
@@ -95,56 +97,56 @@ export class StoreProductController {
   @Get(':id/bought-together')
   @Public()
   async getBoughtTogether(@Param('id') id: string) {
-      const relations = await this.prisma.productCrossSell.findMany({
-          where: { productId: id },
+    const relations = await this.prisma.productCrossSell.findMany({
+      where: { productId: id },
+      include: {
+        relatedProduct: {
           include: {
-              relatedProduct: { 
-                  include: {
-                      // [FIX] Include values của options
-                      // wiki 0095 B2: values PHẢI orderBy position (khớp tierIndex),
-                      // mặc định Prisma trả theo thứ tự DB (uuid) → lệch.
-                      options: {
-                          include: { values: { orderBy: { position: 'asc' } } },
-                          orderBy: { position: 'asc' }
-                      },
-                      variants: true
-                  }
-              }
-          },
-          take: 6 
-      });
+            // [FIX] Include values của options
+            // wiki 0095 B2: values PHẢI orderBy position (khớp tierIndex),
+            // mặc định Prisma trả theo thứ tự DB (uuid) → lệch.
+            options: {
+              include: { values: { orderBy: { position: 'asc' } } },
+              orderBy: { position: 'asc' }
+            },
+            variants: true
+          }
+        }
+      },
+      take: 6
+    });
 
-      return relations.map(r => {
-          const p = r.relatedProduct;
-          return {
-              ...p,
-              id: p.id,
-              name: p.name,
-              // [FIX] Convert Decimal sang Number
-              price: Number(p.price),
-              stock: Number(p.stock),
-              
-              // [FIX] Xử lý ảnh an toàn (trả về mảng string url)
-              images: (p.images as any)?.map((i: any) => typeof i === 'string' ? i : i.url) || [], 
-              slug: p.slug,
+    return relations.map(r => {
+      const p = r.relatedProduct;
+      return {
+        ...p,
+        id: p.id,
+        name: p.name,
+        // [FIX] Convert Decimal sang Number
+        price: Number(p.price),
+        stock: Number(p.stock),
 
-              // [FIX] Map options chuẩn cho BoughtTogether Frontend
-              options: p.options.map(opt => ({
-                  name: opt.name,
-                  // Frontend đang map: opt.values.map(v => v.value) -> Cần trả về object có key value
-                  values: opt.values.map(v => ({ 
-                      value: v.value,
-                      image: v.image // Kèm thêm ảnh nếu có
-                  }))
-              })),
+        // [FIX] Xử lý ảnh an toàn (trả về mảng string url)
+        images: (p.images as any)?.map((i: any) => typeof i === 'string' ? i : i.url) || [],
+        slug: p.slug,
 
-              variants: p.variants.map(v => ({
-                  ...v,
-                  price: Number(v.price),
-                  stock: Number(v.stock)
-              }))
-          };
-      });
+        // [FIX] Map options chuẩn cho BoughtTogether Frontend
+        options: p.options.map(opt => ({
+          name: opt.name,
+          // Frontend đang map: opt.values.map(v => v.value) -> Cần trả về object có key value
+          values: opt.values.map(v => ({
+            value: v.value,
+            image: v.image // Kèm thêm ảnh nếu có
+          }))
+        })),
+
+        variants: p.variants.map(v => ({
+          ...v,
+          price: Number(v.price),
+          stock: Number(v.stock)
+        }))
+      };
+    });
   }
 
   @Get(':id/reviews')
@@ -158,7 +160,7 @@ export class StoreProductController {
     const _pg = getPagination(page, limit);
     page = _pg.page; limit = _pg.limit;
     const skip = _pg.skip;
-    
+
     // Xây dựng điều kiện lọc
     const whereCondition: any = { productId };
     if (rating) {
@@ -211,6 +213,6 @@ export class StoreProductController {
       distribution // Trả về { 5: 10, 4: 2, ... }
     };
   }
-  
+
 
 }
