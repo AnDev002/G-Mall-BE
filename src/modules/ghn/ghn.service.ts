@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -92,32 +92,32 @@ export class GhnService {
   // [FIX] Lấy service_id an toàn nhất
   async getServiceId(toDistrictId: number, fromDistrictId: number, weight: number) {
     try {
-        const url = `${this.apiUrl}/v2/shipping-order/available-services`;
-        const payload = {
-            shop_id: this.shopId,
-            from_district: fromDistrictId, 
-            to_district: toDistrictId,
-            weight: weight || 200 // Truyền weight để GHN lọc gói phù hợp
-        };
+      const url = `${this.apiUrl}/v2/shipping-order/available-services`;
+      const payload = {
+        shop_id: this.shopId,
+        from_district: fromDistrictId,
+        to_district: toDistrictId,
+        weight: weight || 200 // Truyền weight để GHN lọc gói phù hợp
+      };
 
-        const { data } = await firstValueFrom(
-            this.httpService.post(url, payload, { headers: { token: this.token } }) 
-        );
+      const { data } = await firstValueFrom(
+        this.httpService.post(url, payload, { headers: { token: this.token } })
+      );
 
-        if (!data.data || data.data.length === 0) {
-            return null;
-        }
+      if (!data.data || data.data.length === 0) {
+        return null;
+      }
 
-        // [QUAN TRỌNG] Tìm gói E-Commerce (service_type_id = 2)
-        // Gói thường (Standard) hoặc Thương mại điện tử
-        const ecommerceService = data.data.find((s: any) => s.service_type_id === 2);
-        
-        // Nếu có gói chuẩn thì dùng, không thì mới fallback về cái đầu tiên
-        return ecommerceService ? ecommerceService.service_id : data.data[0].service_id; 
+      // [QUAN TRỌNG] Tìm gói E-Commerce (service_type_id = 2)
+      // Gói thường (Standard) hoặc Thương mại điện tử
+      const ecommerceService = data.data.find((s: any) => s.service_type_id === 2);
+
+      // Nếu có gói chuẩn thì dùng, không thì mới fallback về cái đầu tiên
+      return ecommerceService ? ecommerceService.service_id : data.data[0].service_id;
 
     } catch (error: any) {
-        this.logger.error(`Get Service Error: ${JSON.stringify(error.response?.data || error.message)}`);
-        return null; 
+      this.logger.error(`Get Service Error: ${JSON.stringify(error.response?.data || error.message)}`);
+      return null;
     }
   }
 
@@ -131,14 +131,14 @@ export class GhnService {
     try {
       // Gọi getServiceId với cân nặng thực tế
       const serviceId = await this.getServiceId(
-          params.toDistrictId, 
-          this.defaultFromDistrictId, 
-          params.weight
+        params.toDistrictId,
+        this.defaultFromDistrictId,
+        params.weight
       );
-      
+
       if (!serviceId) {
-          this.logger.warn(`Không tìm thấy gói vận chuyển cho tuyến ${this.defaultFromDistrictId} -> ${params.toDistrictId}`);
-          return 30000; 
+        this.logger.warn(`Không tìm thấy gói vận chuyển cho tuyến ${this.defaultFromDistrictId} -> ${params.toDistrictId}`);
+        return 30000;
       }
 
       // Gọi API tính phí
@@ -150,7 +150,7 @@ export class GhnService {
         from_district_id: this.defaultFromDistrictId,
         to_district_id: params.toDistrictId,
         to_ward_code: params.toWardCode,
-        height: 10, length: 10, width: 10, 
+        height: 10, length: 10, width: 10,
         weight: params.weight,
       };
 
@@ -158,12 +158,12 @@ export class GhnService {
         this.httpService.post(url, payload, { headers: this.getHeaders() }),
       );
 
-      return data.data.total; 
+      return data.data.total;
     } catch (error: any) {
       // Log lỗi chi tiết để debug nếu cần
       // console.log('GHN Fee Error Detail:', JSON.stringify(error.response?.data));
       this.logger.error(`GHN Fee Error: ${JSON.stringify(error.response?.data || error.message)}`);
-      return 30000; 
+      return 30000;
     }
   }
 
@@ -177,19 +177,19 @@ export class GhnService {
       const url = `${this.apiUrl}/v2/shipping-order/leadtime`;
       const payload = {
         from_district_id: this.defaultFromDistrictId,
-        from_ward_code: "20314", 
+        from_ward_code: "20314",
         to_district_id: params.toDistrictId,
         to_ward_code: params.toWardCode,
-        service_id: serviceId, 
+        service_id: serviceId,
       };
 
       const { data } = await firstValueFrom(
         this.httpService.post(url, payload, { headers: this.getHeaders() }),
       );
 
-      return data.data.leadtime; 
+      return data.data.leadtime;
     } catch (error: any) {
-      return Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60; 
+      return Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
     }
   }
 
@@ -199,44 +199,44 @@ export class GhnService {
     // chưa cấu hình → fallback MOCK ở cuối hàm (cho dev/staging). Wiki 0076: bỏ
     // comment khối real-call (trước đây bị /* */ nên LUÔN trả mock dù đã có key).
     if (this.hasRealCredentials()) {
-    try {
+      try {
         const totalWeight = orderData.weight || 200;
         const serviceId = await this.getServiceId(
-            orderData.to_district_id, 
-            this.defaultFromDistrictId,
-            totalWeight
+          orderData.to_district_id,
+          this.defaultFromDistrictId,
+          totalWeight
         );
-        
+
         const url = `${this.apiUrl}/v2/shipping-order/create`;
         const payload = {
-            ...orderData,
-            payment_type_id: 2, 
-            required_note: 'CHOXEMHANGKHONGTHU',
-            service_id: serviceId || 53320, 
-            from_district_id: this.defaultFromDistrictId,
+          ...orderData,
+          payment_type_id: 2,
+          required_note: 'CHOXEMHANGKHONGTHU',
+          service_id: serviceId || 53320,
+          from_district_id: this.defaultFromDistrictId,
         };
 
         const { data } = await firstValueFrom(
-            this.httpService.post(url, payload, { headers: this.getHeaders() })
+          this.httpService.post(url, payload, { headers: this.getHeaders() })
         );
-        return data.data; 
-    } catch (error: any) {
+        return data.data;
+      } catch (error: any) {
         this.logger.error('GHN Create Order Error:', error.response?.data || error.message);
         throw new BadRequestException('Không thể tạo đơn vận chuyển GHN');
-    }
+      }
     }
 
     // --- FALLBACK MOCK (chưa cấu hình GHN_TOKEN/GHN_SHOP_ID — dev/staging) ---
     this.logger.warn(`[MOCK GHN] Chưa cấu hình GHN_TOKEN/GHN_SHOP_ID → giả lập đơn cho: ${orderData.to_name}`);
-    
+
     // Trả về dữ liệu giả giống hệt cấu trúc GHN trả về thật
     // Để OrderService không bị lỗi khi đọc 'order_code' hay 'total_fee'
     return {
-        order_code: 'MOCK_GHN_' + Date.now(), // Mã đơn giả: MOCK_GHN_17000000...
-        total_fee: 35000, // Phí ship giả định
-        expected_delivery_time: new Date().toISOString(),
-        status: 'ready_to_pick',
-        // Thêm các trường khác nếu cần
+      order_code: 'MOCK_GHN_' + Date.now(), // Mã đơn giả: MOCK_GHN_17000000...
+      total_fee: 35000, // Phí ship giả định
+      expected_delivery_time: new Date().toISOString(),
+      status: 'ready_to_pick',
+      // Thêm các trường khác nếu cần
     };
   }
 
@@ -257,46 +257,67 @@ export class GhnService {
       this.logger.error(`[GHN] hủy vận đơn ${orderCode} thất bại: ${JSON.stringify(e.response?.data) || e.message}`);
     }
   }
+  // Cache master-data (tỉnh/quận/phường gần như bất biến). Không cache khi lỗi/rỗng.
+  private masterCache = new Map<string, { data: any[]; at: number }>();
+  private readonly MASTER_TTL = 24 * 60 * 60 * 1000;
+
+  private async fetchMaster(key: string, req: () => Promise<any>, allowEmpty = false): Promise<any[]> {
+    const hit = this.masterCache.get(key);
+    if (hit && Date.now() - hit.at < this.MASTER_TTL) return hit.data;
+
+    if (!this.token) {
+      this.logger.error('Thiếu GHN_TOKEN trong .env — không tải được dữ liệu địa chỉ');
+      throw new ServiceUnavailableException('Hệ thống chưa cấu hình dịch vụ địa chỉ GHN');
+    }
+
+    try {
+      const { data } = await req();
+      const list = Array.isArray(data?.data) ? data.data : [];
+      if (list.length === 0 && !allowEmpty) throw new Error('GHN trả danh sách rỗng');
+      this.masterCache.set(key, { data: list, at: Date.now() });
+      return list;
+    } catch (e: any) {
+      this.logger.error(
+        `GHN master-data "${key}" lỗi: ${JSON.stringify(e?.response?.data || e?.message)} | apiUrl=${this.apiUrl}`,
+      );
+      if (hit) return hit.data; // có bản cũ thì dùng tạm
+      throw new ServiceUnavailableException('Không tải được dữ liệu địa chỉ từ GHN, vui lòng thử lại');
+    }
+  }
 
   async getProvinces() {
-    try {
-      const url = `${this.apiUrl}/master-data/province`;
-      const { data } = await firstValueFrom(
-        this.httpService.get(url, { headers: { token: this.token } })
-      );
-      return data.data; // Trả về mảng [{ ProvinceID, ProvinceName, ... }]
-    } catch (error) {
-      console.error('Lỗi lấy Tỉnh/Thành GHN:', error?.response?.data || error.message);
-      return [];
-    }
+    return this.fetchMaster('provinces', () =>
+      firstValueFrom(
+        this.httpService.get(`${this.apiUrl}/master-data/province`, { headers: { token: this.token } }),
+      ),
+    );
   }
 
-  // 5. Lấy danh sách Quận/Huyện theo Tỉnh
+  // Lấy danh sách Quận/Huyện theo Tỉnh
   async getDistricts(provinceId: number) {
-    try {
-      const url = `${this.apiUrl}/master-data/district`;
-      const { data } = await firstValueFrom(
-        this.httpService.post(url, { province_id: provinceId }, { headers: { token: this.token } })
-      );
-      return data.data; // Trả về mảng [{ DistrictID, DistrictName, ... }]
-    } catch (error) {
-      console.error(`Lỗi lấy Quận/Huyện (Province: ${provinceId}):`, error?.response?.data || error.message);
-      return [];
-    }
+    return this.fetchMaster(`districts:${provinceId}`, () =>
+      firstValueFrom(
+        this.httpService.post(
+          `${this.apiUrl}/master-data/district`,
+          { province_id: provinceId },
+          { headers: { token: this.token } },
+        ),
+      ),
+    );
   }
 
-  // 6. Lấy danh sách Phường/Xã theo Quận
+  // Lấy danh sách Phường/Xã theo Quận (một số quận có thể không có phường → cho phép rỗng)
   async getWards(districtId: number) {
-    try {
-      const url = `${this.apiUrl}/master-data/ward?district_id=${districtId}`;
-      const { data } = await firstValueFrom(
-        this.httpService.get(url, { headers: { token: this.token } })
-      );
-      return data.data; // Trả về mảng [{ WardCode, WardName, ... }]
-    } catch (error) {
-      console.error(`Lỗi lấy Phường/Xã (District: ${districtId}):`, error?.response?.data || error.message);
-      return [];
-    }
+    return this.fetchMaster(
+      `wards:${districtId}`,
+      () =>
+        firstValueFrom(
+          this.httpService.get(`${this.apiUrl}/master-data/ward?district_id=${districtId}`, {
+            headers: { token: this.token },
+          }),
+        ),
+      true,
+    );
   }
 
   // =====================================================================
