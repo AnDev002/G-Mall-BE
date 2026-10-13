@@ -1,6 +1,6 @@
 // Backend-2.1.0/modules/flash-sale/flash-sale.controller.ts
-import { 
-  Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, 
+import {
+  Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards,
   BadRequestException
 } from '@nestjs/common';
 import { FlashSaleService } from './flash-sale.service';
@@ -18,9 +18,9 @@ import { Public } from 'src/common/decorators/public.decorator';
 // --- CONTROLLER 1: Dành cho ADMIN ---
 @Controller('admin/flash-sale')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.ADMIN) 
+@Roles(Role.ADMIN)
 export class FlashSaleController {
-  constructor(private readonly flashSaleService: FlashSaleService) {}
+  constructor(private readonly flashSaleService: FlashSaleService) { }
 
   @Post('sessions')
   create(@Body() createDto: CreateFlashSaleSessionDto) {
@@ -48,7 +48,7 @@ export class FlashSaleController {
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SELLER) // Chỉ cho phép Seller truy cập
 export class SellerFlashSaleController {
-  constructor(private readonly flashSaleService: FlashSaleService, private readonly shopService: ShopService) {}
+  constructor(private readonly flashSaleService: FlashSaleService, private readonly shopService: ShopService) { }
 
   @Get('sessions')
   getAvailableSessions() {
@@ -59,18 +59,18 @@ export class SellerFlashSaleController {
   async getRegisteredProducts(@User() user: any, @Param('sessionId') sessionId: string) {
     const shop = await this.shopService.getShopByOwnerId(user.id);
     if (!shop) throw new BadRequestException('Shop not found');
-    
+
     return this.flashSaleService.getRegisteredProducts(shop.id, sessionId);
   }
 
-  
+
   @Post('register')
   async registerProducts(@User() user: any, @Body() dto: RegisterFlashSaleDto) {
     // [FIX QUAN TRỌNG]: Lấy Shop ID từ User ID
     const shop = await this.shopService.getShopByOwnerId(user.id);
-    
+
     if (!shop) {
-        throw new BadRequestException('Tài khoản này chưa tạo Cửa hàng!');
+      throw new BadRequestException('Tài khoản này chưa tạo Cửa hàng!');
     }
 
     // Truyền shop.id (UUID của Shop) thay vì user.id
@@ -80,11 +80,17 @@ export class SellerFlashSaleController {
 
 @Controller('store/flash-sale') // Đường dẫn store/... thường dùng cho public
 export class StoreFlashSaleController {
-  constructor(private readonly flashSaleService: FlashSaleService) {}
+  constructor(private readonly flashSaleService: FlashSaleService) { }
 
   @Public() // Cho phép truy cập không cần token
   @Get('current')
   getCurrentSession() {
     return this.flashSaleService.getCurrentFlashSaleForBuyer();
+  }
+
+  @Public()
+  @Get('sessions/:id')
+  getSessionForHome(@Param('id') id: string) {
+    return this.flashSaleService.getSessionForHome(id);
   }
 }

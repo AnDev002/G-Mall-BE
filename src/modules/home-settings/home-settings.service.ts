@@ -5,23 +5,23 @@ import { CategoryService } from '../category/category.service';
 
 @Injectable()
 export class HomeSettingsService {
-  constructor(private prisma: PrismaService, private categoryService: CategoryService) {}
+  constructor(private prisma: PrismaService, private categoryService: CategoryService) { }
 
 
   private async getProductsByCategory(categoryId: string, limit: number = 6) {
     if (!categoryId) return [];
-    
+
     // Lấy cả danh mục con
     const descendantIds = await this.categoryService.getAllDescendantIds(categoryId);
     const categoryIds = [...descendantIds, categoryId];
 
     return this.prisma.product.findMany({
-      where: { 
+      where: {
         categoryId: { in: categoryIds },
         status: 'ACTIVE'
       },
       orderBy: { createdAt: 'desc' },
-      include: { 
+      include: {
         variants: true,
         category: true
       },
@@ -35,13 +35,13 @@ export class HomeSettingsService {
     // CASE 1: Lấy thủ công (Manual)
     if (columnConfig.sourceType === 'MANUAL' && Array.isArray(columnConfig.productIds) && columnConfig.productIds.length > 0) {
       return this.prisma.product.findMany({
-        where: { 
-          id: { in: columnConfig.productIds }, 
-          status: 'ACTIVE' 
+        where: {
+          id: { in: columnConfig.productIds },
+          status: 'ACTIVE'
         },
-        include: { 
-          variants: true, 
-          category: true 
+        include: {
+          variants: true,
+          category: true
         },
         take: limit // Lấy tối đa theo limit (30) để frontend random
       });
@@ -50,7 +50,7 @@ export class HomeSettingsService {
     // CASE 2: Lấy theo danh mục (Category) - Mặc định
     return this.getProductsByCategory(columnConfig.categoryId, limit);
   }
-  
+
   // 1. Client: Lấy layout hiển thị
   async getHomeLayout() {
     const sections = await this.prisma.homeSection.findMany({
@@ -62,11 +62,11 @@ export class HomeSettingsService {
     const enrichedSections = await Promise.all(sections.map(async (section: any) => {
       let products: any = [];
       const config = section.config || {};
-      
+
       // === FIX: XỬ LÝ RIÊNG CHO KHỐI 2 CỘT (SPLIT) ===
       if (section.type === 'CATEGORY_TWO_ROW') {
         // [QUAN TRỌNG] Tăng limit lên 30 để Frontend có dữ liệu mà shuffle (random)
-        const fetchLimit = 30; 
+        const fetchLimit = 30;
 
         // Lấy dữ liệu song song cho cả trái và phải dựa trên config từng bên
         const [leftProducts, rightProducts] = await Promise.all([
@@ -78,9 +78,9 @@ export class HomeSettingsService {
         if (config.left) config.left.products = leftProducts;
         if (config.right) config.right.products = rightProducts;
 
-        return { ...section, config }; 
+        return { ...section, config };
       }
-      
+
       // === LOGIC CŨ CHO KHỐI DANH MỤC ĐƠN ===
       const sourceType = config.sourceType || 'CATEGORY';
 
@@ -115,12 +115,12 @@ export class HomeSettingsService {
       type: data.type,
       isActive: data.isActive !== undefined ? data.isActive : true,
       categoryId: (data.categoryId && data.categoryId.length > 0) ? data.categoryId : null,
-      
+
       // Lưu config: Giữ nguyên cấu trúc nested (left/right) từ frontend gửi lên
       config: {
         ...(data.config || {}),
         // Các trường top-level (dành cho khối đơn)
-        productIds: data.productIds || [], 
+        productIds: data.productIds || [],
         sourceType: data.sourceType || 'CATEGORY'
       }
     };
@@ -130,7 +130,7 @@ export class HomeSettingsService {
   async createSection(data: any) {
     const lastItem = await this.prisma.homeSection.findFirst({ orderBy: { order: 'desc' } });
     const newOrder = lastItem ? lastItem.order + 1 : 0;
-    
+
     // Gọi hàm cleanInput
     const cleanData = this.cleanInput(data);
 
@@ -144,10 +144,20 @@ export class HomeSettingsService {
 
   // 4. Admin: Cập nhật
   async updateSection(id: string, data: any) {
-    const cleanData = this.cleanInput(data);
+    // PATCH từng phần (vd chỉ { isActive } từ nút ẩn/hiện) KHÔNG được đi qua
+    // cleanInput, vì cleanInput điền giá trị mặc định và ghi đè title/config/categoryId.
+    const isFullEdit =
+      data.type !== undefined || data.config !== undefined || data.title !== undefined;
+
+    if (!isFullEdit) {
+      const patch: any = {};
+      if (data.isActive !== undefined) patch.isActive = !!data.isActive;
+      return this.prisma.homeSection.update({ where: { id }, data: patch });
+    }
+
     return this.prisma.homeSection.update({
       where: { id },
-      data: cleanData,
+      data: this.cleanInput(data),
     });
   }
 

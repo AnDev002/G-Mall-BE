@@ -8,7 +8,7 @@ import { FlashSaleSession, Prisma, FlashSaleProductStatus, User } from '@prisma/
 
 @Injectable()
 export class FlashSaleService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   // Helper để tính toán trạng thái thời gian
   private mapSessionStatus(session: FlashSaleSession) {
@@ -66,7 +66,7 @@ export class FlashSaleService {
       where: {
         status: 'ENABLED',
         // Bỏ bớt điều kiện thời gian chặt chẽ nếu cần test, nhưng logic đúng là phải có
-        startTime: { lte: now }, 
+        startTime: { lte: now },
         endTime: { gt: now },
       },
       orderBy: { endTime: 'asc' },
@@ -94,8 +94,8 @@ export class FlashSaleService {
                 status: true, // Lấy thêm status để debug
               }
             },
-            variant: { 
-               select: { id: true, sku: true }
+            variant: {
+              select: { id: true, sku: true }
             }
           }
         }
@@ -106,28 +106,28 @@ export class FlashSaleService {
 
     // 2. Lọc thủ công để biết tại sao sản phẩm bị loại (Debug Logic)
     const validSession = activeSessions.find(s => {
-        if (!s.products || s.products.length === 0) {
-            console.log(`   ⚠️ Session ${s.id}: No products registered or approved.`);
-            return false;
-        }
+      if (!s.products || s.products.length === 0) {
+        console.log(`   ⚠️ Session ${s.id}: No products registered or approved.`);
+        return false;
+      }
 
-        // Lọc lại các điều kiện kinh doanh ở tầng JS để log ra được lỗi
-        const validProducts = s.products.filter(p => {
-            const isProductActive = p.product.status === 'ACTIVE';
-            // Wiki 0086: availability phải tính theo tồn flash sale còn lại = stock - sold,
-            // KHÔNG dùng stock thuần (item đã bán hết sold == stock vẫn bị hiện là còn hàng).
-            const remaining = p.stock - p.sold;
-            const hasStock = remaining > 0;
+      // Lọc lại các điều kiện kinh doanh ở tầng JS để log ra được lỗi
+      const validProducts = s.products.filter(p => {
+        const isProductActive = p.product.status === 'ACTIVE';
+        // Wiki 0086: availability phải tính theo tồn flash sale còn lại = stock - sold,
+        // KHÔNG dùng stock thuần (item đã bán hết sold == stock vẫn bị hiện là còn hàng).
+        const remaining = p.stock - p.sold;
+        const hasStock = remaining > 0;
 
-            if (!isProductActive) console.log(`   ❌ Product ${p.productId} ignored: Parent Status is ${p.product.status}`);
-            if (!hasStock) console.log(`   ❌ Product ${p.productId} ignored: Sold out (stock=${p.stock}, sold=${p.sold}, remaining=${remaining})`);
+        if (!isProductActive) console.log(`   ❌ Product ${p.productId} ignored: Parent Status is ${p.product.status}`);
+        if (!hasStock) console.log(`   ❌ Product ${p.productId} ignored: Sold out (stock=${p.stock}, sold=${p.sold}, remaining=${remaining})`);
 
-            return isProductActive && hasStock;
-        });
+        return isProductActive && hasStock;
+      });
 
-        // Gán lại products đã lọc sạch, cắt 12 SP còn hàng (sau khi lọc remaining>0) — [FIX round15 #6]
-        s.products = validProducts.slice(0, 12);
-        return validProducts.length > 0;
+      // Gán lại products đã lọc sạch, cắt 12 SP còn hàng (sau khi lọc remaining>0) — [FIX round15 #6]
+      s.products = validProducts.slice(0, 12);
+      return validProducts.length > 0;
     });
 
     if (!validSession) {
@@ -147,8 +147,8 @@ export class FlashSaleService {
         isSoldOut: item.stock - item.sold <= 0,
         product: {
           ...item.product,
-          thumbnail: item.product.images && item.product.images.length > 0 
-            ? item.product.images[0] 
+          thumbnail: item.product.images && item.product.images.length > 0
+            ? item.product.images[0]
             : null
         }
       }))
@@ -156,7 +156,42 @@ export class FlashSaleService {
 
     return mappedSession;
   }
+  async getSessionForHome(sessionId: string) {
+    const now = new Date();
+    const session = await this.prisma.flashSaleSession.findFirst({
+      where: { id: sessionId, status: 'ENABLED', endTime: { gt: now } },
+      include: {
+        products: {
+          where: { status: FlashSaleProductStatus.APPROVED },
+          orderBy: { sold: 'desc' },
+          include: {
+            product: {
+              select: {
+                id: true, name: true, images: true, slug: true,
+                rating: true, salesCount: true, status: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!session) return null;
 
+    const products = session.products
+      .filter((p) => p.product.status === 'ACTIVE' && p.stock - p.sold > 0)
+      .slice(0, 12)
+      .map((item) => ({
+        ...item,
+        remaining: item.stock - item.sold,
+        isSoldOut: false,
+        product: {
+          ...item.product,
+          thumbnail: (item.product.images as any[])?.[0] ?? null,
+        },
+      }));
+
+    return { ...this.mapSessionStatus(session), products };
+  }
   // 2. Seller đăng ký sản phẩm vào Session (Auto Approve)
   async registerProducts(sellerId: string, dto: RegisterFlashSaleDto) {
     const { sessionId, items } = dto;
@@ -173,15 +208,15 @@ export class FlashSaleService {
     }
 
     const results: any[] = [];
-    
+
     for (const item of items) {
       console.log(`[DEBUG] Processing Item: ${item.productId} (Sent VariantId: ${item.variantId})`);
 
       let originalPrice = 0;
       let dbStock = 0;
-      
+
       // Biến này sẽ chứa ID chuẩn để lưu vào DB
-      let finalVariantId = item.variantId; 
+      let finalVariantId = item.variantId;
 
       // --- BƯỚC 1: Tìm Variant chính xác theo ID gửi lên ---
       const variant = await this.prisma.productVariant.findFirst({
@@ -194,64 +229,64 @@ export class FlashSaleService {
       });
 
       if (variant) {
-         console.log(`   -> Found Variant Directly. Price: ${variant.price}`);
-         originalPrice = Number(variant.price);
-         dbStock = variant.stock;
-         finalVariantId = variant.id;
+        console.log(`   -> Found Variant Directly. Price: ${variant.price}`);
+        originalPrice = Number(variant.price);
+        dbStock = variant.stock;
+        finalVariantId = variant.id;
       } else {
-         // --- BƯỚC 2: Nếu không thấy Variant, kiểm tra Product ---
-         console.log(`   -> Variant ID not found. Checking Product table...`);
-         const product = await this.prisma.product.findFirst({
-            where: { 
-              id: item.productId, 
-              shopId: sellerId 
-            }
-         });
-         
-         if (!product) {
-             console.log(`   -> SKIPPED: Product not found or not owned by seller.`);
-             continue;
-         }
+        // --- BƯỚC 2: Nếu không thấy Variant, kiểm tra Product ---
+        console.log(`   -> Variant ID not found. Checking Product table...`);
+        const product = await this.prisma.product.findFirst({
+          where: {
+            id: item.productId,
+            shopId: sellerId
+          }
+        });
 
-         // [FIX QUAN TRỌNG]: Tìm Default Variant của Product này
-         // Vì bảng FlashSaleProduct yêu cầu variantId phải tồn tại trong bảng ProductVariant
-         const defaultVariant = await this.prisma.productVariant.findFirst({
-            where: { productId: product.id }
-         });
+        if (!product) {
+          console.log(`   -> SKIPPED: Product not found or not owned by seller.`);
+          continue;
+        }
 
-         if (defaultVariant) {
-            console.log(`   -> Found Default Variant for Product. ID: ${defaultVariant.id}`);
-            finalVariantId = defaultVariant.id; // Sử dụng ID thật của variant
-            originalPrice = Number(defaultVariant.price); // Hoặc lấy giá từ product tùy logic bạn muốn
-            dbStock = defaultVariant.stock;
-         } else {
-            // Trường hợp Product thật sự không có dòng nào trong bảng ProductVariant (Hiếm gặp nếu schema chuẩn)
-            console.log(`   -> WARN: Product has no variants in DB. Using Product Price.`);
-            originalPrice = Number(product.price);
-            dbStock = product.stock;
-            // Lúc này finalVariantId vẫn là item.variantId (giống productId), có thể gây lỗi DB nếu có FK
-         }
+        // [FIX QUAN TRỌNG]: Tìm Default Variant của Product này
+        // Vì bảng FlashSaleProduct yêu cầu variantId phải tồn tại trong bảng ProductVariant
+        const defaultVariant = await this.prisma.productVariant.findFirst({
+          where: { productId: product.id }
+        });
+
+        if (defaultVariant) {
+          console.log(`   -> Found Default Variant for Product. ID: ${defaultVariant.id}`);
+          finalVariantId = defaultVariant.id; // Sử dụng ID thật của variant
+          originalPrice = Number(defaultVariant.price); // Hoặc lấy giá từ product tùy logic bạn muốn
+          dbStock = defaultVariant.stock;
+        } else {
+          // Trường hợp Product thật sự không có dòng nào trong bảng ProductVariant (Hiếm gặp nếu schema chuẩn)
+          console.log(`   -> WARN: Product has no variants in DB. Using Product Price.`);
+          originalPrice = Number(product.price);
+          dbStock = product.stock;
+          // Lúc này finalVariantId vẫn là item.variantId (giống productId), có thể gây lỗi DB nếu có FK
+        }
       }
 
       // --- BƯỚC 3: Validate Giá ---
       const promoPrice = Number(item.promoPrice);
       if (promoPrice >= originalPrice) {
-         console.log(`   -> SKIPPED: Promo Price (${promoPrice}) >= Original Price (${originalPrice})`);
-         continue;
+        console.log(`   -> SKIPPED: Promo Price (${promoPrice}) >= Original Price (${originalPrice})`);
+        continue;
       }
 
       // [FIX] Giới hạn promoStock không vượt quá tồn kho thật của variant/product
       const promoStock = Number(item.promoStock);
       if (promoStock > dbStock) {
-         console.log(`   -> SKIPPED: Promo Stock (${promoStock}) > Available Stock (${dbStock})`);
-         continue;
+        console.log(`   -> SKIPPED: Promo Stock (${promoStock}) > Available Stock (${dbStock})`);
+        continue;
       }
 
       // --- BƯỚC 4: Lưu vào DB ---
       try {
         const record = await this.prisma.flashSaleProduct.upsert({
           where: {
-            sessionId_variantId: { 
+            sessionId_variantId: {
               sessionId,
               variantId: finalVariantId // Sử dụng ID chuẩn đã tìm được
             }
@@ -283,75 +318,75 @@ export class FlashSaleService {
     return { success: true, registeredCount: results.length };
   }
 
-  
+
 
   async registerProductsToFlashSale(user: User, dto: RegisterFlashSaleDto) {
-  const { sessionId, items } = dto;
-  let registeredCount = 0;
-  const errors = [];
+    const { sessionId, items } = dto;
+    let registeredCount = 0;
+    const errors = [];
 
-  // 1. Validate Session
-  const session = await this.prisma.flashSaleSession.findUnique({
-    where: { id: sessionId },
-  });
-  if (!session) throw new NotFoundException('Session not found');
-
-  // 2. Loop & Process Items
-  for (const item of items) {
-    // --- DEBUG LOGGING ---
-    console.log(`Processing Item: Product ${item.productId} - Variant ${item.variantId}`);
-
-    // CHECK 1: Tìm ProductVariant
-    // LƯU Ý: Nếu logic của bạn cho phép Simple Product (không có variant),
-    // bạn phải xử lý case variantId === productId hoặc tìm default variant.
-    const variant = await this.prisma.productVariant.findUnique({
-      where: { id: item.variantId }, // <--- Khả năng cao lỗi ở đây vì ID sai
-      include: { product: true }
+    // 1. Validate Session
+    const session = await this.prisma.flashSaleSession.findUnique({
+      where: { id: sessionId },
     });
+    if (!session) throw new NotFoundException('Session not found');
 
-    if (!variant) {
-      console.error(`--> FAILED: Variant not found for ID ${item.variantId}`);
-      continue; // Skip item này
-    }
+    // 2. Loop & Process Items
+    for (const item of items) {
+      // --- DEBUG LOGGING ---
+      console.log(`Processing Item: Product ${item.productId} - Variant ${item.variantId}`);
 
-    // CHECK 2: Validate Seller Owner
-    if (variant.product.sellerId !== user.id) {
-       console.error(`--> FAILED: Seller ${user.id} does not own product`);
-       continue;
-    }
+      // CHECK 1: Tìm ProductVariant
+      // LƯU Ý: Nếu logic của bạn cho phép Simple Product (không có variant),
+      // bạn phải xử lý case variantId === productId hoặc tìm default variant.
+      const variant = await this.prisma.productVariant.findUnique({
+        where: { id: item.variantId }, // <--- Khả năng cao lỗi ở đây vì ID sai
+        include: { product: true }
+      });
 
-    // CHECK 3: Validate Stock/Price (nếu có)
-    if (variant.stock <= 0) {
+      if (!variant) {
+        console.error(`--> FAILED: Variant not found for ID ${item.variantId}`);
+        continue; // Skip item này
+      }
+
+      // CHECK 2: Validate Seller Owner
+      if (variant.product.sellerId !== user.id) {
+        console.error(`--> FAILED: Seller ${user.id} does not own product`);
+        continue;
+      }
+
+      // CHECK 3: Validate Stock/Price (nếu có)
+      if (variant.stock <= 0) {
         console.error(`--> FAILED: Out of stock`);
         continue;
+      }
+
+      // Nếu qua hết các bài test -> Lưu vào DB
+      // await this.prisma.flashSaleProduct.create({
+      // data: {
+      //   session: { 
+      //     connect: { id: sessionId } 
+      //   },
+      //   // flashSaleSession: { connect: { id: sessionId } }, // Fix lỗi relation
+      //   product: { connect: { id: item.productId } },
+      //   // productVariant: { connect: { id: item.variantId } },
+
+      //   // Bây giờ TypeScript sẽ hiểu 2 dòng này vì DTO đã có
+      //   // flashSalePrice: item.price, // Lưu ý: check tên cột trong DB là price hay flashSalePrice
+      //   // flashSaleStock: item.stock, // Lưu ý: check tên cột trong DB là stock hay quantity/flashSaleStock
+      // }
+
+      // });
+
+      registeredCount++;
     }
 
-    // Nếu qua hết các bài test -> Lưu vào DB
-    // await this.prisma.flashSaleProduct.create({
-    // data: {
-    //   session: { 
-    //     connect: { id: sessionId } 
-    //   },
-    //   // flashSaleSession: { connect: { id: sessionId } }, // Fix lỗi relation
-    //   product: { connect: { id: item.productId } },
-    //   // productVariant: { connect: { id: item.variantId } },
-      
-    //   // Bây giờ TypeScript sẽ hiểu 2 dòng này vì DTO đã có
-    //   // flashSalePrice: item.price, // Lưu ý: check tên cột trong DB là price hay flashSalePrice
-    //   // flashSaleStock: item.stock, // Lưu ý: check tên cột trong DB là stock hay quantity/flashSaleStock
-    // }
-    
-  // });
-    
-    registeredCount++;
+    return {
+      success: true,
+      registeredCount,
+      errors // Trả thêm errors để FE dễ debug
+    };
   }
-
-  return {
-    success: true,
-    registeredCount,
-    errors // Trả thêm errors để FE dễ debug
-  };
-}
   async createSession(dto: CreateFlashSaleSessionDto) {
     const start = new Date(dto.startTime);
     const end = new Date(dto.endTime);
@@ -471,7 +506,7 @@ export class FlashSaleService {
 
     // Điều kiện 1: Đã diễn ra chưa?
     if (session.startTime <= now) {
-       throw new BadRequestException('Cannot delete a session that has already started or ended.');
+      throw new BadRequestException('Cannot delete a session that has already started or ended.');
     }
 
     // Điều kiện 2: Có sản phẩm đăng ký chưa?
