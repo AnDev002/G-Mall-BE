@@ -1,4 +1,5 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { UpdateVoucherDto } from './dto/update-voucher.dto';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { RedisService } from '../../database/redis/redis.service';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
@@ -433,7 +434,81 @@ export class PromotionService {
       return voucher;
     });
   }
+  // --- 3b. SELLER: SỬA VOUCHER SHOP ---
+  async updateShopVoucher(sellerId: string, id: string, dto: UpdateVoucherDto) {
+    const voucher = await this.prisma.voucher.findFirst({ where: { id, sellerId } });
+    if (!voucher) throw new NotFoundException('Voucher không tồn tại hoặc không thuộc shop của bạn');
 
+    const start = dto.startDate ? new Date(dto.startDate) : voucher.startDate;
+    const end = dto.endDate ? new Date(dto.endDate) : voucher.endDate;
+    if (end <= start) throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
+
+    if (dto.amount !== undefined) {
+      if (voucher.usageCount > 0 && dto.amount !== Number(voucher.amount)) {
+        throw new BadRequestException('Voucher đã có người sử dụng nên không thể đổi mức giảm. Hãy tạo voucher mới.');
+      }
+      if (voucher.type === VoucherType.PERCENTAGE && dto.amount > 100) {
+        throw new BadRequestException('Phần trăm giảm giá phải trong khoảng 0–100');
+      }
+    }
+
+    if (dto.usageLimit !== undefined && dto.usageLimit < voucher.usageCount) {
+      throw new BadRequestException(`Số lượt tối đa không được nhỏ hơn số lượt đã dùng (${voucher.usageCount})`);
+    }
+
+    const data: Prisma.VoucherUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.amount !== undefined) data.amount = new Prisma.Decimal(dto.amount);
+    if (dto.usageLimit !== undefined) data.usageLimit = dto.usageLimit;
+    if (dto.startDate !== undefined) data.startDate = start;
+    if (dto.endDate !== undefined) data.endDate = end;
+    if (dto.minOrderValue !== undefined) data.minOrderValue = new Prisma.Decimal(dto.minOrderValue);
+    if (dto.maxDiscount !== undefined) {
+      data.maxDiscount = dto.maxDiscount ? new Prisma.Decimal(dto.maxDiscount) : null;
+    }
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    // Đổi danh sách sản phẩm / danh mục (chỉ đúng scope của voucher)
+    if (voucher.scope === VoucherScope.PRODUCT && dto.productIds !== undefined) {
+      const ids = [...new Set(dto.productIds)];
+      if (ids.length === 0) throw new BadRequestException('Vui lòng chọn sản phẩm');
+      const shop = await this.prisma.shop.findUnique({ where: { ownerId: sellerId } });
+      if (!shop) throw new BadRequestException('Bạn chưa có shop');
+      const owned = await this.prisma.product.count({ where: { id: { in: ids }, shopId: shop.id } });
+      if (owned !== ids.length) {
+        throw new BadRequestException('Voucher chỉ được áp cho sản phẩm thuộc shop của bạn.');
+      }
+      data.products = { set: ids.map((pid) => ({ id: pid })) };
+    }
+    if (voucher.scope === VoucherScope.CATEGORY && dto.categoryIds !== undefined) {
+      const ids = [...new Set(dto.categoryIds)];
+      if (ids.length === 0) throw new BadRequestException('Vui lòng chọn danh mục');
+      data.categories = { set: ids.map((cid) => ({ id: cid })) };
+    }
+
+    return this.prisma.voucher.update({ where: { id }, data });
+  }
+
+  // --- 3c. SELLER: XOÁ VOUCHER SHOP ---
+  async deleteShopVoucher(sellerId: string, id: string) {
+    const voucher = await this.prisma.voucher.findFirst({
+      where: { id, sellerId },
+      select: { id: true, code: true, usageCount: true, _count: { select: { orders: true } } },
+    });
+    if (!voucher) throw new NotFoundException('Voucher không tồn tại hoặc không thuộc shop của bạn');
+
+    if (voucher.usageCount > 0 || voucher._count.orders > 0) {
+      throw new BadRequestException('Voucher đã được dùng trong đơn hàng nên không thể xoá. Hãy chọn "Tạm dừng" thay thế.');
+    }
+
+    // UserVoucher cascade, HomeSection.voucherId SetNull, quan hệ products/categories tự gỡ.
+    await this.prisma.voucher.delete({ where: { id } });
+
+    // Dọn set dedup của luồng claim để tạo lại cùng mã không bị báo "đã lưu rồi".
+    await this.redisService.getClient().del(`voucher:${voucher.code}:users`).catch(() => undefined);
+
+    return { success: true };
+  }
   // --- 4. ADMIN: TẠO VOUCHER HỆ THỐNG ---
   async createSystemVoucher(dto: CreateVoucherDto) {
     // 1. Validate ngày

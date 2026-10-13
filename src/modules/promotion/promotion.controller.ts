@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { UpdateVoucherDto } from "./dto/update-voucher.dto";
 import { PromotionService } from "./promotion.service";
 import { JwtAuthGuard } from "../auth/guards/jwt.guard"; // Kiểm tra lại path nếu báo đỏ
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -62,7 +63,21 @@ export class PromotionController {
   async getSellerVouchers(@UserDecorator() user: User) {
     return this.promotionService.getShopVouchers(user.id);
   }
+  // SELLER: Sửa voucher
+  @Patch('seller/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SELLER)
+  async updateVoucher(@Param('id') id: string, @Body() dto: UpdateVoucherDto, @UserDecorator() user: User) {
+    return this.promotionService.updateShopVoucher(user.id, id, dto);
+  }
 
+  // SELLER: Xoá voucher
+  @Delete('seller/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.SELLER)
+  async deleteVoucher(@Param('id') id: string, @UserDecorator() user: User) {
+    return this.promotionService.deleteShopVoucher(user.id, id);
+  }
   // Cho Buyer xem ví
   @Get('my-vouchers')
   @UseGuards(JwtAuthGuard)
