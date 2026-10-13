@@ -14,7 +14,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { User } from 'src/common/decorators/user.decorator';
 import { ShopService } from '../shop/shop.service';
 import { Public } from 'src/common/decorators/public.decorator';
-
+import { AdminAddFlashSaleItemDto } from './dto/admin-flash-sale-item.dto';
 // --- CONTROLLER 1: Dành cho ADMIN ---
 @Controller('admin/flash-sale')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -40,6 +40,25 @@ export class FlashSaleController {
   @Delete('sessions/:id')
   remove(@Param('id') id: string) {
     return this.flashSaleService.remove(id);
+  }
+  @Get('product-search')
+  adminSearchProducts(@Query('keyword') keyword: string) {
+    return this.flashSaleService.adminSearchProducts(keyword);
+  }
+
+  @Get('sessions/:id/products')
+  adminListItems(@Param('id') id: string) {
+    return this.flashSaleService.adminListItems(id);
+  }
+
+  @Post('sessions/:id/products')
+  adminAddItem(@Param('id') id: string, @Body() dto: AdminAddFlashSaleItemDto) {
+    return this.flashSaleService.adminAddItem(id, dto);
+  }
+
+  @Delete('products/:itemId')
+  adminRemoveItem(@Param('itemId') itemId: string) {
+    return this.flashSaleService.adminRemoveItem(itemId);
   }
 }
 

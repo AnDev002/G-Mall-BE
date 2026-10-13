@@ -5,7 +5,7 @@ import { CreateFlashSaleSessionDto } from './dto/create-flash-sale.dto';
 import { UpdateFlashSaleSessionDto } from './dto/update-flash-sale.dto';
 import { RegisterFlashSaleDto } from './dto/register-flash-sale.dto';
 import { FlashSaleSession, Prisma, FlashSaleProductStatus, User } from '@prisma/client';
-
+import { AdminAddFlashSaleItemDto } from './dto/admin-flash-sale-item.dto';
 @Injectable()
 export class FlashSaleService {
   constructor(private readonly prisma: PrismaService) { }
@@ -386,6 +386,139 @@ export class FlashSaleService {
       registeredCount,
       errors // Trả thêm errors để FE dễ debug
     };
+  }
+  private firstImage(images: any): string | null {
+    const arr = Array.isArray(images) ? images : [];
+    const f = arr[0];
+    return typeof f === 'string' ? f : f?.url ?? null;
+  }
+
+  private variantLabel(v: { tierIndex: string; sku: string | null }, options: { values: { value: string }[] }[]) {
+    const idx = (v.tierIndex || '').split(',').map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+    const label = idx.map((vi, gi) => options[gi]?.values[vi]?.value).filter(Boolean).join(' | ');
+    return label || v.sku || 'Mặc định';
+  }
+
+  // ADMIN: tìm sản phẩm ACTIVE kèm biến thể để thêm vào flash sale
+  async adminSearchProducts(keyword: string) {
+    const kw = (keyword || '').trim();
+    if (!kw) return [];
+    const products = await this.prisma.product.findMany({
+      where: { status: 'ACTIVE', name: { contains: kw } },
+      take: 20,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true, name: true, images: true, price: true,
+        shop: { select: { name: true } },
+        options: { orderBy: { position: 'asc' }, select: { values: { orderBy: { position: 'asc' }, select: { value: true } } } },
+        variants: { select: { id: true, sku: true, price: true, stock: true, tierIndex: true } },
+      },
+    });
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      image: this.firstImage(p.images),
+      shopName: p.shop?.name ?? null,
+      variants: p.variants.map((v) => ({
+        id: v.id,
+        label: this.variantLabel(v, p.options),
+        price: Number(v.price),
+        stock: v.stock,
+      })),
+    }));
+  }
+
+  // ADMIN: danh sách sản phẩm của 1 khung giờ
+  async adminListItems(sessionId: string) {
+    const items = await this.prisma.flashSaleProduct.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        product: { select: { id: true, name: true, images: true } },
+        variant: { select: { id: true, sku: true, tierIndex: true } },
+      },
+    });
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const options = productIds.length
+      ? await this.prisma.productOption.findMany({
+        where: { productId: { in: productIds } },
+        orderBy: { position: 'asc' },
+        select: { productId: true, values: { orderBy: { position: 'asc' }, select: { value: true } } },
+      })
+      : [];
+    return items.map((i) => ({
+      id: i.id,
+      productId: i.productId,
+      name: i.product.name,
+      image: this.firstImage(i.product.images),
+      variantLabel: this.variantLabel(i.variant, options.filter((o) => o.productId === i.productId)),
+      originalPrice: Number(i.originalPrice),
+      salePrice: Number(i.salePrice),
+      stock: i.stock,
+      sold: i.sold,
+      status: i.status,
+    }));
+  }
+
+  // ADMIN: thêm / cập nhật 1 sản phẩm (1 biến thể) vào khung giờ
+  async adminAddItem(sessionId: string, dto: AdminAddFlashSaleItemDto) {
+    const session = await this.prisma.flashSaleSession.findUnique({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Không tìm thấy khung giờ');
+    if (session.endTime <= new Date()) throw new BadRequestException('Khung giờ đã kết thúc');
+
+    const product = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+      select: { id: true, status: true },
+    });
+    if (!product || product.status !== 'ACTIVE') throw new BadRequestException('Sản phẩm không tồn tại hoặc chưa được duyệt');
+
+    const variant = dto.variantId
+      ? await this.prisma.productVariant.findFirst({ where: { id: dto.variantId, productId: product.id } })
+      : await this.prisma.productVariant.findFirst({ where: { productId: product.id } });
+    if (!variant) throw new BadRequestException('Không tìm thấy biến thể của sản phẩm');
+
+    const originalPrice = Number(variant.price);
+    const promoPrice = Number(dto.promoPrice);
+    const promoStock = Math.floor(Number(dto.promoStock));
+
+    if (!Number.isFinite(promoPrice) || promoPrice <= 0 || promoPrice >= originalPrice) {
+      throw new BadRequestException(`Giá flash sale phải nhỏ hơn giá gốc (${originalPrice.toLocaleString('vi-VN')}đ)`);
+    }
+    if (!Number.isFinite(promoStock) || promoStock < 1 || promoStock > variant.stock) {
+      throw new BadRequestException(`Số lượng flash sale phải từ 1 đến tồn kho (${variant.stock})`);
+    }
+
+    const existing = await this.prisma.flashSaleProduct.findUnique({
+      where: { sessionId_variantId: { sessionId, variantId: variant.id } },
+    });
+    if (existing && promoStock < existing.sold) {
+      throw new BadRequestException(`Đã bán ${existing.sold}, số lượng không được nhỏ hơn số đã bán`);
+    }
+
+    await this.prisma.flashSaleProduct.upsert({
+      where: { sessionId_variantId: { sessionId, variantId: variant.id } },
+      update: { salePrice: promoPrice, stock: promoStock, status: FlashSaleProductStatus.APPROVED },
+      create: {
+        sessionId,
+        productId: product.id,
+        variantId: variant.id,
+        originalPrice,
+        salePrice: promoPrice,
+        stock: promoStock,
+        sold: 0,
+        status: FlashSaleProductStatus.APPROVED,
+      },
+    });
+    return { success: true };
+  }
+
+  // ADMIN: gỡ sản phẩm khỏi khung giờ (không cho gỡ nếu đã bán)
+  async adminRemoveItem(itemId: string) {
+    const item = await this.prisma.flashSaleProduct.findUnique({ where: { id: itemId } });
+    if (!item) throw new NotFoundException('Không tìm thấy sản phẩm trong flash sale');
+    if (item.sold > 0) throw new BadRequestException(`Đã bán ${item.sold} suất nên không thể gỡ`);
+    await this.prisma.flashSaleProduct.delete({ where: { id: itemId } });
+    return { success: true };
   }
   async createSession(dto: CreateFlashSaleSessionDto) {
     const start = new Date(dto.startTime);
